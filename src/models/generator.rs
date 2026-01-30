@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use candle_core::{DType, Device, IndexOp, Module, Tensor};
-use candle_nn::{embedding, linear, Embedding, Linear, VarBuilder, VarMap};
+use candle_nn::{embedding, layer_norm, linear, Embedding, LayerNorm, Linear, Optimizer, VarBuilder, VarMap, SGD};
 use std::path::Path;
 
 use super::common::{get_device, ModelConfig, Saveable};
@@ -94,18 +94,17 @@ impl GeneratorModel {
     }
 
     /// Train on a single example (online learning)
-    pub fn update(&mut self, input_ids: &Tensor, target_ids: &[u32], _learning_rate: f64) -> Result<()> {
+    pub fn update(&mut self, input_ids: &Tensor, target_ids: &[u32], learning_rate: f64) -> Result<()> {
         // Forward pass
         let logits = self.forward(input_ids)?;
 
         // Compute cross-entropy loss
         let target_tensor = Tensor::new(target_ids, &self.device)?;
-        let _loss = cross_entropy_loss(&logits, &target_tensor)?;
+        let loss = cross_entropy_loss(&logits, &target_tensor)?;
 
-        // Backward pass (TODO: Implement proper gradient computation)
-        // For now, we'll leave this as a placeholder
-        // Candle doesn't have built-in autograd like PyTorch
-        // We'll need to implement backward passes manually or use a different approach
+        // Backward pass + parameter update (Candle does both in one call)
+        let mut optimizer = candle_nn::SGD::new(self.varmap.all_vars(), learning_rate)?;
+        optimizer.backward_step(&loss)?;
 
         Ok(())
     }
@@ -147,8 +146,8 @@ impl DecoderLayer {
         Ok(Self {
             self_attn: CausalSelfAttention::new(config, vb.pp("self_attn"))?,
             feed_forward: FeedForward::new(config, vb.pp("ffn"))?,
-            norm1: LayerNorm::new(config.hidden_dim, vb.pp("norm1"))?,
-            norm2: LayerNorm::new(config.hidden_dim, vb.pp("norm2"))?,
+            norm1: layer_norm(config.hidden_dim, 1e-5, vb.pp("norm1"))?,
+            norm2: layer_norm(config.hidden_dim, 1e-5, vb.pp("norm2"))?,
         })
     }
 
@@ -233,33 +232,6 @@ impl FeedForward {
     }
 }
 
-/// Layer normalization
-struct LayerNorm {
-    weight: Tensor,
-    bias: Tensor,
-    eps: f64,
-}
-
-impl LayerNorm {
-    fn new(dim: usize, vb: VarBuilder) -> Result<Self> {
-        let weight = vb.get(dim, "weight")?;
-        let bias = vb.get(dim, "bias")?;
-        Ok(Self {
-            weight,
-            bias,
-            eps: 1e-5,
-        })
-    }
-
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let mean = x.mean_keepdim(x.dims().len() - 1)?;
-        let var = x.var_keepdim(x.dims().len() - 1)?;
-        let x_norm = ((x - mean)? / (var + self.eps)?.sqrt()?)?;
-        let x_norm = (x_norm * &self.weight)?;
-        Ok((x_norm + &self.bias)?)
-    }
-}
-
 /// Create causal mask for autoregressive generation
 fn create_causal_mask(seq_len: usize, device: &Device) -> Result<Tensor> {
     let mut mask_data = vec![0.0f32; seq_len * seq_len];
@@ -288,19 +260,17 @@ fn cross_entropy_loss(logits: &Tensor, targets: &Tensor) -> Result<Tensor> {
 
 /// GELU activation
 fn gelu(x: &Tensor) -> Result<Tensor> {
-    let coef = Tensor::new(&[1.702f32], x.device())?;
-    let sig_input = (x * coef)?;
+    let sig_input = (x * 1.702)?;
     let sig = sigmoid(&sig_input)?;
     Ok((x * sig)?)
 }
 
 /// Sigmoid activation
 fn sigmoid(x: &Tensor) -> Result<Tensor> {
-    let one = Tensor::new(&[1.0f32], x.device())?;
-    let neg_x = (x * Tensor::new(&[-1.0f32], x.device())?)?;
+    let neg_x = x.neg()?;
     let exp_neg_x = neg_x.exp()?;
-    let denominator = (&one + exp_neg_x)?;
-    Ok(one.broadcast_div(&denominator)?)
+    let one_plus_exp = (exp_neg_x + 1.0)?;
+    Ok((one_plus_exp.recip())?)
 }
 
 impl Saveable for GeneratorModel {

@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use candle_core::{DType, Device, Module, Tensor};
-use candle_nn::{embedding, linear, Embedding, Linear, Optimizer, VarBuilder, VarMap};
+use candle_nn::{embedding, layer_norm, linear, Embedding, LayerNorm, Linear, Optimizer, VarBuilder, VarMap, SGD};
 use std::path::Path;
 
 use super::common::{get_device, ModelConfig, Saveable};
@@ -67,7 +67,9 @@ impl RouterModel {
     /// Predict binary decision: 0 (forward) or 1 (try local)
     pub fn predict(&self, input_ids: &Tensor) -> Result<bool> {
         let prob = self.forward(input_ids)?;
-        let prob_scalar = prob.to_scalar::<f32>()?;
+        // Squeeze to get scalar from [1, 1] tensor
+        let prob_squeezed = prob.squeeze(0)?.squeeze(0)?;
+        let prob_scalar = prob_squeezed.to_scalar::<f32>()?;
 
         // Decision: probability > 0.5
         Ok(prob_scalar > 0.5)
@@ -79,15 +81,14 @@ impl RouterModel {
         let pred = self.forward(input_ids)?;
 
         // Compute loss (binary cross-entropy)
-        let target_tensor = Tensor::new(&[if target { 1.0f32 } else { 0.0f32 }], &self.device)?;
+        // Target should match pred shape (batch_size, 1)
+        let target_val = if target { 1.0f32 } else { 0.0f32 };
+        let target_tensor = Tensor::from_vec(vec![target_val], (1, 1), &self.device)?;
         let loss = binary_cross_entropy(&pred, &target_tensor)?;
 
-        // Backward pass
-        let grads = loss.backward()?;
-
-        // Update weights with SGD
-        let mut opt = candle_nn::SGD::new(self.varmap.all_vars(), learning_rate)?;
-        opt.step(&grads)?;
+        // Backward pass + parameter update (Candle does both in one call)
+        let mut optimizer = candle_nn::SGD::new(self.varmap.all_vars(), learning_rate)?;
+        optimizer.backward_step(&loss)?;
 
         Ok(())
     }
@@ -129,8 +130,8 @@ impl TransformerLayer {
         Ok(Self {
             self_attn: MultiHeadAttention::new(config, vb.pp("self_attn"))?,
             feed_forward: FeedForward::new(config, vb.pp("ffn"))?,
-            norm1: LayerNorm::new(config.hidden_dim, vb.pp("norm1"))?,
-            norm2: LayerNorm::new(config.hidden_dim, vb.pp("norm2"))?,
+            norm1: layer_norm(config.hidden_dim, 1e-5, vb.pp("norm1"))?,
+            norm2: layer_norm(config.hidden_dim, 1e-5, vb.pp("norm2"))?,
         })
     }
 
@@ -138,12 +139,12 @@ impl TransformerLayer {
         // Self-attention with residual
         let attn_out = self.self_attn.forward(x)?;
         let x = (x + attn_out)?;
-        let x = self.norm1.forward(&x)?;
+        let x = self.norm1.forward(&x)?; // LayerNorm implements Module
 
         // Feed-forward with residual
         let ffn_out = self.feed_forward.forward(&x)?;
         let x = (&x + ffn_out)?;
-        let x = self.norm2.forward(&x)?;
+        let x = self.norm2.forward(&x)?; // LayerNorm implements Module
 
         Ok(x)
     }
@@ -212,33 +213,6 @@ impl FeedForward {
     }
 }
 
-/// Layer normalization
-struct LayerNorm {
-    weight: Tensor,
-    bias: Tensor,
-    eps: f64,
-}
-
-impl LayerNorm {
-    fn new(dim: usize, vb: VarBuilder) -> Result<Self> {
-        let weight = vb.get(dim, "weight")?;
-        let bias = vb.get(dim, "bias")?;
-        Ok(Self {
-            weight,
-            bias,
-            eps: 1e-5,
-        })
-    }
-
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let mean = x.mean_keepdim(x.dims().len() - 1)?;
-        let var = x.var_keepdim(x.dims().len() - 1)?;
-        let x_norm = ((x - mean)? / (var + self.eps)?.sqrt()?)?;
-        let x_norm = (x_norm * &self.weight)?;
-        Ok((x_norm + &self.bias)?)
-    }
-}
-
 /// Binary cross-entropy loss
 fn binary_cross_entropy(pred: &Tensor, target: &Tensor) -> Result<Tensor> {
     let one = pred.ones_like()?;
@@ -248,9 +222,8 @@ fn binary_cross_entropy(pred: &Tensor, target: &Tensor) -> Result<Tensor> {
     let term2 = ((&one - target)? * (&one - &pred_clamped)?.log()?)?;
     let loss_sum = (term1 + term2)?.mean_all()?;
 
-    // Negate by multiplying by -1
-    let neg_one = Tensor::new(&[-1.0f32], pred.device())?;
-    let loss = (loss_sum * neg_one)?;
+    // Negate with scalar multiplication
+    let loss = (loss_sum * -1.0)?;
 
     Ok(loss)
 }
@@ -258,19 +231,17 @@ fn binary_cross_entropy(pred: &Tensor, target: &Tensor) -> Result<Tensor> {
 /// Sigmoid activation
 fn sigmoid(x: &Tensor) -> Result<Tensor> {
     // sigmoid(x) = 1 / (1 + exp(-x))
-    let one = Tensor::new(&[1.0f32], x.device())?;
-    let neg_x = (x * Tensor::new(&[-1.0f32], x.device())?)?;
+    let neg_x = x.neg()?;
     let exp_neg_x = neg_x.exp()?;
-    let denominator = (&one + exp_neg_x)?;
-    Ok(one.broadcast_div(&denominator)?)
+    let one_plus_exp = (exp_neg_x + 1.0)?;
+    Ok((one_plus_exp.recip())?)
 }
 
 /// GELU activation (Gaussian Error Linear Unit)
 fn gelu(x: &Tensor) -> Result<Tensor> {
     // gelu(x) = x * 0.5 * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x^3)))
     // Simplified approximation: x * sigmoid(1.702 * x)
-    let coef = Tensor::new(&[1.702f32], x.device())?;
-    let sig_input = (x * coef)?;
+    let sig_input = (x * 1.702)?;
     let sig = sigmoid(&sig_input)?;
     Ok((x * sig)?)
 }
