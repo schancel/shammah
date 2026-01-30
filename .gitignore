@@ -1,0 +1,31 @@
+# Rust
+/target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local development
+.env
+.env.local
+
+# Shammah specific
+# Don't commit local models or training data
+.claude-proxy/
+*.mlpackage
+*.mlmodelc
+training-data/
+*.jsonl
+
+# But DO commit example configs
+!examples/*.json
