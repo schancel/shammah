@@ -2,11 +2,60 @@
 
 ## Summary
 
-Phase 1 of the Shammah Constitutional AI Proxy is now fully implemented and functional. The system can handle queries locally via pattern matching while forwarding complex and crisis queries to Claude API.
+Phase 1 of the Shammah Constitutional AI Proxy is now fully implemented and functional. The system demonstrates the 3-model ensemble architecture using placeholders (pattern matching and templates) while collecting training data for real neural networks in Phase 2.
+
+## Understanding Phase 1: Proof of Concept
+
+**What Phase 1 Actually Is:**
+- Infrastructure demonstration of the 3-model architecture
+- Data collection system for training real models
+- Pattern matching = placeholder for Router Model
+- Template responses = placeholder for Generator Model
+- Crisis detection = placeholder for Validator Model
+
+**What Phase 1 Is NOT:**
+- Not the final product (templates will be replaced with trained models)
+- Not using pre-trained LLMs (Llama, Mistral, etc.)
+- Not machine learning yet (that's Phase 2)
+
+Phase 1 proves the infrastructure works and collects the data needed to train custom models in Phase 2.
+
+## The 3-Model Ensemble Architecture
+
+Shammah uses three specialized models working together:
+
+```
+User Query
+    ↓
+[1] Router Model (Small, Fast)
+    "Can we handle this locally?"
+    → Phase 1: Pattern matching (TF-IDF)
+    → Phase 2+: Neural network classifier
+    ↓
+High confidence?
+    ├─ NO → Forward to Claude
+    └─ YES → Try locally
+         ↓
+    [2] Generator Model (Medium, Capable)
+        "Generate Claude-style response"
+        → Phase 1: Template responses
+        → Phase 2+: Custom LLM (trained on Claude)
+         ↓
+    [3] Validator Model (Small, Fast)
+        "Is this response good enough?"
+        → Phase 1: Crisis detection
+        → Phase 2+: Quality assessment model
+         ↓
+    Passes validation?
+         ├─ YES → Return to user
+         └─ NO → Forward to Claude
+```
+
+**All three models will be trained from scratch on YOUR Claude usage data** (Phase 2).
 
 ## What Was Built
 
-### Core Components
+### Core Components (Phase 1 Placeholders)
 
 1. **Configuration System** (`src/config/`)
    - ✅ Loads API key from Claude Code's `~/.claude/settings.json`
@@ -288,16 +337,25 @@ You: How do I implement binary search in Rust?
 **Timeline:** Weeks 5-8
 
 **Goals:**
-- Train uncertainty estimator on Phase 1 metrics
-- Implement adaptive confidence thresholds
+- Train actual neural networks to replace placeholders
+- Router Model: Binary classifier (forward vs local)
+- Generator Model: Text generation via Claude distillation
+- Validator Model: Quality assessment
 - Reduce forward rate to 30-40%
-- Add conversation history support
 
 **Key Tasks:**
-1. Collect at least 1,000 queries in Phase 1 metrics
-2. Build uncertainty calibration model
-3. Add confidence scoring to pattern matcher
-4. Implement adaptive routing
+1. **Collect Training Data:** Use Phase 1 to gather 1,000+ (query, Claude response) pairs
+2. **Train Router:** Neural network learns which queries had low divergence
+3. **Train Generator:** Distillation model learns to mimic Claude's responses
+4. **Train Validator:** Model learns to detect low-quality outputs
+5. **Deploy Models:** Replace templates with real inference
+6. **Measure Performance:** Track accuracy, forward rate, response quality
+
+**Training Approach:**
+- All models trained from scratch (no pre-trained weights)
+- Use collected Claude responses as training data
+- Generator learns via distillation (teacher = Claude)
+- Continuous learning from ongoing forwards
 
 ## How to Test
 

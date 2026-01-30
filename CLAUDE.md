@@ -35,43 +35,103 @@ Shammah acts as an intelligent proxy that:
 
 ## Architecture Overview
 
-### High-Level Design
+### High-Level Design: 3-Model Ensemble
+
+Shammah uses **three specialized neural networks** trained on your actual Claude usage:
 
 ```
 User Request
     ↓
-Router (decides: local or forward?)
+┌─────────────────────────────────────┐
+│ [1] Router Model (Small, ~1-3B)     │  Pre-generation decision
+│     "Can we handle this locally?"   │  Based on query features
+│     Confidence score: 0.0 - 1.0     │  <50ms inference
+└─────────────────────────────────────┘
     ↓
-    ├─→ Local Path (95%)
-    │   ├─→ Small model: classify intent
-    │   ├─→ Medium model: generate response
-    │   └─→ Constitutional validator: ensure safety/quality
+Confidence > threshold?
     │
-    └─→ Forward Path (5%)
-        ├─→ Send to Claude API
-        ├─→ Return response to user
-        └─→ Log for training (learn from this)
+    ├─ NO → Forward to Claude API (log for training)
+    │
+    └─ YES (try locally)
+         ↓
+    ┌─────────────────────────────────────┐
+    │ [2] Generator Model (Medium, ~7-13B)│  Produces response
+    │     Generates Claude-style response  │  Trained via distillation
+    │     Mimics Claude's patterns         │  ~500ms-2s inference
+    └─────────────────────────────────────┘
+         ↓
+    ┌─────────────────────────────────────┐
+    │ [3] Validator Model (Small, ~1-3B)  │  Post-generation quality gate
+    │     "Is this response good enough?"  │  Catches generator errors
+    │     Detects hallucinations/mistakes  │  <100ms inference
+    └─────────────────────────────────────┘
+         ↓
+    Response passes?
+         ├─ YES → Return to user
+         └─ NO → Forward to Claude (generator made mistake)
 ```
+
+**Key Insight:** All three models are **trained from scratch** on YOUR Claude usage data. They learn your specific query patterns and Claude's response style for your domain.
+
+### The Three Models Explained
+
+**1. Router Model (Classifier)**
+- **Purpose:** Quick pre-generation decision: "Should we try locally?"
+- **Input:** Query text + context features
+- **Output:** Confidence score (0.0 = must forward, 1.0 = can handle)
+- **Training:** Learns which queries had low divergence (handled well locally)
+- **Size:** 1-3B parameters for speed
+- **Runs on:** Apple Neural Engine (ultra-fast)
+
+**2. Generator Model (Response Producer)**
+- **Purpose:** Generate actual response mimicking Claude
+- **Input:** Query text + context
+- **Output:** Full response text
+- **Training:** Distillation from Claude's responses (learn query → response mapping)
+- **Size:** 7-13B parameters for quality
+- **Runs on:** Apple GPU (or Neural Engine with quantization)
+
+**3. Validator Model (Quality Gate)**
+- **Purpose:** Detect generator errors before returning to user
+- **Input:** Query + generated response
+- **Output:** Quality score + error flags (hallucination, off-topic, incoherent)
+- **Training:** Learns to detect divergence from Claude's quality
+- **Size:** 1-3B parameters for speed
+- **Runs on:** Apple Neural Engine
+
+### Why Three Models?
+
+**Efficiency:** Router is tiny and fast - can reject queries in <50ms without running expensive generator
+
+**Accuracy:** Generator specializes in response quality, validator catches its mistakes
+
+**Safety:** Two decision points (router + validator) prevent bad local responses from reaching users
 
 ### Core Components
 
 1. **Router** (`src/router/`)
-   - Decides whether to handle locally or forward
-   - Uses confidence scoring and complexity heuristics
-   - Tracks accuracy over time
+   - Phase 1: Pattern matching (placeholder)
+   - Phase 2+: Neural network classifier
+   - Tracks routing decisions and accuracy
 
-2. **Claude Client** (`src/claude/`)
+2. **Generator** (`src/models/generator/`)
+   - Phase 1: Template responses (placeholder)
+   - Phase 2+: Custom LLM trained on Claude responses
+   - Learns your specific usage patterns
+
+3. **Validator** (`src/models/validator/`)
+   - Phase 1: Crisis detection (partial implementation)
+   - Phase 2+: Quality assessment model
+   - Detects errors before returning to user
+
+4. **Claude Client** (`src/claude/`)
    - HTTP client for Claude API
-   - Handles authentication and streaming
-   - Logs requests/responses for training
+   - Logs all (query, response) pairs for training
+   - Handles streaming and retries
 
-3. **Local Ensemble** (`src/models/`)
-   - Small models: classification, intent detection
-   - Medium models: response generation
-   - Constitutional validator: safety checking
-
-4. **Learning Engine** (`src/learning/`)
-   - Processes Claude responses into training data
+5. **Learning Engine** (`src/learning/`)
+   - Phase 2+: Processes logged data into training sets
+   - Trains all three models
    - Retrains models periodically
    - Tracks performance metrics
 
@@ -83,12 +143,17 @@ Router (decides: local or forward?)
 ### Technology Stack
 
 - **Language**: Rust (memory safety, performance, Apple Silicon optimization)
-- **ML Framework**: CoreML (native Apple Neural Engine support)
-- **Models**:
-  - Small: ~1-3B parameter models (classification)
-  - Medium: ~7-13B parameter models (generation)
+- **ML Framework**:
+  - Phase 2: PyTorch/Candle for training custom models
+  - Phase 4: CoreML for inference (Apple Neural Engine)
+  - ONNX for cross-platform model format
+- **Models** (all trained from scratch on your data):
+  - Router: ~1-3B parameters (binary classifier)
+  - Generator: ~7-13B parameters (text generation)
+  - Validator: ~1-3B parameters (quality assessment)
+- **Training**: Distillation from Claude's responses
 - **API**: Compatible with Claude API format
-- **Storage**: Local filesystem (`~/.claude-proxy/`)
+- **Storage**: `~/.shammah/` for all data
 - **Async**: Tokio runtime
 - **HTTP**: Reqwest client
 - **CLI**: Clap for argument parsing
@@ -103,24 +168,25 @@ Router (decides: local or forward?)
 
 ### 2. Storage Location
 
-**Decision**: Store everything in `~/.claude-proxy/`
+**Decision**: Store everything in `~/.shammah/`
 **Rationale**:
+- Simple, single directory for all Shammah data
+- Traditional Unix convention (dot-directory in home)
 - Clear separation from Claude Code
 - User can easily find/delete data
-- Standard Unix convention for user data
 
 **Structure**:
 ```
-~/.claude-proxy/
-├── models/
-│   ├── classifier.mlmodel
-│   ├── generator-7b.mlmodel
-│   └── constitutional.mlmodel
-├── training/
-│   ├── requests.jsonl
-│   └── responses.jsonl
-├── config.toml
-└── stats.json
+~/.shammah/
+├── config.toml              # API key and settings
+├── metrics/                 # Daily JSONL logs for training
+│   ├── 2026-01-29.jsonl
+│   ├── 2026-01-30.jsonl
+│   └── ...
+└── models/                  # Phase 2+: trained models
+    ├── router.onnx
+    ├── generator.onnx
+    └── validator.onnx
 ```
 
 ### 3. Command Name
@@ -163,16 +229,43 @@ shammah query "What is the time complexity of quicksort?"
 4. Periodically retrain models
 5. Update router confidence thresholds
 
-### 6. Constitutional AI
+### 6. Training Strategy: Distillation from Claude
 
-**Decision**: Always validate local responses with constitutional principles
-**Rationale**: Maintain safety and quality even as we reduce API usage
+**Decision**: Train all models from scratch using Claude as the teacher
 
-**Principles** (from CONSTITUTIONAL_PROXY_SPEC.md):
-- Helpful: Response must address the query
-- Harmless: No harmful, illegal, or unethical content
-- Honest: Acknowledge uncertainty, don't make things up
-- Consistent: Style should match Claude's tone
+**How It Works:**
+1. Forward queries to Claude, log (query, response) pairs
+2. Collect 1000+ examples of your actual usage
+3. Train Router: "Which queries had low divergence when handled locally?"
+4. Train Generator: "Given query X, what would Claude say?" (distillation)
+5. Train Validator: "Is this response as good as Claude's?"
+6. Deploy models and continue learning from mistakes
+
+**Why Distillation:**
+- Models learn YOUR specific query patterns
+- Generator inherits Claude's quality and safety properties
+- No need for pre-trained models
+- Personalized to your domain/usage
+
+**Data Requirements:**
+- Phase 1: Collect 1000+ query/response pairs
+- Phase 2: Train initial models
+- Ongoing: Continuous learning from forwards
+
+### 7. Constitutional AI (Quality & Safety)
+
+**Decision**: Validator ensures local responses meet constitutional principles
+
+**Principles**:
+- **Helpful**: Response must address the query
+- **Harmless**: No harmful, illegal, or unethical content
+- **Honest**: Acknowledge uncertainty, don't make things up
+- **Consistent**: Style matches Claude's tone
+
+**Implementation:**
+- Validator model learns these from Claude's examples
+- Two decision points (Router + Validator) prevent bad responses
+- If either model is uncertain → forward to Claude
 
 ## Development Guidelines
 
@@ -255,29 +348,42 @@ This document is for helping AI assistants understand the project - it's a "map"
 
 ## Current Project Phase
 
-**Phase**: Pre-implementation (Phase 0)
-**Status**: Repository initialized, no functionality yet
-**Next Steps**:
-1. Implement basic proxy that forwards all requests
-2. Add logging infrastructure
-3. Build Claude API client
+**Phase**: Phase 1 MVP Complete ✅
+**Status**: Infrastructure working, collecting training data
+**Next Steps**: Collect 1000+ queries, then begin Phase 2 (train actual models)
 
-### What's Done
+### What's Done (Phase 1)
 
-- ✅ Repository structure created
-- ✅ Cargo.toml with dependencies
-- ✅ Documentation files (CLAUDE.md, README.md, ARCHITECTURE.md, etc.)
-- ✅ Placeholder source files
-- ✅ License and .gitignore
+- ✅ **Router (placeholder):** Pattern matching with TF-IDF demonstrates routing concept
+- ✅ **Generator (placeholder):** Template responses for 10 patterns demonstrate local processing
+- ✅ **Validator (partial):** Crisis detection demonstrates safety checking
+- ✅ **Claude API Client:** Full integration with retry logic
+- ✅ **Metrics Logger:** Collects (query, response, routing) data for Phase 2 training
+- ✅ **CLI/REPL:** Interactive interface with commands
+- ✅ **Tests:** 14/14 passing (9 unit + 5 integration)
 
-### What's NOT Done Yet
+**Current Performance:**
+- 20-30% "local" rate (templates, not real models yet)
+- 100% crisis detection
+- Ready to collect real training data
 
-- ❌ No actual functionality
-- ❌ No API client implementation
-- ❌ No routing logic
-- ❌ No models
+### Understanding Phase 1 Templates
+
+The current pattern matching and template responses are **placeholders** demonstrating the 3-model architecture:
+
+- **Pattern matching** → Will become Router Model (neural network)
+- **Template responses** → Will become Generator Model (custom LLM)
+- **Crisis detection** → Will become Validator Model (quality gate)
+
+They prove the infrastructure works while collecting training data for real models in Phase 2.
+
+### What's NOT Done Yet (Phase 2+)
+
+- ❌ No actual neural networks (using templates)
+- ❌ No model training (need to collect data first)
+- ❌ No uncertainty estimation
 - ❌ No learning engine
-- ❌ No tests
+- ❌ No Apple Neural Engine optimization
 
 ## Working with This Project
 

@@ -39,7 +39,7 @@ impl Repl {
 
     pub async fn run(&self) -> Result<()> {
         println!("Shammah v0.1.0 - Constitutional AI Proxy (Phase 1 MVP)");
-        println!("Using API key from: ~/.claude/settings.json ✓");
+        println!("Using API key from: ~/.shammah/config.toml ✓");
         println!(
             "Loaded {} constitutional patterns ✓",
             self.pattern_library.patterns.len()

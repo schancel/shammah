@@ -1,27 +1,15 @@
 // Configuration loader
-// Loads API key from ~/.claude/settings.json or environment variable
+// Loads API key from ~/.shammah/config.toml or environment variable
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
 use std::fs;
 
 use super::settings::Config;
 
-#[derive(Debug, Deserialize)]
-struct ClaudeSettings {
-    env: Option<ClaudeEnv>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ClaudeEnv {
-    #[serde(rename = "ANTHROPIC_API_KEY")]
-    anthropic_api_key: Option<String>,
-}
-
-/// Load configuration from Claude Code settings or environment
+/// Load configuration from Shammah config file or environment
 pub fn load_config() -> Result<Config> {
-    // Try loading from ~/.claude/settings.json first
-    if let Some(api_key) = try_load_from_claude_settings()? {
+    // Try loading from ~/.shammah/config.toml first
+    if let Some(api_key) = try_load_from_shammah_config()? {
         return Ok(Config::new(api_key));
     }
 
@@ -36,31 +24,39 @@ pub fn load_config() -> Result<Config> {
     bail!(
         "Claude API key not found\n\n\
         Checked locations:\n\
-        1. ~/.claude/settings.json (env.ANTHROPIC_API_KEY)\n\
+        1. ~/.shammah/config.toml\n\
         2. Environment variable: $ANTHROPIC_API_KEY\n\n\
         Please set your API key in one of these locations.\n\n\
         Quick setup:\n\
-        export ANTHROPIC_API_KEY=\"sk-ant-...\"\n\n\
-        Or configure Claude Code:\n\
-        https://docs.anthropic.com/en/docs/claude-code"
+        mkdir -p ~/.shammah\n\
+        echo 'api_key = \"sk-ant-...\"' > ~/.shammah/config.toml\n\n\
+        Or use environment variable:\n\
+        export ANTHROPIC_API_KEY=\"sk-ant-...\""
     );
 }
 
-fn try_load_from_claude_settings() -> Result<Option<String>> {
+fn try_load_from_shammah_config() -> Result<Option<String>> {
     let home = dirs::home_dir().context("Could not determine home directory")?;
-    let settings_path = home.join(".claude/settings.json");
+    let config_path = home.join(".shammah/config.toml");
 
-    if !settings_path.exists() {
+    if !config_path.exists() {
         return Ok(None);
     }
 
-    let contents = fs::read_to_string(&settings_path)
-        .with_context(|| format!("Failed to read {}", settings_path.display()))?;
+    let contents = fs::read_to_string(&config_path)
+        .with_context(|| format!("Failed to read {}", config_path.display()))?;
 
-    let settings: ClaudeSettings =
-        serde_json::from_str(&contents).context("Failed to parse Claude settings.json")?;
+    // Parse TOML
+    let config: toml::Value = toml::from_str(&contents)
+        .context("Failed to parse config.toml")?;
 
-    Ok(settings.env.and_then(|env| env.anthropic_api_key))
+    // Extract api_key
+    let api_key = config
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    Ok(api_key)
 }
 
 #[cfg(test)]

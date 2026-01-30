@@ -29,7 +29,7 @@ impl Config {
             api_key,
             patterns_path: project_dir.join("data/patterns.json"),
             crisis_keywords_path: project_dir.join("data/crisis_keywords.json"),
-            metrics_dir: home.join(".local/share/shammah/metrics"),
+            metrics_dir: home.join(".shammah/metrics"),
             similarity_threshold: 0.2,
         }
     }
