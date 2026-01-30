@@ -12,6 +12,9 @@ pub struct Config {
 
     /// Directory for metrics storage
     pub metrics_dir: PathBuf,
+
+    /// Enable streaming responses (default: true)
+    pub streaming_enabled: bool,
 }
 
 impl Config {
@@ -23,6 +26,7 @@ impl Config {
             api_key,
             crisis_keywords_path: project_dir.join("data/crisis_keywords.json"),
             metrics_dir: home.join(".shammah/metrics"),
+            streaming_enabled: true, // Enable by default
         }
     }
 }

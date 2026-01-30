@@ -3,7 +3,9 @@
 
 mod client;
 mod retry;
+mod streaming;
 mod types;
 
 pub use client::ClaudeClient;
+pub use streaming::{StreamDelta, StreamEvent};
 pub use types::{ContentBlock, Message, MessageRequest, MessageResponse};

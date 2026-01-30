@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::mpsc;
 
 use crate::claude::{ClaudeClient, MessageRequest};
 use crate::config::Config;
@@ -99,6 +100,7 @@ pub struct Repl {
     tool_executor: ToolExecutor,
     // UI state
     is_interactive: bool,
+    streaming_enabled: bool,
     // Readline input handler
     input_handler: Option<InputHandler>,
     // Conversation history
@@ -157,6 +159,8 @@ impl Repl {
             );
         }
 
+        let streaming_enabled = config.streaming_enabled;
+
         Self {
             _config: config,
             claude_client,
@@ -168,6 +172,7 @@ impl Repl {
             models_dir,
             tool_executor,
             is_interactive,
+            streaming_enabled,
             input_handler,
             conversation: ConversationHistory::new(),
         }
@@ -324,6 +329,42 @@ impl Repl {
         }
 
         Ok(current_response.text())
+    }
+
+    /// Display streaming response character-by-character
+    async fn display_streaming_response(
+        &mut self,
+        mut rx: mpsc::Receiver<Result<String>>,
+    ) -> Result<String> {
+        let mut full_response = String::new();
+        let mut stdout = io::stdout();
+
+        // Print newline to start response area
+        if self.is_interactive {
+            println!();
+        }
+
+        while let Some(result) = rx.recv().await {
+            match result {
+                Ok(text_chunk) => {
+                    // Print chunk immediately
+                    print!("{}", text_chunk);
+                    stdout.flush()?;
+
+                    full_response.push_str(&text_chunk);
+                }
+                Err(e) => {
+                    return Err(e);
+                }
+            }
+        }
+
+        // Final newline after response
+        if self.is_interactive {
+            println!();
+        }
+
+        Ok(full_response)
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -633,18 +674,32 @@ impl Repl {
                 // Use full conversation context with tool definitions
                 let request = MessageRequest::with_context(self.conversation.get_messages())
                     .with_tools(create_tool_definitions());
-                let response = self.claude_client.send_message(&request).await?;
 
-                let elapsed = start_time.elapsed().as_millis();
-                if self.is_interactive {
-                    println!("✓ Received response ({}ms)", elapsed);
-                }
+                // Use streaming if enabled and in interactive mode
+                // (For first version, disable streaming when tools might be used)
+                if self.streaming_enabled && self.is_interactive {
+                    // Try streaming first
+                    let rx = self.claude_client.send_message_stream(&request).await?;
+                    claude_response = self.display_streaming_response(rx).await?;
 
-                // Check for tool uses and execute them
-                if response.has_tool_uses() {
-                    claude_response = self.execute_tool_loop(response).await?;
+                    // Note: Streaming doesn't detect tool uses yet
+                    // If Claude returns tool use in stream, we'd need to re-parse
+                    // For now, streaming is best for simple queries without tools
                 } else {
-                    claude_response = response.text();
+                    // Use non-streaming (supports tool use detection)
+                    let response = self.claude_client.send_message(&request).await?;
+
+                    let elapsed = start_time.elapsed().as_millis();
+                    if self.is_interactive {
+                        println!("✓ Received response ({}ms)", elapsed);
+                    }
+
+                    // Check for tool uses and execute them
+                    if response.has_tool_uses() {
+                        claude_response = self.execute_tool_loop(response).await?;
+                    } else {
+                        claude_response = response.text();
+                    }
                 }
                 routing_decision_str = "forward".to_string();
                 forward_reason = Some(reason.as_str().to_string());
