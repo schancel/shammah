@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use candle_core::{DType, Device, IndexOp, Module, Tensor};
-use candle_nn::{embedding, linear, Embedding, Linear, Optimizer, VarBuilder, VarMap};
+use candle_nn::{embedding, linear, Embedding, Linear, VarBuilder, VarMap};
 use std::path::Path;
 
 use super::common::{get_device, ModelConfig, Saveable};
