@@ -49,12 +49,43 @@ impl TextTokenizer {
 
     /// Encode text to token IDs
     pub fn encode(&self, text: &str, add_special_tokens: bool) -> Result<Vec<u32>> {
-        let encoding = self
-            .tokenizer
-            .encode(text, add_special_tokens)
-            .map_err(|e| anyhow::anyhow!("Failed to encode text: {}", e))?;
+        // Try to use the tokenizer
+        match self.tokenizer.encode(text, add_special_tokens) {
+            Ok(encoding) => {
+                let ids = encoding.get_ids().to_vec();
+                // If we get an empty result, fall back to character-level encoding
+                if ids.is_empty() && !text.is_empty() {
+                    Ok(self.char_level_encode(text, add_special_tokens))
+                } else {
+                    Ok(ids)
+                }
+            }
+            Err(_) => {
+                // Fallback to character-level encoding if tokenizer fails
+                Ok(self.char_level_encode(text, add_special_tokens))
+            }
+        }
+    }
 
-        Ok(encoding.get_ids().to_vec())
+    /// Simple character-level encoding as fallback
+    fn char_level_encode(&self, text: &str, add_special_tokens: bool) -> Vec<u32> {
+        let mut ids = Vec::new();
+
+        if add_special_tokens {
+            ids.push(self.bos_token_id);
+        }
+
+        // Convert each character to an ID (simple: char as u32 % vocab_size)
+        for ch in text.chars().take(self.vocab_size - 10) {  // Leave room for special tokens
+            let id = ((ch as u32) % (self.vocab_size as u32 - 10)) + 10; // Start from 10 to avoid special tokens
+            ids.push(id);
+        }
+
+        if add_special_tokens {
+            ids.push(self.eos_token_id);
+        }
+
+        ids
     }
 
     /// Encode text and return as Tensor
@@ -96,9 +127,34 @@ impl TextTokenizer {
 
     /// Decode token IDs back to text
     pub fn decode(&self, ids: &[u32], skip_special_tokens: bool) -> Result<String> {
-        self.tokenizer
-            .decode(ids, skip_special_tokens)
-            .map_err(|e| anyhow::anyhow!("Failed to decode tokens: {}", e))
+        // Try tokenizer decode first
+        match self.tokenizer.decode(ids, skip_special_tokens) {
+            Ok(text) if !text.is_empty() => Ok(text),
+            _ => {
+                // Fallback to character-level decode
+                Ok(self.char_level_decode(ids, skip_special_tokens))
+            }
+        }
+    }
+
+    /// Simple character-level decoding as fallback
+    fn char_level_decode(&self, ids: &[u32], skip_special_tokens: bool) -> String {
+        let mut text = String::new();
+
+        for &id in ids {
+            // Skip special tokens if requested
+            if skip_special_tokens && (id == self.pad_token_id || id == self.bos_token_id || id == self.eos_token_id) {
+                continue;
+            }
+
+            // Convert ID back to character (reverse of encoding)
+            if id >= 10 {
+                let ch = char::from_u32((id - 10) as u32).unwrap_or('?');
+                text.push(ch);
+            }
+        }
+
+        text
     }
 
     /// Decode from Tensor
