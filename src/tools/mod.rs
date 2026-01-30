@@ -10,7 +10,7 @@ pub mod permissions;
 pub mod registry;
 pub mod types;
 
-pub use executor::ToolExecutor;
+pub use executor::{generate_tool_signature, ToolExecutor, ToolSignature};
 pub use pattern_matcher::ToolPatternMatcher;
 pub use permissions::{PermissionCheck, PermissionManager, PermissionRule};
 pub use registry::{Tool, ToolRegistry};

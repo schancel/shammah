@@ -19,15 +19,23 @@ use crate::config::Config;
 use crate::metrics::{MetricsLogger, RequestMetric, ResponseComparison, TrainingTrends};
 use crate::models::{ThresholdRouter, ThresholdValidator};
 use crate::router::{ForwardReason, RouteDecision, Router};
+use crate::tools::executor::{generate_tool_signature, ToolSignature};
 use crate::tools::implementations::{
     BashTool, GlobTool, GrepTool, ReadTool, SaveAndExecTool, WebFetchTool,
 };
-use crate::tools::types::{ToolDefinition, ToolInputSchema};
+use crate::tools::types::{ToolDefinition, ToolInputSchema, ToolUse};
 use crate::tools::{PermissionManager, PermissionRule, ToolExecutor, ToolRegistry};
 
 use super::commands::{handle_command, Command};
 use super::conversation::ConversationHistory;
 use super::input::InputHandler;
+
+/// Result of a tool execution confirmation prompt
+pub enum ConfirmationResult {
+    ApproveOnce,
+    ApproveAndRemember(ToolSignature),
+    Deny,
+}
 
 /// Get current terminal width, or default to 80 if not a TTY
 fn terminal_width() -> usize {
@@ -313,6 +321,44 @@ impl Repl {
             for tool_use in &tool_uses {
                 if self.is_interactive {
                     println!("  → {}", tool_use.name);
+                }
+
+                // Generate tool signature for approval checking
+                let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                let signature = generate_tool_signature(tool_use, &working_dir);
+
+                // Check if pre-approved in cache
+                if !self.tool_executor.is_pre_approved(&signature) && self.is_interactive {
+                    // Prompt for confirmation
+                    match self.confirm_tool_execution(tool_use, &signature)? {
+                        ConfirmationResult::ApproveOnce => {
+                            // Continue with execution
+                            if self.is_interactive {
+                                println!("  ✓ Approved");
+                            }
+                        }
+                        ConfirmationResult::ApproveAndRemember(sig) => {
+                            // Add to cache and continue
+                            self.tool_executor.add_approval(sig);
+                            if self.is_interactive {
+                                println!("  ✓ Approved (won't ask again this session)");
+                            }
+                        }
+                        ConfirmationResult::Deny => {
+                            // Skip this tool
+                            use crate::tools::types::ToolResult;
+                            let error_result = ToolResult::error(
+                                tool_use.id.clone(),
+                                "Tool execution denied by user".to_string(),
+                            );
+                            tool_results.push(error_result);
+
+                            if self.is_interactive {
+                                println!("    ✗ Denied by user");
+                            }
+                            continue; // Skip to next tool
+                        }
+                    }
                 }
 
                 // Create save function that captures necessary state
@@ -669,6 +715,118 @@ impl Repl {
     fn print_separator(&self) {
         let width = terminal_width();
         println!("{}", "─".repeat(width));
+    }
+
+    /// Prompt user to confirm tool execution
+    fn confirm_tool_execution(
+        &mut self,
+        tool_use: &ToolUse,
+        signature: &ToolSignature,
+    ) -> Result<ConfirmationResult> {
+        // Display tool information
+        println!();
+        println!("  Tool Execution Request:");
+        println!("  ─────────────────────────");
+        println!("  Tool: {}", tool_use.name);
+
+        // Show relevant parameters
+        self.display_tool_params(tool_use);
+
+        println!();
+        println!("  Do you want to proceed?");
+        println!("  ❯ 1. Yes");
+        println!(
+            "    2. Yes, and don't ask again for {}",
+            signature.context_key
+        );
+        println!("    3. No");
+        println!();
+
+        // Get user input
+        loop {
+            let input = if let Some(ref mut handler) = self.input_handler {
+                handler.read_line("  Choice [1-3]: ")?
+            } else {
+                // Fallback for non-interactive
+                print!("  Choice [1-3]: ");
+                io::stdout().flush()?;
+                let mut line = String::new();
+                io::stdin().read_line(&mut line)?;
+                Some(line.trim().to_string())
+            };
+
+            match input.as_deref() {
+                Some("1") | Some("y") | Some("yes") => {
+                    return Ok(ConfirmationResult::ApproveOnce);
+                }
+                Some("2") => {
+                    return Ok(ConfirmationResult::ApproveAndRemember(signature.clone()));
+                }
+                Some("3") | Some("n") | Some("no") => {
+                    return Ok(ConfirmationResult::Deny);
+                }
+                Some("") | None => {
+                    // Ctrl+C or Ctrl+D - treat as deny
+                    return Ok(ConfirmationResult::Deny);
+                }
+                _ => {
+                    println!("  Invalid choice. Please enter 1, 2, or 3.");
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Display tool parameters in user-friendly format
+    fn display_tool_params(&self, tool_use: &ToolUse) {
+        match tool_use.name.as_str() {
+            "bash" => {
+                if let Some(command) = tool_use.input["command"].as_str() {
+                    println!("  Command: {}", command);
+                }
+                if let Some(desc) = tool_use.input.get("description").and_then(|v| v.as_str()) {
+                    println!("  Description: {}", desc);
+                }
+            }
+            "read" => {
+                if let Some(path) = tool_use.input["file_path"].as_str() {
+                    println!("  File: {}", path);
+                }
+            }
+            "web_fetch" => {
+                if let Some(url) = tool_use.input["url"].as_str() {
+                    println!("  URL: {}", url);
+                }
+                if let Some(prompt) = tool_use.input.get("prompt").and_then(|v| v.as_str()) {
+                    println!("  Prompt: {}", prompt);
+                }
+            }
+            "grep" => {
+                if let Some(pattern) = tool_use.input["pattern"].as_str() {
+                    println!("  Pattern: {}", pattern);
+                }
+                if let Some(path) = tool_use.input.get("path").and_then(|v| v.as_str()) {
+                    println!("  Path: {}", path);
+                }
+            }
+            "glob" => {
+                if let Some(pattern) = tool_use.input["pattern"].as_str() {
+                    println!("  Pattern: {}", pattern);
+                }
+            }
+            "save_and_exec" => {
+                if let Some(command) = tool_use.input["command"].as_str() {
+                    println!("  Command: {}", command);
+                }
+                if let Some(reason) = tool_use.input.get("reason").and_then(|v| v.as_str()) {
+                    println!("  Reason: {}", reason);
+                }
+            }
+            _ => {
+                // Generic display for unknown tools
+                println!("  Input: {}", tool_use.input);
+            }
+        }
     }
 
     /// Print training status below the prompt (only in interactive mode)
