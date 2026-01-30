@@ -1,12 +1,29 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
 use super::executor::ToolSignature;
 
-/// A pattern that can match multiple tool signatures using wildcards
+/// Type of pattern matching to use
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PatternType {
+    /// Wildcard matching with * and **
+    Wildcard,
+    /// Regular expression matching
+    Regex,
+}
+
+impl Default for PatternType {
+    fn default() -> Self {
+        PatternType::Wildcard
+    }
+}
+
+/// A pattern that can match multiple tool signatures using wildcards or regex
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolPattern {
     pub id: String,
@@ -15,11 +32,36 @@ pub struct ToolPattern {
     pub description: String,
     pub created_at: DateTime<Utc>,
     pub match_count: u64,
+    #[serde(default)]
+    pub pattern_type: PatternType,
+    #[serde(default)]
+    pub last_used: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub created_by: Option<String>,
+    /// Compiled regex (not serialized, rebuilt on load)
+    #[serde(skip)]
+    compiled_regex: Option<Regex>,
 }
 
 impl ToolPattern {
-    /// Create a new pattern
+    /// Create a new pattern with wildcard matching (default)
     pub fn new(pattern: String, tool_name: String, description: String) -> Self {
+        Self::new_with_type(pattern, tool_name, description, PatternType::Wildcard)
+    }
+
+    /// Create a new pattern with explicit pattern type
+    pub fn new_with_type(
+        pattern: String,
+        tool_name: String,
+        description: String,
+        pattern_type: PatternType,
+    ) -> Self {
+        let compiled_regex = if pattern_type == PatternType::Regex {
+            Regex::new(&pattern).ok()
+        } else {
+            None
+        };
+
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             pattern,
@@ -27,6 +69,26 @@ impl ToolPattern {
             description,
             created_at: Utc::now(),
             match_count: 0,
+            pattern_type,
+            last_used: None,
+            created_by: None,
+            compiled_regex,
+        }
+    }
+
+    /// Validate the pattern (check if regex compiles, etc.)
+    pub fn validate(&self) -> Result<()> {
+        match self.pattern_type {
+            PatternType::Wildcard => {
+                // Wildcards are always valid
+                Ok(())
+            }
+            PatternType::Regex => {
+                // Try to compile regex
+                Regex::new(&self.pattern)
+                    .with_context(|| format!("Invalid regex pattern: {}", self.pattern))?;
+                Ok(())
+            }
         }
     }
 
@@ -37,13 +99,39 @@ impl ToolPattern {
             return false;
         }
 
-        // Match pattern against context_key
-        pattern_matches(&self.pattern, &signature.context_key)
+        // Match pattern against context_key based on type
+        match self.pattern_type {
+            PatternType::Wildcard => pattern_matches(&self.pattern, &signature.context_key),
+            PatternType::Regex => {
+                // Use compiled regex if available, otherwise compile on demand
+                if let Some(ref regex) = self.compiled_regex {
+                    regex.is_match(&signature.context_key)
+                } else if let Ok(regex) = Regex::new(&self.pattern) {
+                    regex.is_match(&signature.context_key)
+                } else {
+                    false
+                }
+            }
+        }
     }
 
-    /// Increment match count
-    pub fn increment_match(&mut self) {
+    /// Record a match (increment count and update last_used timestamp)
+    pub fn record_match(&mut self) {
         self.match_count += 1;
+        self.last_used = Some(Utc::now());
+    }
+
+    /// Increment match count (deprecated, use record_match instead)
+    #[deprecated(note = "Use record_match() instead")]
+    pub fn increment_match(&mut self) {
+        self.record_match();
+    }
+
+    /// Ensure compiled regex is available (call after deserialization)
+    fn ensure_compiled_regex(&mut self) {
+        if self.pattern_type == PatternType::Regex && self.compiled_regex.is_none() {
+            self.compiled_regex = Regex::new(&self.pattern).ok();
+        }
     }
 }
 
@@ -98,7 +186,7 @@ pub struct PersistentPatternStore {
 impl Default for PersistentPatternStore {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             patterns: Vec::new(),
             exact_approvals: Vec::new(),
         }
@@ -106,13 +194,25 @@ impl Default for PersistentPatternStore {
 }
 
 impl PersistentPatternStore {
-    /// Load from JSON file
+    /// Load from JSON file (with automatic v1→v2 migration)
     pub fn load(path: &Path) -> Result<Self> {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("Failed to read patterns from {}", path.display()))?;
 
-        let store: Self =
+        let mut store: Self =
             serde_json::from_str(&contents).context("Failed to parse patterns JSON")?;
+
+        // Migrate from v1 to v2 if needed
+        if store.version == 1 {
+            store.version = 2;
+            // All patterns get default values (PatternType::Wildcard, etc.)
+            // These are already applied by serde's #[serde(default)]
+        }
+
+        // Ensure all regex patterns have compiled regex
+        for pattern in &mut store.patterns {
+            pattern.ensure_compiled_regex();
+        }
 
         Ok(store)
     }
@@ -204,7 +304,7 @@ impl PersistentPatternStore {
         // Return most specific match
         if let Some((index, _)) = matches.first() {
             let pattern = &mut self.patterns[*index];
-            pattern.increment_match();
+            pattern.record_match();
             return Some(MatchType::Pattern(pattern.id.clone()));
         }
 
@@ -224,6 +324,16 @@ impl PersistentPatternStore {
     /// Get exact approval by ID
     pub fn get_exact(&self, id: &str) -> Option<&ExactApproval> {
         self.exact_approvals.iter().find(|a| a.id == id)
+    }
+
+    /// Find pattern by ID (returns index)
+    pub fn find_by_id(&self, id: &str) -> Option<usize> {
+        self.patterns.iter().position(|p| p.id == id)
+    }
+
+    /// Find pattern by ID (returns mutable reference)
+    pub fn find_by_id_mut(&mut self, id: &str) -> Option<&mut ToolPattern> {
+        self.patterns.iter_mut().find(|p| p.id == id)
     }
 
     /// Get total number of patterns and approvals
@@ -479,7 +589,6 @@ mod tests {
             "bash".to_string(),
             "General".to_string(),
         );
-        let general_id = general.id.clone();
         store.add_pattern(general);
 
         // Add specific pattern
@@ -503,5 +612,262 @@ mod tests {
         } else {
             panic!("Expected pattern match");
         }
+    }
+
+    #[test]
+    fn test_regex_pattern_basic() {
+        let pattern = ToolPattern::new_with_type(
+            r"^cargo (test|build)$".to_string(),
+            "bash".to_string(),
+            "Regex pattern".to_string(),
+            PatternType::Regex,
+        );
+
+        let sig1 = ToolSignature {
+            tool_name: "bash".to_string(),
+            context_key: "cargo test".to_string(),
+        };
+
+        let sig2 = ToolSignature {
+            tool_name: "bash".to_string(),
+            context_key: "cargo build".to_string(),
+        };
+
+        let sig3 = ToolSignature {
+            tool_name: "bash".to_string(),
+            context_key: "cargo run".to_string(),
+        };
+
+        assert!(pattern.matches(&sig1));
+        assert!(pattern.matches(&sig2));
+        assert!(!pattern.matches(&sig3));
+    }
+
+    #[test]
+    fn test_regex_pattern_complex() {
+        let pattern = ToolPattern::new_with_type(
+            r"reading /project/src/.*\.rs$".to_string(),
+            "read".to_string(),
+            "Match Rust source files".to_string(),
+            PatternType::Regex,
+        );
+
+        let sig1 = ToolSignature {
+            tool_name: "read".to_string(),
+            context_key: "reading /project/src/main.rs".to_string(),
+        };
+
+        let sig2 = ToolSignature {
+            tool_name: "read".to_string(),
+            context_key: "reading /project/src/lib.rs".to_string(),
+        };
+
+        let sig3 = ToolSignature {
+            tool_name: "read".to_string(),
+            context_key: "reading /project/src/test.txt".to_string(),
+        };
+
+        assert!(pattern.matches(&sig1));
+        assert!(pattern.matches(&sig2));
+        assert!(!pattern.matches(&sig3));
+    }
+
+    #[test]
+    fn test_pattern_validation() {
+        // Valid wildcard pattern
+        let wildcard = ToolPattern::new(
+            "cargo * in *".to_string(),
+            "bash".to_string(),
+            "Test".to_string(),
+        );
+        assert!(wildcard.validate().is_ok());
+
+        // Valid regex pattern
+        let valid_regex = ToolPattern::new_with_type(
+            r"^test\d+$".to_string(),
+            "bash".to_string(),
+            "Test".to_string(),
+            PatternType::Regex,
+        );
+        assert!(valid_regex.validate().is_ok());
+
+        // Invalid regex pattern
+        let invalid_regex = ToolPattern::new_with_type(
+            r"^test[".to_string(), // Unclosed bracket
+            "bash".to_string(),
+            "Test".to_string(),
+            PatternType::Regex,
+        );
+        assert!(invalid_regex.validate().is_err());
+    }
+
+    #[test]
+    fn test_record_match_updates_timestamp() {
+        let mut pattern = ToolPattern::new(
+            "cargo *".to_string(),
+            "bash".to_string(),
+            "Test".to_string(),
+        );
+
+        assert_eq!(pattern.match_count, 0);
+        assert!(pattern.last_used.is_none());
+
+        pattern.record_match();
+
+        assert_eq!(pattern.match_count, 1);
+        assert!(pattern.last_used.is_some());
+
+        let first_timestamp = pattern.last_used.unwrap();
+
+        // Wait a bit and record another match
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        pattern.record_match();
+
+        assert_eq!(pattern.match_count, 2);
+        assert!(pattern.last_used.unwrap() > first_timestamp);
+    }
+
+    #[test]
+    fn test_find_by_id() {
+        let mut store = PersistentPatternStore::default();
+
+        let pattern1 = ToolPattern::new(
+            "pattern1".to_string(),
+            "bash".to_string(),
+            "Test1".to_string(),
+        );
+        let id1 = pattern1.id.clone();
+
+        let pattern2 = ToolPattern::new(
+            "pattern2".to_string(),
+            "bash".to_string(),
+            "Test2".to_string(),
+        );
+        let id2 = pattern2.id.clone();
+
+        store.add_pattern(pattern1);
+        store.add_pattern(pattern2);
+
+        assert_eq!(store.find_by_id(&id1), Some(0));
+        assert_eq!(store.find_by_id(&id2), Some(1));
+        assert_eq!(store.find_by_id("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_find_by_id_mut() {
+        let mut store = PersistentPatternStore::default();
+
+        let pattern = ToolPattern::new(
+            "pattern1".to_string(),
+            "bash".to_string(),
+            "Test".to_string(),
+        );
+        let id = pattern.id.clone();
+        store.add_pattern(pattern);
+
+        if let Some(p) = store.find_by_id_mut(&id) {
+            p.description = "Updated description".to_string();
+        }
+
+        assert_eq!(
+            store.get_pattern(&id).unwrap().description,
+            "Updated description"
+        );
+    }
+
+    #[test]
+    fn test_migration_v1_to_v2() {
+        use tempfile::NamedTempFile;
+
+        // Create a v1 format JSON file
+        let v1_json = r#"{
+            "version": 1,
+            "patterns": [
+                {
+                    "id": "test-id",
+                    "pattern": "cargo *",
+                    "tool_name": "bash",
+                    "description": "Test pattern",
+                    "created_at": "2026-01-30T12:00:00Z",
+                    "match_count": 5
+                }
+            ],
+            "exact_approvals": []
+        }"#;
+
+        let temp_file = NamedTempFile::new().unwrap();
+        std::fs::write(temp_file.path(), v1_json).unwrap();
+
+        // Load should automatically migrate to v2
+        let store = PersistentPatternStore::load(temp_file.path()).unwrap();
+
+        assert_eq!(store.version, 2);
+        assert_eq!(store.patterns.len(), 1);
+
+        let pattern = &store.patterns[0];
+        assert_eq!(pattern.id, "test-id");
+        assert_eq!(pattern.pattern_type, PatternType::Wildcard);
+        assert!(pattern.last_used.is_none());
+        assert!(pattern.created_by.is_none());
+        assert_eq!(pattern.match_count, 5);
+    }
+
+    #[test]
+    fn test_regex_pattern_serialization() {
+        use tempfile::NamedTempFile;
+
+        let mut store = PersistentPatternStore::default();
+
+        let pattern = ToolPattern::new_with_type(
+            r"^test\d+$".to_string(),
+            "bash".to_string(),
+            "Regex pattern".to_string(),
+            PatternType::Regex,
+        );
+        let pattern_id = pattern.id.clone();
+        store.add_pattern(pattern);
+
+        let temp_file = NamedTempFile::new().unwrap();
+        store.save(temp_file.path()).unwrap();
+
+        // Load and verify regex pattern works
+        let mut loaded_store = PersistentPatternStore::load(temp_file.path()).unwrap();
+
+        let sig1 = ToolSignature {
+            tool_name: "bash".to_string(),
+            context_key: "test123".to_string(),
+        };
+
+        let sig2 = ToolSignature {
+            tool_name: "bash".to_string(),
+            context_key: "testABC".to_string(),
+        };
+
+        // Should match test123 but not testABC
+        let result1 = loaded_store.matches(&sig1);
+        assert!(matches!(result1, Some(MatchType::Pattern(_))));
+
+        let result2 = loaded_store.matches(&sig2);
+        assert!(result2.is_none());
+
+        // Verify the pattern still exists after matching
+        let loaded_pattern = loaded_store.get_pattern(&pattern_id).unwrap();
+        assert_eq!(loaded_pattern.pattern_type, PatternType::Regex);
+        assert_eq!(loaded_pattern.match_count, 1); // Incremented by matches()
+    }
+
+    #[test]
+    fn test_created_by_field() {
+        let mut pattern = ToolPattern::new_with_type(
+            "test".to_string(),
+            "bash".to_string(),
+            "Test".to_string(),
+            PatternType::Wildcard,
+        );
+
+        assert!(pattern.created_by.is_none());
+
+        pattern.created_by = Some("user@example.com".to_string());
+        assert_eq!(pattern.created_by.as_deref(), Some("user@example.com"));
     }
 }

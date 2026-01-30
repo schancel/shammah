@@ -736,6 +736,26 @@ impl Repl {
                         }
                         continue;
                     }
+                    Command::PatternsList => {
+                        let output = self.list_patterns()?;
+                        println!("{}", output);
+                        continue;
+                    }
+                    Command::PatternsRemove(ref id) => {
+                        let output = self.remove_pattern(id)?;
+                        println!("{}", output);
+                        continue;
+                    }
+                    Command::PatternsClear => {
+                        let output = self.clear_patterns()?;
+                        println!("{}", output);
+                        continue;
+                    }
+                    Command::PatternsAdd => {
+                        let output = self.add_pattern_interactive()?;
+                        println!("{}", output);
+                        continue;
+                    }
                     _ => {
                         let output = handle_command(
                             command,
@@ -1016,6 +1036,361 @@ impl Repl {
                 println!("  Input: {}", tool_use.input);
             }
         }
+    }
+
+    // ============================================================================
+    // Pattern Management Methods (Phase 3)
+    // ============================================================================
+
+    /// Format a duration as a human-readable string
+    fn format_duration(duration: chrono::Duration) -> String {
+        if duration.num_seconds() < 60 {
+            format!("{}s ago", duration.num_seconds())
+        } else if duration.num_minutes() < 60 {
+            format!("{}m ago", duration.num_minutes())
+        } else if duration.num_hours() < 24 {
+            format!("{}h ago", duration.num_hours())
+        } else {
+            format!("{}d ago", duration.num_days())
+        }
+    }
+
+    /// List all confirmation patterns
+    pub fn list_patterns(&self) -> Result<String> {
+        let store = self.tool_executor.persistent_store();
+        let mut output = String::new();
+
+        output.push_str("Confirmation Patterns\n");
+        output.push_str("=====================\n\n");
+
+        // Show patterns
+        if store.patterns.is_empty() {
+            output.push_str("No patterns configured.\n\n");
+        } else {
+            output.push_str("Patterns:\n");
+            for pattern in &store.patterns {
+                let now = chrono::Utc::now();
+                let last_used_str = if let Some(last_used) = pattern.last_used {
+                    let duration = now - last_used;
+                    Self::format_duration(duration)
+                } else {
+                    "never".to_string()
+                };
+
+                let type_str = match pattern.pattern_type {
+                    crate::tools::patterns::PatternType::Wildcard => "wildcard",
+                    crate::tools::patterns::PatternType::Regex => "regex",
+                };
+                output.push_str(&format!(
+                    "  {} ({})\n",
+                    &pattern.id[..8.min(pattern.id.len())],
+                    type_str
+                ));
+                output.push_str(&format!("    Tool: {}\n", pattern.tool_name));
+                output.push_str(&format!("    Pattern: {}\n", pattern.pattern));
+                output.push_str(&format!("    Description: {}\n", pattern.description));
+                output.push_str(&format!(
+                    "    Matches: {} | Last used: {}\n",
+                    pattern.match_count, last_used_str
+                ));
+                output.push_str("\n");
+            }
+        }
+
+        // Show exact approvals
+        if store.exact_approvals.is_empty() {
+            output.push_str("No exact approvals configured.\n");
+        } else {
+            output.push_str("Exact Approvals:\n");
+            for approval in &store.exact_approvals {
+                output.push_str(&format!(
+                    "  {} ({})\n",
+                    &approval.id[..8.min(approval.id.len())],
+                    approval.tool_name
+                ));
+                output.push_str(&format!("    Signature: {}\n", approval.signature));
+                output.push_str(&format!("    Matches: {}\n", approval.match_count));
+                output.push_str("\n");
+            }
+        }
+
+        output.push_str(&format!(
+            "Total: {} patterns, {} exact approvals\n",
+            store.patterns.len(),
+            store.exact_approvals.len()
+        ));
+
+        Ok(output)
+    }
+
+    /// Remove a pattern by ID (supports partial matching with 8+ chars)
+    pub fn remove_pattern(&mut self, id: &str) -> Result<String> {
+        let store = self.tool_executor.persistent_store();
+
+        // Find pattern by full or partial ID (8+ chars)
+        let matching_pattern = if id.len() >= 8 {
+            store
+                .patterns
+                .iter()
+                .find(|p| p.id.starts_with(id))
+                .cloned()
+        } else {
+            None
+        };
+
+        let matching_exact = if id.len() >= 8 {
+            store
+                .exact_approvals
+                .iter()
+                .find(|a| a.id.starts_with(id))
+                .cloned()
+        } else {
+            None
+        };
+
+        if matching_pattern.is_none() && matching_exact.is_none() {
+            return Ok(format!("No pattern or approval found with ID: {}", id));
+        }
+
+        // Show what we're removing
+        if let Some(ref pattern) = matching_pattern {
+            println!("Found pattern to remove:");
+            println!("  ID: {}", &pattern.id[..8]);
+            println!("  Tool: {}", pattern.tool_name);
+            println!("  Pattern: {}", pattern.pattern);
+            println!("  Match count: {}", pattern.match_count);
+            println!();
+
+            // Confirm if match count > 10
+            if pattern.match_count > 10 {
+                print!(
+                    "This pattern has been used {} times. Remove? [y/N]: ",
+                    pattern.match_count
+                );
+                io::stdout().flush()?;
+
+                let mut confirm = String::new();
+                io::stdin().read_line(&mut confirm)?;
+
+                if !confirm.trim().eq_ignore_ascii_case("y") {
+                    return Ok("Removal cancelled.".to_string());
+                }
+            }
+
+            // Remove and save
+            if self.tool_executor.remove_pattern(&pattern.id) {
+                self.tool_executor.save_patterns()?;
+                Ok(format!("Removed pattern: {}", &pattern.id[..8]))
+            } else {
+                Ok(format!("Failed to remove pattern: {}", id))
+            }
+        } else if let Some(ref approval) = matching_exact {
+            println!("Found exact approval to remove:");
+            println!("  ID: {}", &approval.id[..8]);
+            println!("  Tool: {}", approval.tool_name);
+            println!("  Signature: {}", approval.signature);
+            println!("  Match count: {}", approval.match_count);
+            println!();
+
+            // Confirm if match count > 10
+            if approval.match_count > 10 {
+                print!(
+                    "This approval has been used {} times. Remove? [y/N]: ",
+                    approval.match_count
+                );
+                io::stdout().flush()?;
+
+                let mut confirm = String::new();
+                io::stdin().read_line(&mut confirm)?;
+
+                if !confirm.trim().eq_ignore_ascii_case("y") {
+                    return Ok("Removal cancelled.".to_string());
+                }
+            }
+
+            // Remove and save
+            if self.tool_executor.remove_pattern(&approval.id) {
+                self.tool_executor.save_patterns()?;
+                Ok(format!("Removed approval: {}", &approval.id[..8]))
+            } else {
+                Ok(format!("Failed to remove approval: {}", id))
+            }
+        } else {
+            Ok(format!("No pattern or approval found with ID: {}", id))
+        }
+    }
+
+    /// Clear all patterns with confirmation
+    pub fn clear_patterns(&mut self) -> Result<String> {
+        let store = self.tool_executor.persistent_store();
+        let total = store.total_count();
+
+        if total == 0 {
+            return Ok("No patterns to clear.".to_string());
+        }
+
+        println!(
+            "This will remove {} pattern(s) and {} exact approval(s).",
+            store.patterns.len(),
+            store.exact_approvals.len()
+        );
+        print!("Are you sure? [y/N]: ");
+        io::stdout().flush()?;
+
+        let mut confirm = String::new();
+        io::stdin().read_line(&mut confirm)?;
+
+        if !confirm.trim().eq_ignore_ascii_case("y") {
+            return Ok("Clear cancelled.".to_string());
+        }
+
+        // Clear and save
+        self.tool_executor.clear_persistent_patterns();
+        self.tool_executor.save_patterns()?;
+
+        Ok(format!("Cleared {} pattern(s) and approval(s).", total))
+    }
+
+    /// Add a pattern interactively
+    pub fn add_pattern_interactive(&mut self) -> Result<String> {
+        use crate::tools::patterns::PatternType;
+
+        println!("Add Confirmation Pattern");
+        println!("========================\n");
+
+        // 1. Pattern type
+        println!("Pattern type:");
+        println!("  1. Wildcard (*, **)");
+        println!("  2. Regex");
+        print!("Choice [1]: ");
+        io::stdout().flush()?;
+
+        let mut type_choice = String::new();
+        io::stdin().read_line(&mut type_choice)?;
+        let type_choice = type_choice.trim();
+
+        let pattern_type = if type_choice == "2" {
+            PatternType::Regex
+        } else {
+            PatternType::Wildcard
+        };
+
+        // 2. Tool name
+        print!("Tool name (bash, read, grep, glob, web_fetch, save_and_exec): ");
+        io::stdout().flush()?;
+
+        let mut tool_name = String::new();
+        io::stdin().read_line(&mut tool_name)?;
+        let tool_name = tool_name.trim().to_string();
+
+        if tool_name.is_empty() {
+            return Ok("Pattern creation cancelled (no tool name).".to_string());
+        }
+
+        // 3. Pattern string (with help)
+        println!("\nPattern syntax:");
+        match pattern_type {
+            PatternType::Wildcard => {
+                println!("  * = match anything (single component)");
+                println!("  ** = match anything recursively (paths)");
+                println!("Examples:");
+                println!("  cargo * in /project");
+                println!("  reading /project/**");
+                println!("  cargo * in *");
+            }
+            PatternType::Regex => {
+                println!("  Standard regex syntax");
+                println!("Examples:");
+                println!("  ^cargo (test|build)$");
+                println!("  reading /project/src/.*\\.rs$");
+            }
+        }
+
+        print!("\nPattern: ");
+        io::stdout().flush()?;
+
+        let mut pattern_str = String::new();
+        io::stdin().read_line(&mut pattern_str)?;
+        let pattern_str = pattern_str.trim().to_string();
+
+        if pattern_str.is_empty() {
+            return Ok("Pattern creation cancelled (no pattern).".to_string());
+        }
+
+        // 4. Description
+        print!("Description: ");
+        io::stdout().flush()?;
+
+        let mut description = String::new();
+        io::stdin().read_line(&mut description)?;
+        let description = description.trim().to_string();
+
+        // 5. Create pattern and validate
+        let pattern = ToolPattern::new_with_type(
+            pattern_str.clone(),
+            tool_name.clone(),
+            description,
+            pattern_type,
+        );
+
+        if let Err(e) = pattern.validate() {
+            return Ok(format!("Invalid pattern: {}", e));
+        }
+
+        // 6. Optional: Test pattern
+        println!("\nPattern created:");
+        println!("  Tool: {}", pattern.tool_name);
+        println!("  Pattern: {}", pattern.pattern);
+        println!("  Type: {:?}", pattern.pattern_type);
+
+        print!("\nTest pattern? [y/N]: ");
+        io::stdout().flush()?;
+
+        let mut test_choice = String::new();
+        io::stdin().read_line(&mut test_choice)?;
+
+        if test_choice.trim().eq_ignore_ascii_case("y") {
+            print!("Enter test string: ");
+            io::stdout().flush()?;
+
+            let mut test_str = String::new();
+            io::stdin().read_line(&mut test_str)?;
+            let test_str = test_str.trim();
+
+            let test_sig = ToolSignature {
+                tool_name: pattern.tool_name.clone(),
+                context_key: test_str.to_string(),
+            };
+
+            if pattern.matches(&test_sig) {
+                println!("✓ Pattern matches!");
+            } else {
+                println!("✗ Pattern does not match.");
+            }
+            println!();
+        }
+
+        // 7. Confirm and save
+        print!("Save pattern? [Y/n]: ");
+        io::stdout().flush()?;
+
+        let mut save_choice = String::new();
+        io::stdin().read_line(&mut save_choice)?;
+
+        if save_choice.trim().eq_ignore_ascii_case("n") {
+            return Ok("Pattern creation cancelled.".to_string());
+        }
+
+        // Add to executor and save
+        self.tool_executor
+            .approve_pattern_persistent(pattern.clone());
+        self.tool_executor.save_patterns()?;
+
+        Ok(format!(
+            "Pattern saved: {} ({})",
+            &pattern.id[..8],
+            pattern.pattern
+        ))
     }
 
     /// Print training status below the prompt (only in interactive mode)

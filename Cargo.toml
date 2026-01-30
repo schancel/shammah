@@ -65,6 +65,7 @@ fs2 = "0.4"  # File locking for concurrent weight updates
 
 [dev-dependencies]
 mockito = "1.2"
+tempfile = "3.8"
 
 [[bin]]
 name = "shammah"

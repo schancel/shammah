@@ -13,19 +13,56 @@ pub enum Command {
     Debug,
     Training,
     Clear,
+    PatternsList,
+    PatternsRemove(String),
+    PatternsClear,
+    PatternsAdd,
 }
 
 impl Command {
     pub fn parse(input: &str) -> Option<Self> {
-        match input.trim() {
-            "/help" => Some(Command::Help),
-            "/quit" | "/exit" => Some(Command::Quit),
-            "/metrics" => Some(Command::Metrics),
-            "/debug" => Some(Command::Debug),
-            "/training" => Some(Command::Training),
-            "/clear" | "/reset" => Some(Command::Clear),
-            _ => None,
+        let trimmed = input.trim();
+
+        // Handle simple commands without arguments
+        match trimmed {
+            "/help" => return Some(Command::Help),
+            "/quit" | "/exit" => return Some(Command::Quit),
+            "/metrics" => return Some(Command::Metrics),
+            "/debug" => return Some(Command::Debug),
+            "/training" => return Some(Command::Training),
+            "/clear" | "/reset" => return Some(Command::Clear),
+            _ => {}
         }
+
+        // Handle /patterns commands with subcommands
+        if trimmed == "/patterns" || trimmed == "/patterns list" {
+            return Some(Command::PatternsList);
+        }
+
+        if trimmed == "/patterns clear" {
+            return Some(Command::PatternsClear);
+        }
+
+        if trimmed == "/patterns add" {
+            return Some(Command::PatternsAdd);
+        }
+
+        // Handle /patterns remove <id> and /patterns rm <id>
+        if let Some(rest) = trimmed.strip_prefix("/patterns remove ") {
+            let id = rest.trim();
+            if !id.is_empty() {
+                return Some(Command::PatternsRemove(id.to_string()));
+            }
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("/patterns rm ") {
+            let id = rest.trim();
+            if !id.is_empty() {
+                return Some(Command::PatternsRemove(id.to_string()));
+            }
+        }
+
+        None
     }
 }
 
@@ -49,17 +86,28 @@ pub fn handle_command(
         }
         Command::Training => format_training(router, validator),
         Command::Clear => Ok("".to_string()), // Handled in REPL directly
+        // Pattern commands are now handled directly in REPL
+        Command::PatternsList
+        | Command::PatternsRemove(_)
+        | Command::PatternsClear
+        | Command::PatternsAdd => {
+            Ok("Pattern management commands should be handled in REPL.".to_string())
+        }
     }
 }
 
 fn format_help() -> String {
     r#"Available commands:
-  /help      - Show this help message
-  /quit      - Exit the REPL
-  /metrics   - Display statistics
-  /training  - Show detailed training statistics
-  /clear     - Clear conversation history (start fresh)
-  /debug     - Toggle debug output
+  /help             - Show this help message
+  /quit             - Exit the REPL
+  /metrics          - Display statistics
+  /training         - Show detailed training statistics
+  /clear            - Clear conversation history (start fresh)
+  /debug            - Toggle debug output
+  /patterns         - List confirmation patterns
+  /patterns add     - Add a new confirmation pattern (interactive)
+  /patterns rm <id> - Remove a pattern by ID
+  /patterns clear   - Remove all patterns
 
 Type any question to get started!"#
         .to_string()
@@ -204,4 +252,88 @@ fn format_training(
     }
 
     Ok(output)
+}
+
+// Pattern management command handlers are now in Repl (Phase 3 implementation)
+// The command handlers above return a placeholder message since the actual
+// handling is done directly in the REPL loop to avoid borrowing issues
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_patterns_list() {
+        assert!(matches!(
+            Command::parse("/patterns"),
+            Some(Command::PatternsList)
+        ));
+        assert!(matches!(
+            Command::parse("/patterns list"),
+            Some(Command::PatternsList)
+        ));
+    }
+
+    #[test]
+    fn test_parse_patterns_clear() {
+        assert!(matches!(
+            Command::parse("/patterns clear"),
+            Some(Command::PatternsClear)
+        ));
+    }
+
+    #[test]
+    fn test_parse_patterns_add() {
+        assert!(matches!(
+            Command::parse("/patterns add"),
+            Some(Command::PatternsAdd)
+        ));
+    }
+
+    #[test]
+    fn test_parse_patterns_remove() {
+        // Test "remove" alias
+        match Command::parse("/patterns remove abc123") {
+            Some(Command::PatternsRemove(id)) => assert_eq!(id, "abc123"),
+            _ => panic!("Expected PatternsRemove command"),
+        }
+
+        // Test "rm" alias
+        match Command::parse("/patterns rm xyz789") {
+            Some(Command::PatternsRemove(id)) => assert_eq!(id, "xyz789"),
+            _ => panic!("Expected PatternsRemove command"),
+        }
+
+        // Test with extra whitespace
+        match Command::parse("/patterns remove   abc123  ") {
+            Some(Command::PatternsRemove(id)) => assert_eq!(id, "abc123"),
+            _ => panic!("Expected PatternsRemove command"),
+        }
+
+        // Test empty ID returns None
+        assert!(matches!(Command::parse("/patterns remove "), None));
+        assert!(matches!(Command::parse("/patterns rm "), None));
+    }
+
+    #[test]
+    fn test_parse_existing_commands() {
+        // Ensure existing commands still work
+        assert!(matches!(Command::parse("/help"), Some(Command::Help)));
+        assert!(matches!(Command::parse("/quit"), Some(Command::Quit)));
+        assert!(matches!(Command::parse("/metrics"), Some(Command::Metrics)));
+        assert!(matches!(Command::parse("/debug"), Some(Command::Debug)));
+        assert!(matches!(
+            Command::parse("/training"),
+            Some(Command::Training)
+        ));
+        assert!(matches!(Command::parse("/clear"), Some(Command::Clear)));
+    }
+
+    #[test]
+    fn test_parse_invalid_patterns_command() {
+        // Invalid subcommands should return None
+        assert!(matches!(Command::parse("/patterns invalid"), None));
+        assert!(matches!(Command::parse("/patterns remove"), None)); // Missing ID
+        assert!(matches!(Command::parse("/patterns rm"), None)); // Missing ID
+    }
 }

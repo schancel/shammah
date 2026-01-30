@@ -98,7 +98,7 @@ impl ToolConfirmationCache {
         // 4. Check session patterns
         for pattern in &mut self.session_patterns {
             if pattern.matches(sig) {
-                pattern.increment_match();
+                pattern.record_match();
                 return ApprovalSource::SessionPattern(pattern.id.clone());
             }
         }
