@@ -12,7 +12,19 @@ Think of it as a smart cache that learns not just answers, but reasoning pattern
 
 ## Key Features
 
-- **95% Local Processing** - After training period, only 5% of requests require API calls
+- **Tool Execution** - Claude can inspect code, search files, and run commands
+  - Read files and directories
+  - Search codebase with glob patterns and regex
+  - Fetch web content for research
+  - Execute bash commands
+  - Self-improvement: modify code and restart
+
+- **Streaming Responses** - Real-time character-by-character output
+  - Better UX for long responses
+  - SSE (Server-Sent Events) parsing
+  - Graceful fallback when tools are used
+
+- **95% Local Processing** (Future Goal) - After training period, only 5% of requests require API calls
   - Enhanced privacy: your data stays on your machine
   - Faster responses: no network latency for local processing
   - Works offline for most queries
@@ -20,18 +32,20 @@ Think of it as a smart cache that learns not just answers, but reasoning pattern
 - **Constitutional AI Reasoning** - Multi-model ensemble that learns safe, helpful behavior
   - Learns from every Claude response
   - Applies constitutional principles locally
+  - Custom constitution support (optional)
   - Maintains quality without constant API access
-
-- **Drop-in Replacement** - Compatible with Claude Code and Claude API
-  - Uses your existing `~/.claude/settings.json` configuration
-  - Supports Claude API format
-  - Seamless integration with existing workflows
 
 - **Continuous Learning** - Improves over time
   - Starts at 100% forwarding (everything goes to Claude)
-  - Learns patterns and reasoning from responses
+  - Threshold-based routing learns from query 1
+  - Transitions to neural models after sufficient training data
   - Converges to 5% forwarding over ~6 months
-  - Models stored locally in `~/.claude-proxy/`
+  - Models stored locally in `~/.shammah/`
+
+- **Concurrent Safe** - Multiple sessions can run simultaneously
+  - File locking prevents data corruption
+  - Statistics merged across sessions
+  - Safe for team use
 
 - **Cost Effective** - Reduces API costs by 76% (24% of original after accounting for 5% forwarding)
   - Pay only for novel or complex queries
@@ -103,17 +117,31 @@ Think of it as a smart cache that learns not just answers, but reasoning pattern
 ## Quick Start
 
 ```bash
-# Install (when available)
-cargo install shammah
+# Build from source
+git clone https://github.com/shammah/claude-proxy
+cd claude-proxy
+cargo build --release
 
 # Run in interactive mode
-shammah
+./target/release/shammah
 
-# Or use as daemon (background service)
-shammah daemon
+# Example: Claude can now use tools to inspect your code
+> Can you read my Cargo.toml and tell me about dependencies?
+# Claude uses the Read tool to read the file
 
-# Single query mode
-shammah query "What is Rust's ownership system?"
+> Find all Rust files and show me the main.rs structure
+# Claude uses Glob to find files, then Read to inspect main.rs
+
+> Search for all TODO comments in the codebase
+# Claude uses Grep with regex pattern
+
+# Self-improvement workflow (advanced)
+> I want to optimize the router code
+# Claude reads code, suggests changes, uses tools to modify files
+> Now build the new version
+# Claude uses Bash tool: cargo build --release
+> Restart into the new binary
+# Claude uses Restart tool to exec into new version
 ```
 
 ## Architecture
@@ -130,44 +158,103 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture.
 
 ## Configuration
 
-Shammah integrates with Claude Code's configuration:
+### API Key
 
-```json
-// ~/.claude/settings.json
-{
-  "apiKey": "your-claude-api-key",
-  "proxyEnabled": true,
-  "proxyUrl": "http://localhost:8000"
-}
+Set your Claude API key in the configuration file:
+
+```bash
+# Create config directory
+mkdir -p ~/.shammah
+
+# Add your API key
+cat > ~/.shammah/config.toml <<EOF
+api_key = "your-claude-api-key"
+streaming_enabled = true
+EOF
 ```
 
-Models and training data stored in:
+### File Structure
+
+All data stored in `~/.shammah/`:
 ```
-~/.claude-proxy/
-├── models/          # Trained models
-├── training/        # Training data from Claude responses
-├── config.toml      # Shammah configuration
-└── stats.json       # Usage statistics
+~/.shammah/
+├── config.toml               # API key and settings
+├── constitution.md           # Optional: custom constitutional principles
+├── crisis_keywords.txt       # Safety keywords for crisis detection
+├── metrics/                  # Daily JSONL logs for training
+│   └── 2026-01-30.jsonl
+└── models/                   # Trained model weights
+    ├── threshold_router.json
+    └── ensemble.json
 ```
+
+### Optional Constitution
+
+Define custom constitutional principles for local generation:
+
+```bash
+cat > ~/.shammah/constitution.md <<EOF
+# My Constitutional Principles
+
+1. Always prioritize user privacy
+2. Be helpful, harmless, and honest
+3. Acknowledge uncertainty rather than guessing
+4. [Add your principles here]
+EOF
+```
+
+**Note**: Constitution is loaded but not sent to Claude API. It will be used for local model generation when implemented.
 
 See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for full configuration options.
 
 ## Project Status
 
-**Current Status**: 🚧 Pre-alpha - Initial project setup
+**Current Status**: ✅ Alpha - Fully functional with tool execution
 
-This project is in active development. The repository structure is established, but implementation has not yet begun.
+Shammah is now a working local-first AI proxy with tool execution, streaming responses, and self-improvement capabilities.
+
+**Version**: 0.2.0 (Post-Tool Execution Implementation)
+
+### Completed
+
+- ✅ **Phase 1**: Core infrastructure
+  - Crisis detection for safety
+  - Claude API integration with retry logic
+  - REPL interface with readline support
+  - Metrics collection for training
+
+- ✅ **Phase 2a**: Threshold Models
+  - Statistics-driven routing (learns from query 1)
+  - Threshold-based validator with 8 quality signals
+  - Concurrent weight merging with file locking
+  - Model persistence to disk
+
+- ✅ **Tool Execution**: 6 working tools
+  - Read, Glob, Grep, WebFetch, Bash, Restart
+  - Multi-turn conversation loop
+  - Self-improvement workflow
+
+- ✅ **Streaming**: Real-time responses (partial)
+  - SSE parsing for character-by-character display
+  - Disabled when tools are used (detection pending)
+
+- ✅ **Constitution Support**: Infrastructure complete
+  - Configurable path (~/.shammah/constitution.md)
+  - Loaded on startup, not sent to API
+
+### In Progress
+
+- 🔄 **Neural Networks**: Training on real usage data
+- 🔄 **Hybrid Routing**: Threshold → neural transition
 
 ### Roadmap
 
-- [ ] **Phase 0**: Project initialization (current)
-- [ ] **Phase 1**: Basic proxy (forward all requests to Claude)
-- [ ] **Phase 2**: Add logging and learning infrastructure
-- [ ] **Phase 3**: Implement routing logic and local models
-- [ ] **Phase 4**: Constitutional AI validation
-- [ ] **Phase 5**: Optimization and production readiness
+- [ ] **Phase 2b**: Neural models as primary router (~200 queries)
+- [ ] **Phase 3**: Uncertainty estimation and confidence-based forwarding
+- [ ] **Phase 4**: Core ML export for maximum Apple Silicon performance
+- [ ] **Phase 5**: Achieve 95% local processing rate
 
-See [CONSTITUTIONAL_PROXY_SPEC.md](CONSTITUTIONAL_PROXY_SPEC.md) for complete specification.
+See [STATUS.md](STATUS.md) for detailed current state and [CONSTITUTIONAL_PROXY_SPEC.md](CONSTITUTIONAL_PROXY_SPEC.md) for complete specification.
 
 ## Development
 

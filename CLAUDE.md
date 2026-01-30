@@ -110,35 +110,45 @@ Confidence > threshold?
 ### Core Components
 
 1. **Router** (`src/router/`)
-   - Phase 1: Pattern matching (placeholder)
-   - Phase 2+: Neural network classifier
+   - Current: Crisis detection for safety
+   - Phase 2a: Threshold-based routing with statistics
+   - Phase 2b+: Hybrid threshold + neural network classifier
    - Tracks routing decisions and accuracy
 
 2. **Generator** (`src/models/generator/`)
-   - Phase 1: Template responses (placeholder)
    - Phase 2+: Custom LLM trained on Claude responses
    - Learns your specific usage patterns
+   - Will use distillation from Claude
 
 3. **Validator** (`src/models/validator/`)
-   - Phase 1: Crisis detection (partial implementation)
-   - Phase 2+: Quality assessment model
+   - Current: Crisis detection (safety mechanism)
+   - Phase 2a: Threshold-based validation with heuristics
+   - Phase 2b+: Neural quality assessment model
    - Detects errors before returning to user
 
 4. **Claude Client** (`src/claude/`)
    - HTTP client for Claude API
    - Logs all (query, response) pairs for training
-   - Handles streaming and retries
+   - Streaming support via SSE parsing
+   - Retry logic and error handling
 
-5. **Learning Engine** (`src/learning/`)
+5. **Tool Execution System** (`src/tools/`)
+   - 6 implemented tools: Read, Glob, Grep, WebFetch, Bash, Restart
+   - Multi-turn execution loop for complex tasks
+   - Permission system (currently allows all)
+   - Enables Claude to inspect code and make modifications
+
+6. **Learning Engine** (`src/learning/`)
    - Phase 2+: Processes logged data into training sets
    - Trains all three models
    - Retrains models periodically
    - Tracks performance metrics
 
-5. **Configuration** (`src/config/`)
-   - Reads `~/.claude/settings.json` (Claude Code integration)
-   - Manages `~/.claude-proxy/` storage
-   - Environment variables and CLI args
+7. **Configuration** (`src/config/`)
+   - Reads `~/.shammah/config.toml` for settings
+   - API key management
+   - Constitution path configuration
+   - Streaming and UI preferences
 
 ### Technology Stack
 
@@ -412,18 +422,20 @@ This document is for helping AI assistants understand the project - it's a "map"
 
 ### What's Done (Phase 1)
 
-- ✅ **Router (placeholder):** Pattern matching with TF-IDF demonstrates routing concept
-- ✅ **Generator (placeholder):** Template responses for 10 patterns demonstrate local processing
+- ✅ **Router:** Crisis detection (safety mechanism for harmful queries)
+  - Pattern matching system removed (was placeholder, now replaced by threshold models)
 - ✅ **Validator (partial):** Crisis detection demonstrates safety checking
-- ✅ **Claude API Client:** Full integration with retry logic
+- ✅ **Claude API Client:** Full integration with retry logic and streaming support
 - ✅ **Metrics Logger:** Collects (query, response, routing) data for Phase 2 training
-- ✅ **CLI/REPL:** Interactive interface with commands
-- ✅ **Tests:** 14/14 passing (9 unit + 5 integration)
+- ✅ **CLI/REPL:** Interactive interface with readline support
+- ✅ **Tool Execution:** 6 tools enable Claude to inspect code, search files, run commands
+- ✅ **Tests:** All passing (unit + integration)
 
 **Current Performance:**
-- 20-30% "local" rate (templates, not real models yet)
-- 100% crisis detection
-- Ready to collect real training data
+- 100% of queries forward to Claude (correct - learning phase)
+- 100% crisis detection accuracy
+- Tool execution working reliably
+- Collecting training data for threshold models
 
 ### What's Done (Phase 2a - Threshold Models)
 
@@ -464,6 +476,63 @@ The threshold models provide **immediate value** from query 1, unlike neural net
 - Large models (768+ hidden dim): 10-100x speedup on Metal
 - Best performance on M1 Pro/Max, M2 Pro/Max, M3/M4
 
+### Tool Execution System ✅
+
+- ✅ **6 Working Tools:** Read, Glob, Grep, WebFetch, Bash, Restart
+  - **Read:** Read file contents (10K char limit) for code inspection
+  - **Glob:** Find files by pattern (e.g., "**/*.rs") with 100 file limit
+  - **Grep:** Search with regex across codebase (50 match limit)
+  - **WebFetch:** Fetch URLs with 10s timeout (10K char limit)
+  - **Bash:** Execute shell commands (5K output limit)
+  - **Restart:** Self-improvement tool to restart into new binary
+- ✅ **Multi-Turn Loop:** Execute tools → send results to Claude → repeat (max 5 iterations)
+- ✅ **Tool Definitions:** Sent to Claude API with every request
+- ✅ **Conversation Management:** Maintains proper user/assistant alternation
+- ✅ **Error Handling:** Graceful failures with user feedback
+
+**Key Design Decisions:**
+- Tools enable Claude to inspect code, search files, and make modifications
+- Multi-turn loop allows Claude to use multiple tools in sequence
+- Restart tool enables self-improvement workflow (modify code → build → restart)
+- Security design for restart tool deferred to Phase 2 (currently unrestricted)
+
+### Streaming Responses ✅ (Partial)
+
+- ✅ **SSE Parsing:** Server-Sent Events from Claude API
+- ✅ **Character-by-Character Display:** Real-time output for better UX
+- ✅ **Streaming Client Method:** `send_message_stream()` with tokio channels
+- ⚠️ **Current Limitation:** Streaming disabled when tools are used
+  - **Reason:** Can't detect tool_use in SSE stream yet (needs full stream parsing)
+  - **Workaround:** Falls back to buffered response for tool execution
+  - **Future:** Parse tool_use blocks from SSE stream to enable streaming + tools
+
+### Concurrent Weight Merging ✅
+
+- ✅ **File Locking:** Exclusive locks with fs2 crate for safe concurrent access
+- ✅ **Merge Strategy:** Accumulates statistics from multiple sessions
+  - Category stats: Add attempt counts, successes, failures
+  - Global stats: Merge total queries and local attempts
+  - Confidence: Average thresholds from both sessions
+- ✅ **Atomic Writes:** Temp file + rename pattern prevents corruption
+- ✅ **Safe Multi-Session:** Multiple Shammah instances can run without data loss
+
+**Implementation:**
+- Lock acquired before read → merge with existing → atomic write
+- Prevents race conditions when multiple sessions save at same time
+- Critical for training data integrity across concurrent sessions
+
+### Constitution Support ✅ (Infrastructure)
+
+- ✅ **Configurable Path:** `~/.shammah/constitution.md` by default
+- ✅ **Loaded on Startup:** Constitution file read if it exists
+- ✅ **Not Sent to API:** Keeps constitutional principles private
+- ⚠️ **Usage Pending:** Infrastructure complete, but not yet applied
+  - **Future:** Prepend to local model system prompts
+  - **When:** Will activate when local generation becomes primary
+
+**Purpose:**
+Allows users to define custom constitutional principles for local generation without sharing them with Claude API.
+
 ### What's NOT Done Yet (Phase 2b+)
 
 - ❌ No production deployment yet
@@ -471,6 +540,26 @@ The threshold models provide **immediate value** from query 1, unlike neural net
 - ❌ Generator model needs actual LLM (currently placeholder)
 - ❌ No uncertainty estimation
 - ❌ No Core ML export (.mlmodel format for maximum Apple Silicon optimization)
+
+### Deferred Work
+
+**Security Design for Self-Improvement** (Restart Tool):
+- ⚠️ **Current State:** Basic implementation (Phase 1)
+- ⚠️ **Missing Security Measures:**
+  - User confirmation prompts before code modification
+  - Git backup/stash before changes
+  - Rollback mechanism (keep previous binary)
+  - Dev mode flag (disable in production)
+  - Change review UI
+- **Rationale:** Get basic functionality working first, add safety later
+- **Risk:** Claude can modify any code and restart without confirmation
+- **Mitigation:** Only use in development environment with version control
+- **Timeline:** Phase 2 of self-improvement (TBD)
+
+**Streaming + Tool Detection:**
+- Need to parse tool_use events from SSE stream
+- Currently falls back to buffered responses when tools are used
+- Low priority (buffered responses work fine for now)
 
 ## Working with This Project
 
