@@ -21,6 +21,7 @@ use crate::patterns::PatternLibrary;
 use crate::router::{ForwardReason, RouteDecision, Router};
 
 use super::commands::{handle_command, Command};
+use super::input::InputHandler;
 
 /// Get current terminal width, or default to 80 if not a TTY
 fn terminal_width() -> usize {
@@ -42,6 +43,8 @@ pub struct Repl {
     models_dir: Option<PathBuf>,
     // UI state
     is_interactive: bool,
+    // Readline input handler
+    input_handler: Option<InputHandler>,
 }
 
 impl Repl {
@@ -62,6 +65,20 @@ impl Repl {
         let (threshold_router, threshold_validator) =
             Self::load_or_create_models(models_dir.as_ref(), is_interactive);
 
+        // Initialize input handler for interactive mode
+        let input_handler = if is_interactive {
+            match InputHandler::new() {
+                Ok(handler) => Some(handler),
+                Err(e) => {
+                    eprintln!("Warning: Failed to initialize readline: {}", e);
+                    eprintln!("Falling back to basic input mode");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Self {
             _config: config,
             claude_client,
@@ -73,6 +90,7 @@ impl Repl {
             training_trends: TrainingTrends::new(20), // Track last 20 queries
             models_dir,
             is_interactive,
+            input_handler,
         }
     }
 
@@ -200,20 +218,49 @@ impl Repl {
                 break;
             }
 
-            if self.is_interactive {
-                // Claude Code-style prompt with dynamic width separators
+            // Read input using readline or fallback
+            let input = if self.input_handler.is_some() {
+                // Interactive mode with readline support
                 println!();
                 self.print_separator();
-                print!("> ");
-            } else {
-                // Simple prompt for non-interactive
-                print!("Query: ");
-            }
-            io::stdout().flush()?;
 
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            let input = input.trim();
+                let line = {
+                    let handler = self.input_handler.as_mut().unwrap();
+                    handler.read_line("> ")?
+                };
+
+                match line {
+                    Some(text) => text,
+                    None => {
+                        // Ctrl+C or Ctrl+D - graceful exit
+                        println!();
+                        self.save_models()?;
+                        if let Some(ref mut handler) = self.input_handler {
+                            if let Err(e) = handler.save_history() {
+                                eprintln!("Warning: Failed to save history: {}", e);
+                            }
+                        }
+                        println!("Models saved. Goodbye!");
+                        break;
+                    }
+                }
+            } else {
+                // Fallback: basic stdin reading (non-interactive or readline failed)
+                if self.is_interactive {
+                    println!();
+                    self.print_separator();
+                    print!("> ");
+                } else {
+                    print!("Query: ");
+                }
+                io::stdout().flush()?;
+
+                let mut input = String::new();
+                if io::stdin().read_line(&mut input).is_err() {
+                    break;
+                }
+                input.trim().to_string()
+            };
 
             if input.is_empty() {
                 continue;
@@ -225,10 +272,15 @@ impl Repl {
             }
 
             // Check for slash commands
-            if let Some(command) = Command::parse(input) {
+            if let Some(command) = Command::parse(&input) {
                 match command {
                     Command::Quit => {
                         self.save_models()?;
+                        if let Some(ref mut handler) = self.input_handler {
+                            if let Err(e) = handler.save_history() {
+                                eprintln!("Warning: Failed to save history: {}", e);
+                            }
+                        }
                         if self.is_interactive {
                             println!("Models saved. Goodbye!");
                         }
@@ -249,7 +301,7 @@ impl Repl {
             }
 
             // Process query
-            match self.process_query(input).await {
+            match self.process_query(&input).await {
                 Ok(response) => {
                     println!("{}", response);
                     if self.is_interactive {
