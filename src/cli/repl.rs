@@ -8,12 +8,15 @@ use crossterm::{
     ExecutableCommand,
 };
 use std::io::{self, IsTerminal, Write};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::claude::{ClaudeClient, MessageRequest};
 use crate::config::Config;
-use crate::metrics::{MetricsLogger, RequestMetric};
-use crate::models::{ModelConfig, ThresholdRouter, ThresholdValidator};
+use crate::metrics::{MetricsLogger, RequestMetric, ResponseComparison, TrainingTrends};
+use crate::models::{ThresholdRouter, ThresholdValidator};
 use crate::patterns::PatternLibrary;
 use crate::router::{ForwardReason, RouteDecision, Router};
 
@@ -33,6 +36,10 @@ pub struct Repl {
     // Online learning models
     threshold_router: ThresholdRouter,
     threshold_validator: ThresholdValidator,
+    // Training metrics
+    training_trends: TrainingTrends,
+    // Model persistence
+    models_dir: Option<PathBuf>,
     // UI state
     is_interactive: bool,
 }
@@ -48,16 +55,109 @@ impl Repl {
         // Detect if we're in interactive mode (stdout is a TTY)
         let is_interactive = io::stdout().is_terminal();
 
+        // Set up models directory
+        let models_dir = dirs::home_dir().map(|home| home.join(".shammah").join("models"));
+
+        // Try to load existing models, fall back to new
+        let (threshold_router, threshold_validator) =
+            Self::load_or_create_models(models_dir.as_ref(), is_interactive);
+
         Self {
             _config: config,
             claude_client,
             router,
             metrics_logger,
             pattern_library,
-            threshold_router: ThresholdRouter::new(),
-            threshold_validator: ThresholdValidator::new(),
+            threshold_router,
+            threshold_validator,
+            training_trends: TrainingTrends::new(20), // Track last 20 queries
+            models_dir,
             is_interactive,
         }
+    }
+
+    /// Load models from disk or create new ones
+    fn load_or_create_models(
+        models_dir: Option<&PathBuf>,
+        is_interactive: bool,
+    ) -> (ThresholdRouter, ThresholdValidator) {
+        let Some(models_dir) = models_dir else {
+            return (ThresholdRouter::new(), ThresholdValidator::new());
+        };
+
+        let router_path = models_dir.join("threshold_router.json");
+        let validator_path = models_dir.join("threshold_validator.json");
+
+        let router = if router_path.exists() {
+            match ThresholdRouter::load(&router_path) {
+                Ok(router) => {
+                    if is_interactive {
+                        eprintln!(
+                            "✓ Loaded router with {} training queries",
+                            router.stats().total_queries
+                        );
+                    }
+                    router
+                }
+                Err(e) => {
+                    if is_interactive {
+                        eprintln!("Warning: Failed to load router: {}", e);
+                    }
+                    ThresholdRouter::new()
+                }
+            }
+        } else {
+            ThresholdRouter::new()
+        };
+
+        let validator = if validator_path.exists() {
+            match ThresholdValidator::load(&validator_path) {
+                Ok(validator) => {
+                    if is_interactive {
+                        eprintln!(
+                            "✓ Loaded validator with {} validations",
+                            validator.stats().total_validations
+                        );
+                    }
+                    validator
+                }
+                Err(e) => {
+                    if is_interactive {
+                        eprintln!("Warning: Failed to load validator: {}", e);
+                    }
+                    ThresholdValidator::new()
+                }
+            }
+        } else {
+            ThresholdValidator::new()
+        };
+
+        (router, validator)
+    }
+
+    /// Save models to disk
+    fn save_models(&self) -> Result<()> {
+        let Some(ref models_dir) = self.models_dir else {
+            return Ok(());
+        };
+
+        std::fs::create_dir_all(models_dir)?;
+
+        if self.is_interactive {
+            print!("{}", "Saving models... ".dark_grey());
+            io::stdout().flush()?;
+        }
+
+        self.threshold_router
+            .save(models_dir.join("threshold_router.json"))?;
+        self.threshold_validator
+            .save(models_dir.join("threshold_validator.json"))?;
+
+        if self.is_interactive {
+            println!("✓");
+        }
+
+        Ok(())
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -79,7 +179,27 @@ impl Repl {
             eprintln!("# Shammah v0.1.0 - Non-interactive mode");
         }
 
+        // Register Ctrl+C handler for graceful shutdown
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let flag_clone = shutdown_flag.clone();
+
+        ctrlc::set_handler(move || {
+            flag_clone.store(true, Ordering::SeqCst);
+        })?;
+
         loop {
+            // Check for shutdown
+            if shutdown_flag.load(Ordering::SeqCst) {
+                if self.is_interactive {
+                    println!();
+                }
+                self.save_models()?;
+                if self.is_interactive {
+                    println!("Models saved. Goodbye!");
+                }
+                break;
+            }
+
             if self.is_interactive {
                 // Claude Code-style prompt with dynamic width separators
                 println!();
@@ -108,14 +228,20 @@ impl Repl {
             if let Some(command) = Command::parse(input) {
                 match command {
                     Command::Quit => {
+                        self.save_models()?;
                         if self.is_interactive {
-                            println!("Goodbye!");
+                            println!("Models saved. Goodbye!");
                         }
                         break;
                     }
                     _ => {
-                        let output =
-                            handle_command(command, &self.metrics_logger, &self.pattern_library)?;
+                        let output = handle_command(
+                            command,
+                            &self.metrics_logger,
+                            &self.pattern_library,
+                            Some(&self.threshold_router),
+                            Some(&self.threshold_validator),
+                        )?;
                         println!("{}", output);
                         continue;
                     }
@@ -166,24 +292,38 @@ impl Repl {
             (router_stats.total_local_attempts as f64 / router_stats.total_queries as f64) * 100.0
         };
 
-        let forward_pct = 100.0 - local_pct;
-
         let success_pct = if router_stats.total_local_attempts == 0 {
             0.0
         } else {
             (router_stats.total_successes as f64 / router_stats.total_local_attempts as f64) * 100.0
         };
 
-        // Build single-line status string
-        let status = format!(
-            "Training: {} queries | Local: {:.0}% | Forward: {:.0}% | Success: {:.0}% | Confidence: {:.2} | Approval: {:.0}%",
-            router_stats.total_queries,
-            local_pct,
-            forward_pct,
-            success_pct,
-            router_stats.confidence_threshold,
-            validator_stats.approval_rate * 100.0
-        );
+        // Get training metrics
+        let quality_avg = self.training_trends.avg_quality();
+        let similarity_avg = self.training_trends.avg_similarity();
+
+        // Build single-line status string with training effectiveness
+        let status = if self.training_trends.measurement_count() > 0 {
+            format!(
+                "Training: {} queries | Local: {:.0}% | Success: {:.0}% | Quality: {:.2} | Similarity: {:.2} | Confidence: {:.2}",
+                router_stats.total_queries,
+                local_pct,
+                success_pct,
+                quality_avg,
+                similarity_avg,
+                router_stats.confidence_threshold
+            )
+        } else {
+            // Fallback if no training data yet
+            format!(
+                "Training: {} queries | Local: {:.0}% | Success: {:.0}% | Confidence: {:.2} | Approval: {:.0}%",
+                router_stats.total_queries,
+                local_pct,
+                success_pct,
+                router_stats.confidence_threshold,
+                validator_stats.approval_rate * 100.0
+            )
+        };
 
         // Truncate to terminal width if needed
         let width = terminal_width();
@@ -217,69 +357,98 @@ impl Repl {
                 .execute(Clear(ClearType::CurrentLine))?;
         }
 
-        let (response, routing_decision, pattern_id, confidence, forward_reason, is_local) =
-            match decision {
-                RouteDecision::Local {
-                    pattern,
-                    confidence,
-                } => {
-                    if self.is_interactive {
-                        println!("✓ Crisis check: PASS");
-                        println!("✓ Pattern match: {} ({:.2})", pattern.id, confidence);
-                        println!("→ Routing: LOCAL ({}ms)", start_time.elapsed().as_millis());
-                    } else {
-                        eprintln!("# Routing: LOCAL (pattern: {})", pattern.id);
-                    }
+        // Track local and final responses for comparison
+        let mut local_response: Option<String> = None;
+        let claude_response: String;
+        let routing_decision_str: String;
+        let mut pattern_id: Option<String> = None;
+        let mut routing_confidence: Option<f64> = None;
+        let mut forward_reason: Option<String> = None;
 
-                    (
-                        pattern.template_response.clone(),
-                        "local".to_string(),
-                        Some(pattern.id.clone()),
-                        Some(confidence),
-                        None,
-                        true,
-                    )
+        match decision {
+            RouteDecision::Local {
+                pattern,
+                confidence,
+            } => {
+                if self.is_interactive {
+                    println!("✓ Crisis check: PASS");
+                    println!("✓ Pattern match: {} ({:.2})", pattern.id, confidence);
+                    println!("→ Routing: LOCAL ({}ms)", start_time.elapsed().as_millis());
                 }
-                RouteDecision::Forward { reason } => {
+
+                let local_resp = pattern.template_response.clone();
+
+                // Validate the local response
+                let quality_score = self.threshold_validator.quality_score(query, &local_resp);
+                let is_valid = self.threshold_validator.validate(query, &local_resp);
+
+                if is_valid && quality_score >= 0.7 {
+                    // Use local response
+                    claude_response = local_resp.clone();
+                    local_response = Some(local_resp);
+                    routing_decision_str = "local".to_string();
+                    pattern_id = Some(pattern.id.clone());
+                    routing_confidence = Some(confidence);
+                } else {
+                    // Quality too low, fall back to Claude
                     if self.is_interactive {
-                        match reason {
-                            ForwardReason::Crisis => {
-                                println!("⚠️  CRISIS DETECTED");
-                                println!("→ Routing: FORWARDING TO CLAUDE");
-                            }
-                            _ => {
-                                println!("✓ Crisis check: PASS");
-                                println!("✗ Pattern match: NONE");
-                                if should_try_local {
-                                    println!(
-                                        "  (Threshold model suggested local, but no pattern match)"
-                                    );
-                                }
-                                println!("→ Routing: FORWARDING TO CLAUDE");
-                            }
-                        }
-                    } else {
-                        eprintln!("# Routing: FORWARD (reason: {:?})", reason);
+                        println!(
+                            "  Quality score too low ({:.2}), forwarding to Claude",
+                            quality_score
+                        );
                     }
 
+                    local_response = Some(local_resp);
                     let request = MessageRequest::new(query);
-                    let response = self.claude_client.send_message(&request).await?;
-                    let elapsed = start_time.elapsed().as_millis();
-
-                    if self.is_interactive {
-                        println!("✓ Received response ({}ms)", elapsed);
-                    }
-
-                    (
-                        response.text(),
-                        "forward".to_string(),
-                        None,
-                        None,
-                        Some(reason.as_str().to_string()),
-                        false,
-                    )
+                    claude_response = self.claude_client.send_message(&request).await?.text();
+                    routing_decision_str = "forward_validation_failed".to_string();
+                    forward_reason = Some("quality_too_low".to_string());
                 }
-            };
+            }
+            RouteDecision::Forward { reason } => {
+                if self.is_interactive {
+                    match reason {
+                        ForwardReason::Crisis => {
+                            println!("⚠️  CRISIS DETECTED");
+                            println!("→ Routing: FORWARDING TO CLAUDE");
+                        }
+                        _ => {
+                            println!("✓ Crisis check: PASS");
+                            println!("✗ Pattern match: NONE");
+                            if should_try_local {
+                                println!(
+                                    "  (Threshold model suggested local, but no pattern match)"
+                                );
+                            }
+                            println!("→ Routing: FORWARDING TO CLAUDE");
+                        }
+                    }
+                }
+
+                let request = MessageRequest::new(query);
+                claude_response = self.claude_client.send_message(&request).await?.text();
+                routing_decision_str = "forward".to_string();
+                forward_reason = Some(reason.as_str().to_string());
+
+                let elapsed = start_time.elapsed().as_millis();
+                if self.is_interactive {
+                    println!("✓ Received response ({}ms)", elapsed);
+                }
+            }
+        };
+
+        // Calculate quality and similarity
+        let quality_score = self
+            .threshold_validator
+            .quality_score(query, &claude_response);
+
+        let (similarity_score, divergence) = if let Some(ref local_resp) = local_response {
+            use crate::metrics::semantic_similarity;
+            let sim = semantic_similarity(local_resp, &claude_response)?;
+            (Some(sim), Some(1.0 - sim))
+        } else {
+            (None, None)
+        };
 
         // Online learning: Update threshold models
         if self.is_interactive {
@@ -288,32 +457,57 @@ impl Repl {
             io::stdout().flush()?;
         }
 
-        // Validate the response
-        let is_valid = self.threshold_validator.validate(query, &response);
+        // Determine if this was a success (for router learning)
+        let was_successful = routing_decision_str == "local" && quality_score >= 0.7;
 
         // Learn from this interaction
-        self.threshold_router.learn(query, true); // Assume success for now
-        self.threshold_validator.learn(query, &response, true);
+        self.threshold_router.learn(query, was_successful);
+        self.threshold_validator
+            .learn(query, &claude_response, quality_score >= 0.7);
+
+        // Update training trends
+        self.training_trends
+            .add_measurement(quality_score, similarity_score);
+
+        // Checkpoint every 10 queries
+        let router_stats = self.threshold_router.stats();
+        if router_stats.total_queries % 10 == 0 && router_stats.total_queries > 0 {
+            let _ = self.save_models(); // Ignore errors during checkpoint
+        }
 
         if self.is_interactive {
             println!("✓");
         }
 
-        // Log metric
+        // Log metric with comparison data
         let query_hash = MetricsLogger::hash_query(query);
         let response_time_ms = start_time.elapsed().as_millis() as u64;
 
+        let comparison = ResponseComparison {
+            local_response: local_response.clone(),
+            claude_response: claude_response.clone(),
+            quality_score,
+            similarity_score,
+            divergence,
+        };
+
+        let router_confidence = Some(router_stats.confidence_threshold);
+        let validator_confidence = Some(quality_score);
+
         let metric = RequestMetric::new(
             query_hash,
-            routing_decision,
+            routing_decision_str,
             pattern_id,
-            confidence,
+            routing_confidence,
             forward_reason,
             response_time_ms,
+            comparison,
+            router_confidence,
+            validator_confidence,
         );
 
         self.metrics_logger.log(&metric)?;
 
-        Ok(response)
+        Ok(claude_response)
     }
 }

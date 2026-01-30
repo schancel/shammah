@@ -109,6 +109,13 @@ impl ThresholdValidator {
         score >= 0.7
     }
 
+    /// Calculate quality score without validation side effects
+    /// Returns a score from 0.0 (very bad) to 1.0 (excellent)
+    pub fn quality_score(&self, query: &str, response: &str) -> f64 {
+        let signals = self.check_signals(query, response);
+        self.calculate_quality_score(&signals)
+    }
+
     /// Check all quality signals
     fn check_signals(&self, query: &str, response: &str) -> Vec<QualitySignal> {
         let mut signals = Vec::new();

@@ -3,6 +3,7 @@
 use anyhow::Result;
 
 use crate::metrics::MetricsLogger;
+use crate::models::{ThresholdRouter, ThresholdValidator};
 use crate::patterns::PatternLibrary;
 
 pub enum Command {
@@ -11,6 +12,7 @@ pub enum Command {
     Metrics,
     Patterns,
     Debug,
+    Training,
 }
 
 impl Command {
@@ -21,6 +23,7 @@ impl Command {
             "/metrics" => Some(Command::Metrics),
             "/patterns" => Some(Command::Patterns),
             "/debug" => Some(Command::Debug),
+            "/training" => Some(Command::Training),
             _ => None,
         }
     }
@@ -30,6 +33,8 @@ pub fn handle_command(
     command: Command,
     metrics_logger: &MetricsLogger,
     pattern_library: &PatternLibrary,
+    router: Option<&ThresholdRouter>,
+    validator: Option<&ThresholdValidator>,
 ) -> Result<String> {
     match command {
         Command::Help => Ok(format_help()),
@@ -37,6 +42,7 @@ pub fn handle_command(
         Command::Metrics => format_metrics(metrics_logger),
         Command::Patterns => Ok(format_patterns(pattern_library)),
         Command::Debug => Ok("Debug mode toggled".to_string()),
+        Command::Training => format_training(router, validator),
     }
 }
 
@@ -46,6 +52,7 @@ fn format_help() -> String {
   /quit      - Exit the REPL
   /metrics   - Display statistics
   /patterns  - List all patterns
+  /training  - Show detailed training statistics
   /debug     - Toggle debug output
 
 Type any question to get started!"#
@@ -124,4 +131,95 @@ fn format_patterns(pattern_library: &PatternLibrary) -> String {
     }
 
     output
+}
+
+fn format_training(
+    router: Option<&ThresholdRouter>,
+    validator: Option<&ThresholdValidator>,
+) -> Result<String> {
+    let mut output = String::new();
+    output.push_str("Training Statistics\n");
+    output.push_str("===================\n\n");
+
+    if let Some(router) = router {
+        let router_stats = router.stats();
+
+        // Overall stats
+        output.push_str(&format!("Total Queries: {}\n", router_stats.total_queries));
+        output.push_str(&format!(
+            "Local Attempts: {}\n",
+            router_stats.total_local_attempts
+        ));
+        output.push_str(&format!(
+            "Success Rate: {:.1}%\n",
+            router_stats.success_rate * 100.0
+        ));
+        output.push_str(&format!(
+            "Forward Rate: {:.1}%\n",
+            router_stats.forward_rate * 100.0
+        ));
+        output.push_str(&format!(
+            "Confidence Threshold: {:.2}\n\n",
+            router_stats.confidence_threshold
+        ));
+
+        // Per-category breakdown
+        output.push_str("Performance by Category:\n");
+        let mut categories: Vec<_> = router_stats.categories.iter().collect();
+        categories.sort_by_key(|(_, stats)| std::cmp::Reverse(stats.local_attempts));
+
+        for (category, stats) in categories {
+            if stats.local_attempts > 0 {
+                let success_rate = stats.successes as f64 / stats.local_attempts as f64 * 100.0;
+                output.push_str(&format!(
+                    "  {:?}: {} attempts, {:.1}% success\n",
+                    category, stats.local_attempts, success_rate
+                ));
+            }
+        }
+    } else {
+        output.push_str("No router statistics available\n");
+    }
+
+    if let Some(validator) = validator {
+        let validator_stats = validator.stats();
+
+        output.push_str("\nQuality Validation:\n");
+        output.push_str(&format!(
+            "Total Validations: {}\n",
+            validator_stats.total_validations
+        ));
+        output.push_str(&format!("Approved: {}\n", validator_stats.approved));
+        output.push_str(&format!("Rejected: {}\n", validator_stats.rejected));
+        output.push_str(&format!(
+            "Approval Rate: {:.1}%\n\n",
+            validator_stats.approval_rate * 100.0
+        ));
+
+        output.push_str("Quality Signals:\n");
+        let mut signals: Vec<_> = validator_stats.signal_stats.iter().collect();
+        signals.sort_by_key(|(_, stats)| {
+            std::cmp::Reverse(stats.present_and_good + stats.present_and_bad)
+        });
+
+        for (signal, stats) in signals {
+            let total = stats.present_and_good + stats.present_and_bad;
+            if total >= 5 {
+                // Only show signals with enough data
+                let precision = if total > 0 {
+                    stats.present_and_good as f64 / total as f64 * 100.0
+                } else {
+                    0.0
+                };
+                output.push_str(&format!(
+                    "  {:?}: {:.1}% precision ({} samples)\n",
+                    signal, precision, total
+                ));
+            }
+        }
+    } else {
+        output.push_str("\nNo validator statistics available\n");
+    }
+
+    Ok(output)
 }
