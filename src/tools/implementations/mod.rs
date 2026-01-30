@@ -2,13 +2,20 @@
 //
 // Concrete implementations of various tools
 
-// Phase 2 - Read-only tools
-// pub mod glob;
-// pub mod grep;
-// pub mod read;
+// Read-only tools
+pub mod glob;
+pub mod grep;
+pub mod read;
 
-// Phase 3 - Network tools
-// pub mod web_fetch;
+// Network tools
+pub mod web_fetch;
 
-// Phase 4 - Command execution
-// pub mod bash;
+// Command execution
+pub mod bash;
+
+// Re-exports for convenience
+pub use bash::BashTool;
+pub use glob::GlobTool;
+pub use grep::GrepTool;
+pub use read::ReadTool;
+pub use web_fetch::WebFetchTool;

@@ -18,7 +18,9 @@ use crate::config::Config;
 use crate::metrics::{MetricsLogger, RequestMetric, ResponseComparison, TrainingTrends};
 use crate::models::{ThresholdRouter, ThresholdValidator};
 use crate::router::{ForwardReason, RouteDecision, Router};
+use crate::tools::implementations::{BashTool, GlobTool, GrepTool, ReadTool, WebFetchTool};
 use crate::tools::types::{ToolDefinition, ToolInputSchema};
+use crate::tools::{PermissionManager, PermissionRule, ToolExecutor, ToolRegistry};
 
 use super::commands::{handle_command, Command};
 use super::conversation::ConversationHistory;
@@ -93,6 +95,8 @@ pub struct Repl {
     training_trends: TrainingTrends,
     // Model persistence
     models_dir: Option<PathBuf>,
+    // Tool execution
+    tool_executor: ToolExecutor,
     // UI state
     is_interactive: bool,
     // Readline input handler
@@ -132,6 +136,27 @@ impl Repl {
             None
         };
 
+        // Initialize tool execution system
+        let mut tool_registry = ToolRegistry::new();
+        tool_registry.register(Box::new(ReadTool));
+        tool_registry.register(Box::new(GlobTool));
+        tool_registry.register(Box::new(GrepTool));
+        tool_registry.register(Box::new(WebFetchTool::new()));
+        tool_registry.register(Box::new(BashTool));
+
+        // Create permission manager (allow all for now)
+        let permissions = PermissionManager::new().with_default_rule(PermissionRule::Allow);
+
+        // Create tool executor
+        let tool_executor = ToolExecutor::new(tool_registry, permissions);
+
+        if is_interactive {
+            eprintln!(
+                "✓ Tool execution enabled ({} tools)",
+                tool_executor.registry().len()
+            );
+        }
+
         Self {
             _config: config,
             claude_client,
@@ -141,6 +166,7 @@ impl Repl {
             threshold_validator,
             training_trends: TrainingTrends::new(20), // Track last 20 queries
             models_dir,
+            tool_executor,
             is_interactive,
             input_handler,
             conversation: ConversationHistory::new(),
@@ -229,6 +255,75 @@ impl Repl {
         }
 
         Ok(())
+    }
+
+    /// Execute tools and re-invoke Claude until no more tool uses
+    async fn execute_tool_loop(
+        &mut self,
+        initial_response: crate::claude::MessageResponse,
+    ) -> Result<String> {
+
+        let mut current_response = initial_response;
+        let mut iteration = 0;
+        const MAX_ITERATIONS: u32 = 5; // Prevent infinite loops
+
+        while current_response.has_tool_uses() && iteration < MAX_ITERATIONS {
+            iteration += 1;
+
+            let tool_uses = current_response.tool_uses();
+
+            if self.is_interactive {
+                println!("🔧 Executing {} tool(s)...", tool_uses.len());
+            }
+
+            // Execute all tool uses
+            let mut tool_results = Vec::new();
+            for tool_use in tool_uses {
+                if self.is_interactive {
+                    println!("  → {}", tool_use.name);
+                }
+
+                let result = self.tool_executor.execute_tool(&tool_use).await?;
+                tool_results.push(result);
+            }
+
+            // Build tool result message for Claude
+            // Format tool results as a user message with structured content
+            let mut tool_result_text = String::from("Tool execution results:\n\n");
+            for result in &tool_results {
+                tool_result_text.push_str(&format!(
+                    "Tool: {} (ID: {})\n",
+                    result.tool_use_id,
+                    result.tool_use_id
+                ));
+                if result.is_error {
+                    tool_result_text.push_str("Status: ERROR\n");
+                } else {
+                    tool_result_text.push_str("Status: SUCCESS\n");
+                }
+                tool_result_text.push_str(&format!("Result:\n{}\n\n", result.content));
+            }
+
+            // Add tool results to conversation as a user message
+            self.conversation.add_user_message(tool_result_text);
+
+            // Re-invoke Claude with tool results
+            let request = MessageRequest::with_context(self.conversation.get_messages())
+                .with_tools(create_tool_definitions());
+
+            current_response = self.claude_client.send_message(&request).await?;
+        }
+
+        if iteration >= MAX_ITERATIONS {
+            if self.is_interactive {
+                eprintln!(
+                    "⚠️  Warning: Max tool iterations reached ({})",
+                    MAX_ITERATIONS
+                );
+            }
+        }
+
+        Ok(current_response.text())
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -503,17 +598,9 @@ impl Repl {
                     .with_tools(create_tool_definitions());
                 let response = self.claude_client.send_message(&request).await?;
 
-                // Check for tool uses
+                // Check for tool uses and execute them
                 if response.has_tool_uses() {
-                    let tool_uses = response.tool_uses();
-                    if self.is_interactive {
-                        println!("🔧 Tool uses detected:");
-                        for tool_use in &tool_uses {
-                            println!("  → {}: {}", tool_use.name, serde_json::to_string(&tool_use.input)?);
-                        }
-                        println!("⚠️  Note: Tool execution not yet implemented. Results will be empty.");
-                    }
-                    claude_response = response.text();
+                    claude_response = self.execute_tool_loop(response).await?;
                 } else {
                     claude_response = response.text();
                 }
@@ -553,19 +640,12 @@ impl Repl {
                     println!("✓ Received response ({}ms)", elapsed);
                 }
 
-                // Check for tool uses
+                // Check for tool uses and execute them
                 if response.has_tool_uses() {
-                    let tool_uses = response.tool_uses();
-                    if self.is_interactive {
-                        println!("🔧 Tool uses detected:");
-                        for tool_use in &tool_uses {
-                            println!("  → {}: {}", tool_use.name, serde_json::to_string(&tool_use.input)?);
-                        }
-                        println!("⚠️  Note: Tool execution not yet implemented. Results will be empty.");
-                    }
+                    claude_response = self.execute_tool_loop(response).await?;
+                } else {
+                    claude_response = response.text();
                 }
-
-                claude_response = response.text();
                 routing_decision_str = "forward".to_string();
                 forward_reason = Some(reason.as_str().to_string());
             }

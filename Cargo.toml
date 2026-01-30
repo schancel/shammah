@@ -58,6 +58,7 @@ scraper = "0.18"
 async-trait = "0.1"
 regex = "1.10"
 glob = "0.3"
+walkdir = "2.4"
 
 [dev-dependencies]
 mockito = "1.2"
