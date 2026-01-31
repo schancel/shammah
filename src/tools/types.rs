@@ -2,8 +2,20 @@
 //
 // Compatible with Claude API tool use format
 
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::cli::ConversationHistory;
+
+/// Context passed to tools during execution
+pub struct ToolContext<'a> {
+    /// Optional conversation history (for tools that need to save/restore state)
+    pub conversation: Option<&'a ConversationHistory>,
+
+    /// Optional function to save model weights (for restart tools)
+    pub save_models: Option<&'a (dyn Fn() -> Result<()> + Send + Sync)>,
+}
 
 /// Tool definition (Claude API-compatible)
 #[derive(Debug, Clone, Serialize, Deserialize)]

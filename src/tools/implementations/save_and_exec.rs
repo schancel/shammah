@@ -1,24 +1,25 @@
-// Restart tool - allows Claude to restart Shammah with a new binary
+// SaveAndExec tool - saves session state and executes arbitrary commands
 
 use crate::tools::registry::Tool;
-use crate::tools::types::{ToolContext, ToolInputSchema};
+use crate::tools::types::ToolContext;
+use crate::tools::types::ToolInputSchema;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Command;
 
-pub struct RestartTool {
+pub struct SaveAndExecTool {
     session_state_file: PathBuf,
 }
 
-impl RestartTool {
+impl SaveAndExecTool {
     pub fn new(session_state_file: PathBuf) -> Self {
         Self { session_state_file }
     }
 }
 
-impl Default for RestartTool {
+impl Default for SaveAndExecTool {
     fn default() -> Self {
         let home = dirs::home_dir().expect("Could not determine home directory");
         let session_state_file = home.join(".shammah/restart_state.json");
@@ -27,23 +28,33 @@ impl Default for RestartTool {
 }
 
 #[async_trait]
-impl Tool for RestartTool {
+impl Tool for SaveAndExecTool {
     fn name(&self) -> &str {
-        "restart_session"
+        "save_and_exec"
     }
 
     fn description(&self) -> &str {
-        "Restart Shammah with a newly built binary, preserving the current conversation.
-        Use this after modifying code and running 'cargo build --release'.
-        The current process will terminate and restart with the new binary.
+        "Save conversation and model state, then execute a shell command.
+        The current process will be replaced by the executed command.
+        Session state is saved to ~/.shammah/restart_state.json
 
-        IMPORTANT: Only use after successfully building the new binary."
+        Common use cases:
+        - Restart Shammah: ./target/release/shammah --restore-session ~/.shammah/restart_state.json
+        - Build and restart: cargo build --release && ./target/release/shammah --restore-session ~/.shammah/restart_state.json
+        - Run with prompt: ./target/release/shammah --restore-session ~/.shammah/restart_state.json --initial-prompt 'hello'
+        - Run any command: python my_script.py"
     }
 
     fn input_schema(&self) -> ToolInputSchema {
         ToolInputSchema::simple(vec![
-            ("reason", "Why you're restarting (e.g., 'optimized router', 'added new tool')"),
-            ("binary_path", "Path to new binary (default: ./target/release/shammah)"),
+            (
+                "reason",
+                "Why you're executing this command (e.g., 'testing new feature', 'rebuilding after changes')",
+            ),
+            (
+                "command",
+                "Shell command to execute (e.g., './target/release/shammah', 'cargo build && ./target/release/shammah')",
+            ),
         ])
     }
 
@@ -52,36 +63,18 @@ impl Tool for RestartTool {
             .as_str()
             .context("Missing reason parameter")?;
 
-        let binary_path = input["binary_path"]
+        let command = input["command"]
             .as_str()
-            .unwrap_or("./target/release/shammah");
+            .context("Missing command parameter")?;
 
-        // Verify new binary exists
-        if !std::path::Path::new(binary_path).exists() {
-            anyhow::bail!(
-                "Binary not found at '{}'. Did you forget to run 'cargo build --release'?",
-                binary_path
-            );
-        }
-
-        // Check if binary is executable
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let metadata = std::fs::metadata(binary_path)?;
-            let permissions = metadata.permissions();
-            if permissions.mode() & 0o111 == 0 {
-                anyhow::bail!("Binary at '{}' is not executable", binary_path);
-            }
-        }
-
-        println!("\n🔄 Restarting Shammah...");
+        println!("\n💾 Saving session state...");
         println!("   Reason: {}", reason);
-        println!("   Binary: {}", binary_path);
-        println!("   Conversation will be preserved");
+        println!("   Command: {}", command);
 
-        // Save conversation state
+        // CRITICAL: Save all state before exec
         let session_state_file = self.session_state_file.clone();
+
+        // Save conversation
         if let Some(conversation) = context.conversation {
             std::fs::create_dir_all(session_state_file.parent().unwrap())?;
             conversation.save(&session_state_file)?;
@@ -91,37 +84,41 @@ impl Tool for RestartTool {
             );
         }
 
-        // Save model weights before restart
+        // CRITICAL: Save model weights before exec
+        // The router contains threshold_router with learned statistics
+        // These MUST be saved or all learning is lost on restart
         if let Some(ref save_models_fn) = context.save_models {
             save_models_fn()?;
             println!("✓ Saved model weights");
         }
 
-        // Prepare restart command with session restoration
-        let mut cmd = Command::new(binary_path);
-        cmd.arg("--restore-session").arg(&session_state_file);
+        // Prepare command execution through shell
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(command);
+
+        // Set environment variable with session file path for convenience
+        cmd.env("SHAMMAH_SESSION_FILE", &session_state_file);
 
         // On Unix, use exec to replace current process
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
 
-            println!("\n→ Executing new binary...\n");
+            println!("\n→ Executing command...\n");
 
             // This will replace the current process - never returns
             let err = cmd.exec();
 
             // If we get here, exec failed
-            anyhow::bail!("Failed to exec new binary: {}", err);
+            anyhow::bail!("Failed to exec command: {}", err);
         }
 
         // On Windows, spawn and exit
         #[cfg(not(unix))]
         {
-            println!("\n→ Starting new binary...\n");
+            println!("\n→ Starting command...\n");
 
-            cmd.spawn()
-                .context("Failed to spawn new binary")?;
+            cmd.spawn().context("Failed to spawn command")?;
 
             std::process::exit(0);
         }
@@ -133,14 +130,14 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_restart_requires_reason() {
-        let tool = RestartTool::default();
+    async fn test_save_and_exec_requires_reason() {
+        let tool = SaveAndExecTool::default();
         let context = ToolContext {
             conversation: None,
             save_models: None,
         };
         let input = serde_json::json!({
-            "binary_path": "./target/release/shammah"
+            "command": "echo test"
         });
 
         let result = tool.execute(input, &context).await;
@@ -149,19 +146,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_restart_validates_binary_exists() {
-        let tool = RestartTool::default();
+    async fn test_save_and_exec_requires_command() {
+        let tool = SaveAndExecTool::default();
         let context = ToolContext {
             conversation: None,
             save_models: None,
         };
         let input = serde_json::json!({
-            "reason": "test",
-            "binary_path": "/nonexistent/binary"
+            "reason": "test"
         });
 
         let result = tool.execute(input, &context).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
+        assert!(result.unwrap_err().to_string().contains("command"));
     }
 }

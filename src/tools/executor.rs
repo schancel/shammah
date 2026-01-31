@@ -288,12 +288,13 @@ impl ToolExecutor {
             }
         }
 
-        // 3. Execute tool
-        // Note: conversation and save_models_fn parameters are currently unused
-        // They were intended for save_and_exec tool which is deferred to future work
-        let _ = (conversation, save_models_fn); // Suppress unused variable warning
+        // 3. Execute tool with context
+        let context = crate::tools::types::ToolContext {
+            conversation,
+            save_models: save_models_fn.as_ref().map(|f| f as &(dyn Fn() -> Result<()> + Send + Sync)),
+        };
 
-        match tool.execute(tool_use.input.clone()).await {
+        match tool.execute(tool_use.input.clone(), &context).await {
             Ok(output) => {
                 info!("Tool executed successfully");
                 Ok(ToolResult::success(tool_use.id.clone(), output))

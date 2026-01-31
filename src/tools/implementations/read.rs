@@ -1,7 +1,7 @@
 // Read tool - reads file contents from filesystem
 
 use crate::tools::registry::Tool;
-use crate::tools::types::ToolInputSchema;
+use crate::tools::types::{ToolContext, ToolInputSchema};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -25,7 +25,7 @@ impl Tool for ReadTool {
         ])
     }
 
-    async fn execute(&self, input: Value) -> Result<String> {
+    async fn execute(&self, input: Value, _context: &ToolContext<'_>) -> Result<String> {
         let file_path = input["file_path"]
             .as_str()
             .context("Missing file_path parameter")?;

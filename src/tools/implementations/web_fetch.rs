@@ -1,7 +1,7 @@
 // WebFetch tool - fetches content from URLs
 
 use crate::tools::registry::Tool;
-use crate::tools::types::ToolInputSchema;
+use crate::tools::types::{ToolContext, ToolInputSchema};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest;
@@ -46,7 +46,7 @@ impl Tool for WebFetchTool {
         ])
     }
 
-    async fn execute(&self, input: Value) -> Result<String> {
+    async fn execute(&self, input: Value, _context: &ToolContext<'_>) -> Result<String> {
         let url = input["url"]
             .as_str()
             .context("Missing url parameter")?;

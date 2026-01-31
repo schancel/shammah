@@ -1,7 +1,7 @@
 // Glob tool - finds files matching glob patterns
 
 use crate::tools::registry::Tool;
-use crate::tools::types::ToolInputSchema;
+use crate::tools::types::{ToolContext, ToolInputSchema};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use glob::glob;
@@ -25,7 +25,7 @@ impl Tool for GlobTool {
         ])
     }
 
-    async fn execute(&self, input: Value) -> Result<String> {
+    async fn execute(&self, input: Value, _context: &ToolContext<'_>) -> Result<String> {
         let pattern = input["pattern"]
             .as_str()
             .context("Missing pattern parameter")?;

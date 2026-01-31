@@ -2,7 +2,7 @@
 //
 // Manages available tools and provides uniform execution interface
 
-use crate::tools::types::{ToolDefinition, ToolInputSchema};
+use crate::tools::types::{ToolContext, ToolDefinition, ToolInputSchema};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -20,8 +20,8 @@ pub trait Tool: Send + Sync {
     /// JSON Schema defining expected input parameters
     fn input_schema(&self) -> ToolInputSchema;
 
-    /// Execute the tool with given input
-    async fn execute(&self, input: Value) -> Result<String>;
+    /// Execute the tool with given input and context
+    async fn execute(&self, input: Value, context: &ToolContext<'_>) -> Result<String>;
 
     /// Get full tool definition (for Claude API)
     fn definition(&self) -> ToolDefinition {
@@ -72,6 +72,11 @@ impl ToolRegistry {
         self.tools.values().map(|t| t.definition()).collect()
     }
 
+    /// Get all tools (for iteration)
+    pub fn get_all_tools(&self) -> Vec<&dyn Tool> {
+        self.tools.values().map(|t| t.as_ref()).collect()
+    }
+
     /// Number of registered tools
     pub fn len(&self) -> usize {
         self.tools.len()
@@ -112,7 +117,7 @@ mod tests {
             ToolInputSchema::simple(vec![("param", "A test parameter")])
         }
 
-        async fn execute(&self, _input: Value) -> Result<String> {
+        async fn execute(&self, _input: Value, _context: &ToolContext<'_>) -> Result<String> {
             Ok("Mock result".to_string())
         }
     }

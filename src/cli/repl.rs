@@ -21,7 +21,7 @@ use crate::models::{ThresholdRouter, ThresholdValidator};
 use crate::router::{ForwardReason, RouteDecision, Router};
 use crate::tools::executor::{generate_tool_signature, ApprovalSource, ToolSignature};
 use crate::tools::implementations::{
-    BashTool, GlobTool, GrepTool, ReadTool, WebFetchTool,
+    BashTool, GlobTool, GrepTool, ReadTool, RestartTool, SaveAndExecTool, WebFetchTool,
 };
 use crate::tools::patterns::ToolPattern;
 use crate::tools::types::{ToolDefinition, ToolInputSchema, ToolUse};
@@ -58,73 +58,6 @@ fn terminal_width() -> usize {
     terminal::size().map(|(w, _)| w as usize).unwrap_or(80)
 }
 
-/// Create tool definitions for Claude API
-///
-/// These are placeholder definitions until actual tool implementations are ready.
-/// Claude will know these tools exist and can invoke them, but execution is not yet implemented.
-fn create_tool_definitions() -> Vec<ToolDefinition> {
-    vec![
-        // Bash command execution
-        ToolDefinition {
-            name: "bash".to_string(),
-            description: "Execute bash commands. Use this for terminal operations like git, npm, docker, file operations, etc.".to_string(),
-            input_schema: ToolInputSchema::simple(vec![
-                ("command", "The bash command to execute"),
-                ("description", "A brief description of what this command does"),
-            ]),
-        },
-        // Read file contents
-        ToolDefinition {
-            name: "read".to_string(),
-            description: "Read the contents of a file from the filesystem.".to_string(),
-            input_schema: ToolInputSchema::simple(vec![
-                ("file_path", "Absolute path to the file to read"),
-            ]),
-        },
-        // Web fetch
-        ToolDefinition {
-            name: "web_fetch".to_string(),
-            description: "Fetch content from a URL. Use this to retrieve information from websites or APIs.".to_string(),
-            input_schema: ToolInputSchema::simple(vec![
-                ("url", "The URL to fetch"),
-                ("prompt", "What information to extract from the fetched content"),
-            ]),
-        },
-        // Grep/search
-        ToolDefinition {
-            name: "grep".to_string(),
-            description: "Search for patterns in files using ripgrep. Returns matching lines.".to_string(),
-            input_schema: ToolInputSchema::simple(vec![
-                ("pattern", "The regex pattern to search for"),
-                ("path", "Directory or file to search in (optional, defaults to current directory)"),
-            ]),
-        },
-        // Glob/find files
-        ToolDefinition {
-            name: "glob".to_string(),
-            description: "Find files matching a glob pattern (e.g., \"**/*.rs\", \"src/**/*.ts\").".to_string(),
-            input_schema: ToolInputSchema::simple(vec![
-                ("pattern", "The glob pattern to match files against"),
-            ]),
-        },
-        // Save and exec - general-purpose session preservation + command execution
-        ToolDefinition {
-            name: "save_and_exec".to_string(),
-            description: "Save conversation and model state, then execute any shell command. \
-                         Session is saved to ~/.shammah/restart_state.json (also in $SHAMMAH_SESSION_FILE). \
-                         Common examples:\n\
-                         - Simple restart: './target/release/shammah --restore-session ~/.shammah/restart_state.json'\n\
-                         - With prompt: './target/release/shammah --restore-session ~/.shammah/restart_state.json --initial-prompt \"test\"'\n\
-                         - Build first: 'cargo build --release && ./target/release/shammah --restore-session ~/.shammah/restart_state.json'\n\
-                         - Any command: 'python my_script.py'".to_string(),
-            input_schema: ToolInputSchema::simple(vec![
-                ("reason", "Why you're executing this command"),
-                ("command", "Shell command to execute (supports &&, ||, pipes, etc.)"),
-            ]),
-        },
-    ]
-}
-
 /// REPL operating mode
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReplMode {
@@ -158,6 +91,7 @@ pub struct Repl {
     models_dir: Option<PathBuf>,
     // Tool execution
     tool_executor: ToolExecutor,
+    tool_definitions: Vec<ToolDefinition>, // Cached tool definitions for Claude API
     // UI state
     is_interactive: bool,
     streaming_enabled: bool,
@@ -211,6 +145,14 @@ impl Repl {
         tool_registry.register(Box::new(WebFetchTool::new()));
         tool_registry.register(Box::new(BashTool));
 
+        // Self-improvement tools
+        let session_state_file = dirs::home_dir()
+            .map(|home| home.join(".shammah").join("restart_state.json"))
+            .unwrap_or_else(|| PathBuf::from(".shammah/restart_state.json"));
+
+        tool_registry.register(Box::new(RestartTool::new(session_state_file.clone())));
+        tool_registry.register(Box::new(SaveAndExecTool::new(session_state_file.clone())));
+
         // Create permission manager (allow all for now)
         let permissions = PermissionManager::new().with_default_rule(PermissionRule::Allow);
 
@@ -231,6 +173,8 @@ impl Repl {
                 fallback_registry.register(Box::new(GrepTool));
                 fallback_registry.register(Box::new(WebFetchTool::new()));
                 fallback_registry.register(Box::new(BashTool));
+                fallback_registry.register(Box::new(RestartTool::new(session_state_file.clone())));
+                fallback_registry.register(Box::new(SaveAndExecTool::new(session_state_file.clone())));
                 ToolExecutor::new(
                     fallback_registry,
                     PermissionManager::new().with_default_rule(PermissionRule::Allow),
@@ -248,6 +192,14 @@ impl Repl {
 
         let streaming_enabled = config.streaming_enabled;
 
+        // Generate tool definitions from registry
+        let tool_definitions: Vec<ToolDefinition> = tool_executor
+            .registry()
+            .get_all_tools()
+            .into_iter()
+            .map(|tool| tool.definition())
+            .collect();
+
         Self {
             _config: config,
             claude_client,
@@ -258,6 +210,7 @@ impl Repl {
             training_trends: TrainingTrends::new(20), // Track last 20 queries
             models_dir,
             tool_executor,
+            tool_definitions,
             is_interactive,
             streaming_enabled,
             debug_enabled: false,
@@ -615,7 +568,7 @@ impl Repl {
 
             // Re-invoke Claude with tool results
             let request = MessageRequest::with_context(self.conversation.get_messages())
-                .with_tools(create_tool_definitions());
+                .with_tools(self.tool_definitions.clone());
 
             current_response = self.claude_client.send_message(&request).await?;
         }
@@ -1688,7 +1641,7 @@ impl Repl {
 
                         // Forward to Claude
                         let request = MessageRequest::with_context(self.conversation.get_messages())
-                            .with_tools(create_tool_definitions());
+                            .with_tools(self.tool_definitions.clone());
 
                         // Try streaming first, fallback to buffered if tools detected
                         let use_streaming = self.streaming_enabled && self.is_interactive;
@@ -1749,7 +1702,7 @@ impl Repl {
 
                 // Use full conversation context with tool definitions
                 let request = MessageRequest::with_context(self.conversation.get_messages())
-                    .with_tools(create_tool_definitions());
+                    .with_tools(self.tool_definitions.clone());
 
                 // Try streaming first, fallback to buffered if tools detected
                 let use_streaming = self.streaming_enabled && self.is_interactive;
