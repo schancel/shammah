@@ -12,6 +12,7 @@ repository = "https://github.com/shammah/claude-proxy"
 clap = { version = "4.4", features = ["derive"] }
 crossterm = "0.27"
 ctrlc = "3.4"
+inquire = "0.7"
 rustyline = "13.0"
 
 # Async runtime
