@@ -21,7 +21,8 @@ use crate::models::{ThresholdRouter, ThresholdValidator};
 use crate::router::{ForwardReason, RouteDecision, Router};
 use crate::tools::executor::{generate_tool_signature, ApprovalSource, ToolSignature};
 use crate::tools::implementations::{
-    BashTool, GlobTool, GrepTool, ReadTool, RestartTool, SaveAndExecTool, WebFetchTool,
+    AnalyzeModelTool, BashTool, CompareResponsesTool, GenerateTrainingDataTool, GlobTool,
+    GrepTool, QueryLocalModelTool, ReadTool, RestartTool, SaveAndExecTool, WebFetchTool,
 };
 use crate::tools::patterns::ToolPattern;
 use crate::tools::types::{ToolDefinition, ToolInputSchema, ToolUse};
@@ -153,6 +154,12 @@ impl Repl {
         tool_registry.register(Box::new(RestartTool::new(session_state_file.clone())));
         tool_registry.register(Box::new(SaveAndExecTool::new(session_state_file.clone())));
 
+        // Active learning tools (Phase 2)
+        tool_registry.register(Box::new(QueryLocalModelTool));
+        tool_registry.register(Box::new(CompareResponsesTool));
+        tool_registry.register(Box::new(GenerateTrainingDataTool));
+        tool_registry.register(Box::new(AnalyzeModelTool));
+
         // Create permission manager (allow all for now)
         let permissions = PermissionManager::new().with_default_rule(PermissionRule::Allow);
 
@@ -175,6 +182,10 @@ impl Repl {
                 fallback_registry.register(Box::new(BashTool));
                 fallback_registry.register(Box::new(RestartTool::new(session_state_file.clone())));
                 fallback_registry.register(Box::new(SaveAndExecTool::new(session_state_file.clone())));
+                fallback_registry.register(Box::new(QueryLocalModelTool));
+                fallback_registry.register(Box::new(CompareResponsesTool));
+                fallback_registry.register(Box::new(GenerateTrainingDataTool));
+                fallback_registry.register(Box::new(AnalyzeModelTool));
                 ToolExecutor::new(
                     fallback_registry,
                     PermissionManager::new().with_default_rule(PermissionRule::Allow),
