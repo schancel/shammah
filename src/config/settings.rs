@@ -19,6 +19,39 @@ pub struct Config {
     /// Path to constitutional guidelines for local LLM (optional)
     /// Only used for local inference, NOT sent to Claude API
     pub constitution_path: Option<PathBuf>,
+
+    /// Server configuration (daemon mode)
+    pub server: ServerConfig,
+}
+
+/// Server configuration for daemon mode
+#[derive(Debug, Clone)]
+pub struct ServerConfig {
+    /// Enable daemon mode
+    pub enabled: bool,
+    /// Bind address (e.g., "127.0.0.1:8000")
+    pub bind_address: String,
+    /// Maximum number of concurrent sessions
+    pub max_sessions: usize,
+    /// Session timeout in minutes
+    pub session_timeout_minutes: u64,
+    /// Enable API key authentication
+    pub auth_enabled: bool,
+    /// Valid API keys for authentication
+    pub api_keys: Vec<String>,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind_address: "127.0.0.1:8000".to_string(),
+            max_sessions: 100,
+            session_timeout_minutes: 30,
+            auth_enabled: false,
+            api_keys: vec![],
+        }
+    }
 }
 
 impl Config {
@@ -40,6 +73,7 @@ impl Config {
             metrics_dir: home.join(".shammah/metrics"),
             streaming_enabled: true, // Enable by default
             constitution_path,
+            server: ServerConfig::default(),
         }
     }
 }

@@ -54,6 +54,13 @@ Think of it as a smart cache that learns not just answers, but reasoning pattern
   - Statistics merged across sessions
   - Safe for team use
 
+- **HTTP Daemon Mode** (Phase 1 - NEW) - Multi-tenant agent server
+  - Claude-compatible `/v1/messages` endpoint
+  - Session management with automatic cleanup
+  - Health checks and Prometheus metrics
+  - Perfect for running as a service or in containers
+  - Multiple clients can connect simultaneously
+
 - **Cost Effective** - Reduces API costs by 76% (24% of original after accounting for 5% forwarding)
   - Pay only for novel or complex queries
   - Training investment pays off quickly
@@ -173,6 +180,27 @@ EOF
 > /patterns add                # Create a new pattern interactively
 > /patterns remove abc12345    # Remove a specific pattern
 > /patterns clear               # Clear all patterns
+
+# HTTP Daemon Mode (NEW - Phase 1)
+# Run as background server for multi-client access
+./target/release/shammah daemon --bind 127.0.0.1:8000
+
+# Test health check
+curl http://127.0.0.1:8000/health
+
+# Send message (Claude-compatible API)
+curl -X POST http://127.0.0.1:8000/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-5-20250929",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+
+# Get session info
+curl http://127.0.0.1:8000/v1/session/SESSION_ID
+
+# View Prometheus metrics
+curl http://127.0.0.1:8000/metrics
 ```
 
 ## Architecture

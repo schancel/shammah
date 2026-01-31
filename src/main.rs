@@ -18,19 +18,51 @@ use shammah::router::Router;
 #[command(name = "shammah")]
 #[command(about = "Local-first Constitutional AI Proxy", version)]
 struct Args {
-    /// Initial prompt to send after startup
+    /// Run mode
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    /// Initial prompt to send after startup (REPL mode)
     #[arg(long = "initial-prompt")]
     initial_prompt: Option<String>,
 
-    /// Path to session state file to restore
+    /// Path to session state file to restore (REPL mode)
     #[arg(long = "restore-session")]
     restore_session: Option<PathBuf>,
+}
+
+#[derive(Parser, Debug)]
+enum Command {
+    /// Run HTTP daemon server
+    Daemon {
+        /// Bind address (default: 127.0.0.1:8000)
+        #[arg(long, default_value = "127.0.0.1:8000")]
+        bind: String,
+    },
+    /// Execute a single query
+    Query {
+        /// Query text
+        query: String,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parse command-line arguments
     let args = Args::parse();
+
+    // Dispatch based on command
+    match args.command {
+        Some(Command::Daemon { bind }) => {
+            return run_daemon(bind).await;
+        }
+        Some(Command::Query { query }) => {
+            return run_query(&query).await;
+        }
+        None => {
+            // Fall through to REPL mode (check for piped input first)
+        }
+    }
 
     // Check for piped input BEFORE initializing anything else
     if !io::stdin().is_terminal() {
@@ -139,6 +171,106 @@ async fn main() -> Result<()> {
 
     // Run REPL (potentially with initial prompt)
     repl.run_with_initial_prompt(args.initial_prompt).await?;
+
+    Ok(())
+}
+
+/// Run HTTP daemon server
+async fn run_daemon(bind_address: String) -> Result<()> {
+    use shammah::server::{AgentServer, ServerConfig};
+
+    // Initialize tracing
+    tracing_subscriber::fmt::init();
+
+    tracing::info!("Starting Shammah in daemon mode");
+
+    // Load configuration
+    let mut config = load_config()?;
+    config.server.enabled = true;
+    config.server.bind_address = bind_address;
+
+    // Load crisis detector
+    let crisis_detector = CrisisDetector::load_from_file(&config.crisis_keywords_path)?;
+
+    // Load or create threshold router
+    let models_dir = dirs::home_dir()
+        .map(|home| home.join(".shammah").join("models"))
+        .expect("Failed to determine home directory");
+    std::fs::create_dir_all(&models_dir)?;
+
+    let threshold_router_path = models_dir.join("threshold_router.json");
+    let threshold_router = if threshold_router_path.exists() {
+        match ThresholdRouter::load(&threshold_router_path) {
+            Ok(router) => {
+                tracing::info!(
+                    total_queries = router.stats().total_queries,
+                    "Loaded threshold router"
+                );
+                router
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to load threshold router, creating new one");
+                ThresholdRouter::new()
+            }
+        }
+    } else {
+        tracing::info!("Creating new threshold router");
+        ThresholdRouter::new()
+    };
+
+    // Create router
+    let router = Router::new(crisis_detector, threshold_router);
+
+    // Create Claude client
+    let claude_client = ClaudeClient::new(config.api_key.clone())?;
+
+    // Create metrics logger
+    let metrics_logger = MetricsLogger::new(config.metrics_dir.clone())?;
+
+    // Create server configuration
+    let server_config = ServerConfig {
+        bind_address: config.server.bind_address.clone(),
+        max_sessions: config.server.max_sessions,
+        session_timeout_minutes: config.server.session_timeout_minutes,
+        auth_enabled: config.server.auth_enabled,
+        api_keys: config.server.api_keys.clone(),
+    };
+
+    // Create and start agent server
+    let server = AgentServer::new(config, server_config, claude_client, router, metrics_logger)?;
+    server.serve().await?;
+
+    Ok(())
+}
+
+/// Run a single query
+async fn run_query(query: &str) -> Result<()> {
+    // Initialize minimal components
+    let config = load_config()?;
+    let crisis_detector = CrisisDetector::load_from_file(&config.crisis_keywords_path)?;
+
+    let models_dir = dirs::home_dir()
+        .map(|home| home.join(".shammah").join("models"))
+        .expect("Failed to determine home directory");
+    std::fs::create_dir_all(&models_dir)?;
+
+    let threshold_router_path = models_dir.join("threshold_router.json");
+    let threshold_router = if threshold_router_path.exists() {
+        ThresholdRouter::load(&threshold_router_path).unwrap_or_else(|_| ThresholdRouter::new())
+    } else {
+        ThresholdRouter::new()
+    };
+
+    let router = Router::new(crisis_detector, threshold_router);
+    let claude_client = ClaudeClient::new(config.api_key.clone())?;
+    let metrics_logger = MetricsLogger::new(config.metrics_dir.clone())?;
+
+    // Create REPL in non-interactive mode
+    let mut repl = Repl::new(config, claude_client, router, metrics_logger);
+
+    // Process query and print result
+    let response = repl.process_query(query).await?;
+    println!("{}", response);
 
     Ok(())
 }
