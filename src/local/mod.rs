@@ -9,7 +9,11 @@ pub mod patterns;
 pub use generator::{GeneratedResponse, ResponseGenerator};
 pub use patterns::{PatternClassifier, QueryPattern};
 
+use crate::models::{GeneratorModel, TextTokenizer};
+use crate::training::batch_trainer::BatchTrainer;
 use anyhow::Result;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// Local generation system that coordinates pattern classification and response generation
 pub struct LocalGenerator {
@@ -19,10 +23,19 @@ pub struct LocalGenerator {
 }
 
 impl LocalGenerator {
-    /// Create new local generator
+    /// Create new local generator without neural models
     pub fn new() -> Self {
+        Self::with_models(None, None)
+    }
+
+    /// Create local generator with optional neural models
+    pub fn with_models(
+        neural_generator: Option<Arc<RwLock<GeneratorModel>>>,
+        tokenizer: Option<Arc<TextTokenizer>>,
+    ) -> Self {
         let pattern_classifier = PatternClassifier::new();
-        let response_generator = ResponseGenerator::new(pattern_classifier.clone());
+        let response_generator =
+            ResponseGenerator::with_models(pattern_classifier.clone(), neural_generator, tokenizer);
 
         Self {
             pattern_classifier,
@@ -60,9 +73,15 @@ impl LocalGenerator {
     }
 
     /// Learn from a Claude response
-    pub fn learn_from_claude(&mut self, query: &str, response: &str, quality_score: f64) {
+    pub fn learn_from_claude(
+        &mut self,
+        query: &str,
+        response: &str,
+        quality_score: f64,
+        batch_trainer: Option<&Arc<RwLock<BatchTrainer>>>,
+    ) {
         self.response_generator
-            .learn_from_claude(query, response, quality_score);
+            .learn_from_claude(query, response, quality_score, batch_trainer);
     }
 
     /// Enable/disable local generation
@@ -127,7 +146,9 @@ mod tests {
 
         if let Ok(Some(response)) = result {
             assert!(!response.is_empty());
-            assert!(response.to_lowercase().contains("hello") || response.to_lowercase().contains("hi"));
+            assert!(
+                response.to_lowercase().contains("hello") || response.to_lowercase().contains("hi")
+            );
         }
     }
 
@@ -153,6 +174,7 @@ mod tests {
             "What is Rust?",
             "Rust is a systems programming language focused on safety, speed, and concurrency.",
             0.9,
+            None,
         );
 
         // Learning should not crash

@@ -10,6 +10,7 @@ use crate::tools::types::{ToolResult, ToolUse};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::{debug, error, info, instrument, warn};
 
 /// Signature for a tool execution, used for caching approval decisions
@@ -247,12 +248,17 @@ impl ToolExecutor {
     }
 
     /// Execute a single tool use
-    #[instrument(skip(self, tool_use, conversation, save_models_fn), fields(tool = %tool_use.name, id = %tool_use.id))]
+    #[instrument(skip(self, tool_use, conversation, save_models_fn, batch_trainer, local_generator, tokenizer), fields(tool = %tool_use.name, id = %tool_use.id))]
     pub async fn execute_tool<F>(
         &self,
         tool_use: &ToolUse,
         conversation: Option<&ConversationHistory>,
         save_models_fn: Option<F>,
+        batch_trainer: Option<
+            Arc<tokio::sync::RwLock<crate::training::batch_trainer::BatchTrainer>>,
+        >,
+        local_generator: Option<Arc<tokio::sync::RwLock<crate::local::LocalGenerator>>>,
+        tokenizer: Option<Arc<crate::models::tokenizer::TextTokenizer>>,
     ) -> Result<ToolResult>
     where
         F: Fn() -> Result<()> + Send + Sync,
@@ -291,7 +297,12 @@ impl ToolExecutor {
         // 3. Execute tool with context
         let context = crate::tools::types::ToolContext {
             conversation,
-            save_models: save_models_fn.as_ref().map(|f| f as &(dyn Fn() -> Result<()> + Send + Sync)),
+            save_models: save_models_fn
+                .as_ref()
+                .map(|f| f as &(dyn Fn() -> Result<()> + Send + Sync)),
+            batch_trainer,
+            local_generator,
+            tokenizer,
         };
 
         match tool.execute(tool_use.input.clone(), &context).await {
@@ -310,12 +321,25 @@ impl ToolExecutor {
     }
 
     /// Execute multiple tool uses in sequence
-    #[instrument(skip(self, tool_uses, conversation, save_models_fn))]
+    #[instrument(skip(
+        self,
+        tool_uses,
+        conversation,
+        save_models_fn,
+        batch_trainer,
+        local_generator,
+        tokenizer
+    ))]
     pub async fn execute_tool_loop<F>(
         &self,
         tool_uses: Vec<ToolUse>,
         conversation: Option<&ConversationHistory>,
         save_models_fn: Option<F>,
+        batch_trainer: Option<
+            Arc<tokio::sync::RwLock<crate::training::batch_trainer::BatchTrainer>>,
+        >,
+        local_generator: Option<Arc<tokio::sync::RwLock<crate::local::LocalGenerator>>>,
+        tokenizer: Option<Arc<crate::models::tokenizer::TextTokenizer>>,
     ) -> Result<Vec<ToolResult>>
     where
         F: Fn() -> Result<()> + Send + Sync + Clone,
@@ -326,7 +350,14 @@ impl ToolExecutor {
 
         for tool_use in tool_uses {
             let result = self
-                .execute_tool(&tool_use, conversation, save_models_fn.clone())
+                .execute_tool(
+                    &tool_use,
+                    conversation,
+                    save_models_fn.clone(),
+                    batch_trainer.clone(),
+                    local_generator.clone(),
+                    tokenizer.clone(),
+                )
                 .await?;
             results.push(result);
         }
@@ -395,6 +426,60 @@ pub fn generate_tool_signature(tool_use: &ToolUse, working_dir: &std::path::Path
                 context_key: format!("{} in {}", command, working_dir.display()),
             }
         }
+        "train" => {
+            // Extract wait parameter if present
+            let wait = tool_use.input["wait"].as_bool().unwrap_or(false);
+            ToolSignature {
+                tool_name: tool_use.name.clone(),
+                context_key: format!("train wait={}", wait),
+            }
+        }
+        "query_local_model" => {
+            // Extract query if present
+            let query = tool_use.input["query"].as_str().unwrap_or("");
+            let truncated_query = if query.len() > 50 {
+                format!("{}...", &query[..50])
+            } else {
+                query.to_string()
+            };
+            ToolSignature {
+                tool_name: tool_use.name.clone(),
+                context_key: format!("query_local_model: {}", truncated_query),
+            }
+        }
+        "analyze_model" => {
+            // Extract categories if present
+            let categories = if let Some(cats) = tool_use.input["categories"].as_array() {
+                cats.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else {
+                "all".to_string()
+            };
+            ToolSignature {
+                tool_name: tool_use.name.clone(),
+                context_key: format!("analyze_model categories={}", categories),
+            }
+        }
+        "generate_training_data" => {
+            // Extract count of examples
+            let examples_count = if let Some(examples) = tool_use.input["examples"].as_array() {
+                examples.len()
+            } else {
+                0
+            };
+            ToolSignature {
+                tool_name: tool_use.name.clone(),
+                context_key: format!("generate_training_data count={}", examples_count),
+            }
+        }
+        "compare_responses" => {
+            ToolSignature {
+                tool_name: tool_use.name.clone(),
+                context_key: "compare_responses".to_string(),
+            }
+        }
         _ => {
             // Generic signature for unknown tools
             ToolSignature {
@@ -409,7 +494,7 @@ pub fn generate_tool_signature(tool_use: &ToolUse, working_dir: &std::path::Path
 mod tests {
     use super::*;
     use crate::tools::registry::Tool;
-    use crate::tools::types::ToolInputSchema;
+    use crate::tools::types::{ToolContext, ToolInputSchema};
     use async_trait::async_trait;
     use serde_json::{json, Value};
     use std::path::Path;
@@ -433,7 +518,7 @@ mod tests {
             ToolInputSchema::simple(vec![("param", "Test parameter")])
         }
 
-        async fn execute(&self, input: Value) -> Result<String> {
+        async fn execute(&self, input: Value, _context: &ToolContext<'_>) -> Result<String> {
             if self.should_fail {
                 anyhow::bail!("Mock failure");
             }
@@ -466,7 +551,7 @@ mod tests {
         let tool_use = ToolUse::new("mock".to_string(), serde_json::json!({"param": "value"}));
 
         let result = executor
-            .execute_tool(&tool_use, None, None::<fn() -> Result<()>>)
+            .execute_tool(&tool_use, None, None::<fn() -> Result<()>>, None, None, None)
             .await
             .unwrap();
 
@@ -484,7 +569,7 @@ mod tests {
         );
 
         let result = executor
-            .execute_tool(&tool_use, None, None::<fn() -> Result<()>>)
+            .execute_tool(&tool_use, None, None::<fn() -> Result<()>>, None, None, None)
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
@@ -496,7 +581,7 @@ mod tests {
         let tool_use = ToolUse::new("mock".to_string(), serde_json::json!({"param": "value"}));
 
         let result = executor
-            .execute_tool(&tool_use, None, None::<fn() -> Result<()>>)
+            .execute_tool(&tool_use, None, None::<fn() -> Result<()>>, None, None, None)
             .await
             .unwrap();
 
@@ -511,7 +596,7 @@ mod tests {
         let tool_use = ToolUse::new("mock".to_string(), serde_json::json!({"param": "value"}));
 
         let result = executor
-            .execute_tool(&tool_use, None, None::<fn() -> Result<()>>)
+            .execute_tool(&tool_use, None, None::<fn() -> Result<()>>, None, None, None)
             .await
             .unwrap();
 
@@ -529,7 +614,7 @@ mod tests {
         ];
 
         let results = executor
-            .execute_tool_loop(tool_uses, None, None::<fn() -> Result<()>>)
+            .execute_tool_loop(tool_uses, None, None::<fn() -> Result<()>>, None, None, None)
             .await
             .unwrap();
 
@@ -659,5 +744,86 @@ mod tests {
 
         // Same command should produce same signature
         assert_eq!(sig1, sig3);
+    }
+
+    #[test]
+    fn test_generate_tool_signature_train() {
+        let working_dir = Path::new("/test/dir");
+        let tool_use = ToolUse::new(
+            "train".to_string(),
+            json!({
+                "wait": true
+            }),
+        );
+
+        let sig = generate_tool_signature(&tool_use, working_dir);
+
+        assert_eq!(sig.tool_name, "train");
+        assert_eq!(sig.context_key, "train wait=true");
+    }
+
+    #[test]
+    fn test_generate_tool_signature_query_local_model() {
+        let working_dir = Path::new("/test/dir");
+        let tool_use = ToolUse::new(
+            "query_local_model".to_string(),
+            json!({
+                "query": "What is Rust?"
+            }),
+        );
+
+        let sig = generate_tool_signature(&tool_use, working_dir);
+
+        assert_eq!(sig.tool_name, "query_local_model");
+        assert_eq!(sig.context_key, "query_local_model: What is Rust?");
+    }
+
+    #[test]
+    fn test_generate_tool_signature_analyze_model() {
+        let working_dir = Path::new("/test/dir");
+        let tool_use = ToolUse::new(
+            "analyze_model".to_string(),
+            json!({
+                "categories": ["greetings", "math"]
+            }),
+        );
+
+        let sig = generate_tool_signature(&tool_use, working_dir);
+
+        assert_eq!(sig.tool_name, "analyze_model");
+        assert_eq!(sig.context_key, "analyze_model categories=greetings, math");
+    }
+
+    #[test]
+    fn test_generate_tool_signature_generate_training_data() {
+        let working_dir = Path::new("/test/dir");
+        let tool_use = ToolUse::new(
+            "generate_training_data".to_string(),
+            json!({
+                "examples": [
+                    {"query": "Hello", "response": "Hi!"},
+                    {"query": "Bye", "response": "Goodbye!"}
+                ]
+            }),
+        );
+
+        let sig = generate_tool_signature(&tool_use, working_dir);
+
+        assert_eq!(sig.tool_name, "generate_training_data");
+        assert_eq!(sig.context_key, "generate_training_data count=2");
+    }
+
+    #[test]
+    fn test_generate_tool_signature_compare_responses() {
+        let working_dir = Path::new("/test/dir");
+        let tool_use = ToolUse::new(
+            "compare_responses".to_string(),
+            json!({}),
+        );
+
+        let sig = generate_tool_signature(&tool_use, working_dir);
+
+        assert_eq!(sig.tool_name, "compare_responses");
+        assert_eq!(sig.context_key, "compare_responses");
     }
 }

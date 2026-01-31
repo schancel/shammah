@@ -169,8 +169,18 @@ mod tests {
         let tool = MockTool {
             name: "test".to_string(),
         };
+
+        // Create empty context for test
+        let context = ToolContext {
+            conversation: None,
+            save_models: None,
+            batch_trainer: None,
+            local_generator: None,
+            tokenizer: None,
+        };
+
         let result = tool
-            .execute(serde_json::json!({"param": "value"}))
+            .execute(serde_json::json!({"param": "value"}), &context)
             .await
             .unwrap();
         assert_eq!(result, "Mock result");
