@@ -2,10 +2,11 @@
 
 use anyhow::Result;
 use candle_core::Device;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Common model configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub vocab_size: usize,
     pub hidden_dim: usize,
@@ -59,7 +60,7 @@ impl ModelConfig {
 }
 
 /// Device configuration options
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DevicePreference {
     /// Use best available device (Metal > CPU)
     Auto,

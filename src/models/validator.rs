@@ -255,13 +255,76 @@ fn gelu(x: &Tensor) -> Result<Tensor> {
 
 impl Saveable for ValidatorModel {
     fn save(&self, path: &Path) -> Result<()> {
-        self.varmap.save(path)?;
+        use super::persistence::{save_model_with_metadata, ModelMetadata};
+
+        // Create metadata
+        let metadata = ModelMetadata::new(
+            ModelConfig {
+                vocab_size: 50_000,
+                hidden_dim: 768,
+                num_layers: 6,
+                num_heads: 12,
+                max_seq_len: 512,
+                dropout: 0.1,
+                device_preference: super::common::DevicePreference::Auto,
+            },
+            "ValidatorModel".to_string(),
+            0,
+        );
+
+        // Save weights + metadata
+        save_model_with_metadata(path, &self.varmap, &metadata)?;
+
         Ok(())
     }
 
-    fn load(_path: &Path) -> Result<Self> {
-        // TODO: Implement proper loading
-        unimplemented!("Validator model loading not yet implemented")
+    fn load(path: &Path) -> Result<Self> {
+        use super::persistence::load_model_metadata;
+
+        // Load metadata to get config
+        let metadata = load_model_metadata(path)?;
+
+        // Verify model type
+        if metadata.model_type != "ValidatorModel" {
+            anyhow::bail!(
+                "Model type mismatch: expected ValidatorModel, got {}",
+                metadata.model_type
+            );
+        }
+
+        // Get device for loading
+        let device = get_device_with_preference(metadata.config.device_preference)?;
+
+        // Create new VarMap and load weights
+        let mut varmap = candle_nn::VarMap::new();
+        varmap.load(path)?;
+
+        // Rebuild model architecture with loaded weights
+        let vb = candle_nn::VarBuilder::from_varmap(&varmap, candle_core::DType::F32, &device);
+
+        let embedding = embedding(
+            metadata.config.vocab_size,
+            metadata.config.hidden_dim,
+            vb.pp("embedding"),
+        )?;
+
+        let encoder = TransformerEncoder::new(&metadata.config, vb.pp("encoder"))?;
+
+        let classifier = linear(metadata.config.hidden_dim, 1, vb.pp("classifier"))?;
+
+        tracing::info!(
+            "Loaded ValidatorModel from {:?} (step {})",
+            path,
+            metadata.training_step
+        );
+
+        Ok(Self {
+            embedding,
+            encoder,
+            classifier,
+            device,
+            varmap,
+        })
     }
 }
 

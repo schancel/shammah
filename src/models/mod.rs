@@ -6,6 +6,7 @@ pub mod ensemble;
 pub mod generator;
 pub mod learning;
 pub mod manager;
+pub mod persistence;
 pub mod router;
 pub mod threshold_router;
 pub mod threshold_validator;
@@ -16,6 +17,7 @@ pub use common::{
     device_info, get_device, get_device_with_preference, is_metal_available, DevicePreference,
     ModelConfig, Saveable,
 };
+pub use persistence::{load_model_metadata, model_exists, save_model_with_metadata, ModelMetadata};
 pub use ensemble::{EnsembleStats, ModelEnsemble, Quality, RouteDecision};
 pub use generator::GeneratorModel;
 pub use learning::{LearningModel, ModelExpectation, ModelPrediction, ModelStats, PredictionData};
