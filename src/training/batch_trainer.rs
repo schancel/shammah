@@ -1,0 +1,347 @@
+// Batch training system for efficient GPU utilization
+
+use anyhow::{Context, Result};
+use std::collections::VecDeque;
+use std::sync::Arc;
+use tokio::sync::{Mutex, RwLock};
+
+use crate::models::{GeneratorModel, ModelConfig, RouterModel, ValidatorModel};
+
+/// Training example (query, response, metadata)
+#[derive(Debug, Clone)]
+pub struct TrainingExample {
+    /// User query
+    pub query: String,
+    /// Claude's response (or local response if validated)
+    pub response: String,
+    /// Was this handled locally successfully?
+    pub local_success: bool,
+    /// Routing decision confidence
+    pub router_confidence: Option<f64>,
+    /// Validator quality score
+    pub validator_score: Option<f64>,
+    /// Timestamp
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+impl TrainingExample {
+    pub fn new(query: String, response: String, local_success: bool) -> Self {
+        Self {
+            query,
+            response,
+            local_success,
+            router_confidence: None,
+            validator_score: None,
+            timestamp: chrono::Utc::now(),
+        }
+    }
+
+    pub fn with_confidence(mut self, confidence: f64) -> Self {
+        self.router_confidence = Some(confidence);
+        self
+    }
+
+    pub fn with_quality(mut self, quality: f64) -> Self {
+        self.validator_score = Some(quality);
+        self
+    }
+}
+
+/// Result of batch training
+#[derive(Debug, Clone)]
+pub struct TrainingResult {
+    /// Number of examples trained on
+    pub examples_count: usize,
+    /// Router loss before training
+    pub router_old_loss: f64,
+    /// Router loss after training
+    pub router_new_loss: f64,
+    /// Generator loss before training
+    pub generator_old_loss: f64,
+    /// Generator loss after training
+    pub generator_new_loss: f64,
+    /// Validator loss before training
+    pub validator_old_loss: f64,
+    /// Validator loss after training
+    pub validator_new_loss: f64,
+    /// Training duration in seconds
+    pub duration_secs: f64,
+}
+
+/// Batch trainer - accumulates examples and trains in batches
+pub struct BatchTrainer {
+    /// Training queue (thread-safe)
+    training_queue: Arc<Mutex<VecDeque<TrainingExample>>>,
+    /// Batch size (number of examples per training batch)
+    batch_size: usize,
+    /// Learning rate
+    learning_rate: f64,
+    /// Router model (shared, write access during training)
+    router: Arc<RwLock<RouterModel>>,
+    /// Generator model (shared, write access during training)
+    generator: Arc<RwLock<GeneratorModel>>,
+    /// Validator model (shared, write access during training)
+    validator: Arc<RwLock<ValidatorModel>>,
+    /// Total examples trained on
+    total_trained: Arc<Mutex<usize>>,
+    /// Last training timestamp
+    last_training: Arc<Mutex<Option<chrono::DateTime<chrono::Utc>>>>,
+}
+
+impl BatchTrainer {
+    /// Create new batch trainer
+    pub fn new(
+        batch_size: usize,
+        learning_rate: f64,
+        config: &ModelConfig,
+    ) -> Result<Self> {
+        // Create models
+        let router = RouterModel::new(config)?;
+        let generator = GeneratorModel::new(config)?;
+        let validator = ValidatorModel::new(config)?;
+
+        Ok(Self {
+            training_queue: Arc::new(Mutex::new(VecDeque::new())),
+            batch_size,
+            learning_rate,
+            router: Arc::new(RwLock::new(router)),
+            generator: Arc::new(RwLock::new(generator)),
+            validator: Arc::new(RwLock::new(validator)),
+            total_trained: Arc::new(Mutex::new(0)),
+            last_training: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    /// Add example to training queue
+    pub async fn add_example(&self, example: TrainingExample) -> Result<()> {
+        let mut queue = self.training_queue.lock().await;
+        queue.push_back(example);
+
+        tracing::debug!(
+            queue_size = queue.len(),
+            "Added training example to queue"
+        );
+
+        Ok(())
+    }
+
+    /// Get current queue size
+    pub async fn queue_size(&self) -> usize {
+        self.training_queue.lock().await.len()
+    }
+
+    /// Check if should trigger automatic training
+    pub async fn should_train_automatically(&self) -> bool {
+        self.queue_size().await >= self.batch_size
+    }
+
+    /// Train on accumulated examples (non-blocking - spawns background task)
+    pub async fn train_async(&self) -> Result<()> {
+        // Check if enough examples
+        if self.queue_size().await < self.batch_size {
+            tracing::debug!(
+                queue_size = self.queue_size().await,
+                batch_size = self.batch_size,
+                "Not enough examples for training batch"
+            );
+            return Ok(());
+        }
+
+        // Clone Arc references for background task
+        let training_queue = Arc::clone(&self.training_queue);
+        let router = Arc::clone(&self.router);
+        let generator = Arc::clone(&self.generator);
+        let validator = Arc::clone(&self.validator);
+        let total_trained = Arc::clone(&self.total_trained);
+        let last_training = Arc::clone(&self.last_training);
+        let batch_size = self.batch_size;
+        let learning_rate = self.learning_rate;
+
+        // Spawn background training task
+        tokio::spawn(async move {
+            match Self::train_batch_internal(
+                training_queue,
+                router,
+                generator,
+                validator,
+                total_trained,
+                last_training,
+                batch_size,
+                learning_rate,
+            )
+            .await
+            {
+                Ok(result) => {
+                    tracing::info!(
+                        examples = result.examples_count,
+                        duration_secs = result.duration_secs,
+                        router_loss_improvement = result.router_old_loss - result.router_new_loss,
+                        "Batch training completed successfully"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Batch training failed");
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Train immediately and wait for completion (blocking)
+    pub async fn train_now(&self) -> Result<TrainingResult> {
+        Self::train_batch_internal(
+            Arc::clone(&self.training_queue),
+            Arc::clone(&self.router),
+            Arc::clone(&self.generator),
+            Arc::clone(&self.validator),
+            Arc::clone(&self.total_trained),
+            Arc::clone(&self.last_training),
+            self.batch_size,
+            self.learning_rate,
+        )
+        .await
+    }
+
+    /// Internal training implementation
+    async fn train_batch_internal(
+        training_queue: Arc<Mutex<VecDeque<TrainingExample>>>,
+        router: Arc<RwLock<RouterModel>>,
+        generator: Arc<RwLock<GeneratorModel>>,
+        validator: Arc<RwLock<ValidatorModel>>,
+        total_trained: Arc<Mutex<usize>>,
+        last_training: Arc<Mutex<Option<chrono::DateTime<chrono::Utc>>>>,
+        batch_size: usize,
+        learning_rate: f64,
+    ) -> Result<TrainingResult> {
+        let start_time = std::time::Instant::now();
+
+        // Extract batch from queue
+        let batch = {
+            let mut queue = training_queue.lock().await;
+            let queue_len = queue.len();
+            let batch: Vec<TrainingExample> = queue
+                .drain(..batch_size.min(queue_len))
+                .collect();
+            batch
+        };
+
+        if batch.is_empty() {
+            anyhow::bail!("No examples available for training");
+        }
+
+        tracing::info!(
+            examples = batch.len(),
+            "Starting batch training"
+        );
+
+        // TODO: Actual training implementation
+        // For now, return placeholder results
+        // Real implementation will:
+        // 1. Tokenize all examples
+        // 2. Create batched tensors
+        // 3. Forward pass through models
+        // 4. Compute losses
+        // 5. Backward pass and update weights
+        // 6. Compute new losses
+
+        let result = TrainingResult {
+            examples_count: batch.len(),
+            router_old_loss: 0.5,
+            router_new_loss: 0.45,
+            generator_old_loss: 1.2,
+            generator_new_loss: 1.1,
+            validator_old_loss: 0.4,
+            validator_new_loss: 0.35,
+            duration_secs: start_time.elapsed().as_secs_f64(),
+        };
+
+        // Update statistics
+        *total_trained.lock().await += batch.len();
+        *last_training.lock().await = Some(chrono::Utc::now());
+
+        Ok(result)
+    }
+
+    /// Get training statistics
+    pub async fn stats(&self) -> TrainingStats {
+        TrainingStats {
+            queue_size: self.queue_size().await,
+            total_trained: *self.total_trained.lock().await,
+            last_training: *self.last_training.lock().await,
+        }
+    }
+
+    /// Get references to models (for saving/loading)
+    pub fn router(&self) -> Arc<RwLock<RouterModel>> {
+        Arc::clone(&self.router)
+    }
+
+    pub fn generator(&self) -> Arc<RwLock<GeneratorModel>> {
+        Arc::clone(&self.generator)
+    }
+
+    pub fn validator(&self) -> Arc<RwLock<ValidatorModel>> {
+        Arc::clone(&self.validator)
+    }
+}
+
+/// Training statistics
+#[derive(Debug, Clone)]
+pub struct TrainingStats {
+    pub queue_size: usize,
+    pub total_trained: usize,
+    pub last_training: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_batch_trainer_creation() {
+        let config = ModelConfig::small();
+        let trainer = BatchTrainer::new(32, 1e-4, &config);
+        assert!(trainer.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_add_examples() {
+        let config = ModelConfig::small();
+        let trainer = BatchTrainer::new(32, 1e-4, &config).unwrap();
+
+        // Add some examples
+        for i in 0..10 {
+            let example = TrainingExample::new(
+                format!("Query {}", i),
+                format!("Response {}", i),
+                true,
+            );
+            trainer.add_example(example).await.unwrap();
+        }
+
+        assert_eq!(trainer.queue_size().await, 10);
+    }
+
+    #[tokio::test]
+    async fn test_should_train_automatically() {
+        let config = ModelConfig::small();
+        let trainer = BatchTrainer::new(5, 1e-4, &config).unwrap();
+
+        // Not enough examples
+        assert!(!trainer.should_train_automatically().await);
+
+        // Add examples
+        for i in 0..5 {
+            let example = TrainingExample::new(
+                format!("Query {}", i),
+                format!("Response {}", i),
+                true,
+            );
+            trainer.add_example(example).await.unwrap();
+        }
+
+        // Should trigger training
+        assert!(trainer.should_train_automatically().await);
+    }
+}

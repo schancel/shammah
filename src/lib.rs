@@ -12,3 +12,4 @@ pub mod models; // Phase 2: Neural network models
 pub mod router;
 pub mod server; // HTTP daemon mode (Phase 1)
 pub mod tools; // Tool execution system
+pub mod training; // Batch training and checkpoints (Phase 2)
