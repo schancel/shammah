@@ -151,6 +151,7 @@ pub struct Repl {
     metrics_logger: MetricsLogger,
     // Online learning models
     threshold_validator: ThresholdValidator, // Keep validator separate
+    local_generator: crate::local::LocalGenerator, // NEW: Local generation
     // Training metrics
     training_trends: TrainingTrends,
     // Model persistence
@@ -184,6 +185,9 @@ impl Repl {
 
         // Load validator only (router is now in Router)
         let threshold_validator = Self::load_validator(models_dir.as_ref(), is_interactive);
+
+        // Load or create local generator
+        let local_generator = Self::load_local_generator(models_dir.as_ref(), is_interactive);
 
         // Initialize input handler for interactive mode
         let input_handler = if is_interactive {
@@ -250,6 +254,7 @@ impl Repl {
             router, // Contains ThresholdRouter now
             metrics_logger,
             threshold_validator,
+            local_generator,
             training_trends: TrainingTrends::new(20), // Track last 20 queries
             models_dir,
             tool_executor,
@@ -259,6 +264,36 @@ impl Repl {
             input_handler,
             conversation: ConversationHistory::new(),
             mode: ReplMode::Normal,
+        }
+    }
+
+    /// Load local generator from disk or create new one
+    fn load_local_generator(models_dir: Option<&PathBuf>, is_interactive: bool) -> crate::local::LocalGenerator {
+        use crate::local::LocalGenerator;
+
+        let Some(models_dir) = models_dir else {
+            return LocalGenerator::new();
+        };
+
+        let generator_path = models_dir.join("local_generator.json");
+        if generator_path.exists() {
+            match LocalGenerator::load(&generator_path) {
+                Ok(generator) => {
+                    if is_interactive {
+                        eprintln!("✓ Loaded local generator from: {}", generator_path.display());
+                    }
+                    generator
+                }
+                Err(e) => {
+                    if is_interactive {
+                        eprintln!("⚠️  Failed to load local generator: {}", e);
+                        eprintln!("   Starting with new generator");
+                    }
+                    LocalGenerator::new()
+                }
+            }
+        } else {
+            LocalGenerator::new()
         }
     }
 
@@ -313,6 +348,10 @@ impl Repl {
         // Save validator separately
         self.threshold_validator
             .save(models_dir.join("threshold_validator.json"))?;
+
+        // Save local generator
+        self.local_generator
+            .save(models_dir.join("local_generator.json"))?;
 
         // Save tool patterns
         self.tool_executor.save_patterns()?;
@@ -1619,34 +1658,71 @@ impl Repl {
                     println!("→ Routing: LOCAL GENERATION");
                 }
 
-                // FUTURE: This is where local generation will happen
-                // For now, fall back to forwarding with a notice
-                if self.is_interactive {
-                    println!("⚠️  Note: Local generation not yet trained");
-                    println!("→ Forwarding to Claude for now");
+                // Try local generation
+                match self.local_generator.try_generate(query) {
+                    Ok(Some(response_text)) => {
+                        // Successfully generated locally
+                        if self.is_interactive {
+                            println!("✓ Generated locally (confidence: {:.2})", confidence);
+                        }
+                        local_response = Some(response_text.clone());
+                        claude_response = response_text;
+                        routing_decision_str = "local".to_string();
+                        pattern_id = Some(local_pattern_id);
+                        routing_confidence = Some(confidence);
+                    }
+                    Ok(None) | Err(_) => {
+                        // Local generation insufficient or failed - forward to Claude
+                        if self.is_interactive {
+                            println!("⚠️  Local generation insufficient confidence");
+                            println!("→ Forwarding to Claude");
+                        }
+
+                        // Forward to Claude
+                        let request = MessageRequest::with_context(self.conversation.get_messages())
+                            .with_tools(create_tool_definitions());
+
+                        // Try streaming first, fallback to buffered if tools detected
+                        let use_streaming = self.streaming_enabled && self.is_interactive;
+
+                        if use_streaming {
+                            let rx = self.claude_client.send_message_stream(&request).await?;
+                            match self.display_streaming_response(rx).await {
+                                Ok(text) => {
+                                    claude_response = text;
+                                }
+                                Err(e) if e.to_string().contains("TOOLS_DETECTED") => {
+                                    if self.is_interactive {
+                                        println!("\n🔧 Tools needed - switching to buffered mode...");
+                                    }
+                                    let response = self.claude_client.send_message(&request).await?;
+                                    let elapsed = start_time.elapsed().as_millis();
+                                    if self.is_interactive {
+                                        println!("✓ Received response ({}ms)", elapsed);
+                                    }
+                                    claude_response = self.execute_tool_loop(response).await?;
+                                }
+                                Err(e) => return Err(e),
+                            }
+                        } else {
+                            let response = self.claude_client.send_message(&request).await?;
+                            let elapsed = start_time.elapsed().as_millis();
+                            if self.is_interactive {
+                                println!("✓ Received response ({}ms)", elapsed);
+                            }
+                            if response.has_tool_uses() {
+                                claude_response = self.execute_tool_loop(response).await?;
+                            } else {
+                                claude_response = response.text();
+                            }
+                        }
+
+                        routing_decision_str = "local_attempted".to_string();
+                        pattern_id = Some(local_pattern_id);
+                        routing_confidence = Some(confidence);
+                        forward_reason = Some("insufficient_confidence".to_string());
+                    }
                 }
-
-                // Forward to Claude (temporary until generator is trained)
-                let request = MessageRequest::with_context(self.conversation.get_messages())
-                    .with_tools(create_tool_definitions());
-                let response = self.claude_client.send_message(&request).await?;
-
-                let elapsed = start_time.elapsed().as_millis();
-                if self.is_interactive {
-                    println!("✓ Received response ({}ms)", elapsed);
-                }
-
-                // Check for tool uses and execute them
-                if response.has_tool_uses() {
-                    claude_response = self.execute_tool_loop(response).await?;
-                } else {
-                    claude_response = response.text();
-                }
-
-                routing_decision_str = "local_attempted".to_string();
-                pattern_id = Some(local_pattern_id);
-                routing_confidence = Some(confidence);
-                forward_reason = Some("untrained_generator".to_string());
             }
             RouteDecision::Forward { reason } => {
                 if self.is_interactive {
@@ -1746,6 +1822,10 @@ impl Repl {
         self.router.learn(query, was_successful); // CHANGED: use router.learn()
         self.threshold_validator
             .learn(query, &claude_response, quality_score >= 0.7);
+
+        // Learn from Claude response (for local generation)
+        self.local_generator
+            .learn_from_claude(query, &claude_response, quality_score);
 
         // Update training trends
         self.training_trends

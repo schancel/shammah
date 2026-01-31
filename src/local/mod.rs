@@ -84,6 +84,27 @@ impl LocalGenerator {
     pub fn response_generator(&mut self) -> &mut ResponseGenerator {
         &mut self.response_generator
     }
+
+    /// Save local generator to file
+    pub fn save<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
+        use crate::models::learning::LearningModel;
+        self.response_generator.save(path.as_ref())
+    }
+
+    /// Load local generator from file
+    pub fn load<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
+        use crate::models::learning::LearningModel;
+        let response_generator = ResponseGenerator::load(path.as_ref())?;
+        // ResponseGenerator contains its own pattern_classifier, so we create a fresh one
+        // for the LocalGenerator's copy (they stay in sync via learning)
+        let pattern_classifier = PatternClassifier::new();
+
+        Ok(Self {
+            pattern_classifier,
+            response_generator,
+            enabled: true,
+        })
+    }
 }
 
 impl Default for LocalGenerator {
