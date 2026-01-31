@@ -22,6 +22,8 @@ pub enum Command {
     Approve,
     Reject,
     ShowPlan,
+    SavePlan,
+    Done,
 }
 
 impl Command {
@@ -39,6 +41,8 @@ impl Command {
             "/approve" | "/execute" => return Some(Command::Approve),
             "/reject" | "/cancel" => return Some(Command::Reject),
             "/show-plan" => return Some(Command::ShowPlan),
+            "/save-plan" => return Some(Command::SavePlan),
+            "/done" | "/complete" => return Some(Command::Done),
             _ => {}
         }
 
@@ -110,7 +114,8 @@ pub fn handle_command(
             Ok("Pattern management commands should be handled in REPL.".to_string())
         }
         // Plan mode commands are handled directly in REPL
-        Command::Plan(_) | Command::Approve | Command::Reject | Command::ShowPlan => {
+        Command::Plan(_) | Command::Approve | Command::Reject | Command::ShowPlan
+        | Command::SavePlan | Command::Done => {
             Ok("Plan mode commands should be handled in REPL.".to_string())
         }
     }
@@ -132,8 +137,10 @@ fn format_help() -> String {
 Plan Mode Commands:
   /plan <task>      - Enter planning mode for a task
   /show-plan        - Display the current plan
+  /save-plan        - Manually save current response as plan
   /approve          - Approve plan (prompts to clear context) and start execution
   /reject           - Reject the plan and return to normal mode
+  /done             - Exit execution mode and return to normal mode
 
 Type any question to get started!"#
         .to_string()

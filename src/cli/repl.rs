@@ -870,6 +870,14 @@ impl Repl {
                         self.handle_show_plan_command().await?;
                         continue;
                     }
+                    Command::SavePlan => {
+                        self.handle_save_plan_command().await?;
+                        continue;
+                    }
+                    Command::Done => {
+                        self.handle_done_command().await?;
+                        continue;
+                    }
                     _ => {
                         let output = handle_command(
                             command,
@@ -1872,8 +1880,13 @@ impl Repl {
 
         // Auto-save plan if in planning mode
         if let ReplMode::Planning { plan_path, .. } = &self.mode {
-            // Detect if response contains a plan
-            if claude_response.contains("# Plan:") || claude_response.contains("## Analysis") {
+            // Detect if response contains a plan (improved detection)
+            let response_lower = claude_response.to_lowercase();
+            let markers = ["# plan", "## plan", "## analysis", "## proposed"];
+            let has_marker = markers.iter().any(|m| response_lower.contains(m));
+            let is_long = claude_response.len() > 500;
+
+            if has_marker || is_long {
                 if let Err(e) = std::fs::write(plan_path, &claude_response) {
                     eprintln!("Warning: Failed to save plan: {}", e);
                 } else if self.is_interactive {
@@ -2101,6 +2114,58 @@ impl Repl {
             }
             ReplMode::Normal => {
                 println!("⚠️  No active plan. Use /plan to start.");
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle /save-plan command - manually save current response as plan
+    async fn handle_save_plan_command(&mut self) -> Result<()> {
+        // Get the last assistant message from conversation
+        let messages = self.conversation.get_messages();
+        let last_assistant_msg = messages
+            .iter()
+            .rev()
+            .find(|msg| msg.role == "assistant")
+            .map(|msg| msg.content.clone());
+
+        if let Some(content) = last_assistant_msg {
+            match &self.mode {
+                ReplMode::Planning { plan_path, .. } => {
+                    std::fs::write(plan_path, &content)?;
+                    println!("✓ Plan saved to: {}", plan_path.display());
+                }
+                ReplMode::Normal | ReplMode::Executing { .. } => {
+                    // Create a new plan file
+                    let plans_dir = dirs::home_dir()
+                        .map(|home| home.join(".shammah").join("plans"))
+                        .unwrap_or_else(|| PathBuf::from(".shammah/plans"));
+                    std::fs::create_dir_all(&plans_dir)?;
+
+                    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+                    let plan_path = plans_dir.join(format!("plan_{}.md", timestamp));
+                    std::fs::write(&plan_path, &content)?;
+                    println!("✓ Plan saved to: {}", plan_path.display());
+                }
+            }
+        } else {
+            println!("⚠️  No assistant response to save. Please ask Claude to generate a plan first.");
+        }
+        Ok(())
+    }
+
+    /// Handle /done command - exit execution mode
+    async fn handle_done_command(&mut self) -> Result<()> {
+        match &self.mode {
+            ReplMode::Executing { .. } => {
+                println!("✓ Plan execution complete. Returning to normal mode.");
+                self.mode = ReplMode::Normal;
+            }
+            ReplMode::Planning { .. } => {
+                println!("⚠️  Currently in planning mode. Use /approve to execute or /reject to cancel.");
+            }
+            ReplMode::Normal => {
+                println!("⚠️  Not in execution mode.");
             }
         }
         Ok(())
