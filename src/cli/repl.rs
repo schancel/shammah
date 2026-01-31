@@ -1463,7 +1463,7 @@ impl Repl {
         println!("{}", truncated.dark_grey());
     }
 
-    async fn process_query(&mut self, query: &str) -> Result<String> {
+    pub async fn process_query(&mut self, query: &str) -> Result<String> {
         let start_time = Instant::now();
 
         // Add user message to conversation history

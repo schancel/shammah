@@ -19,6 +19,13 @@ Think of it as a smart cache that learns not just answers, but reasoning pattern
   - Execute bash commands
   - Self-improvement: modify code and restart
 
+- **Interactive Tool Confirmation** - Full control over tool execution
+  - Approve tools once or remember approvals (session or persistent)
+  - Pattern-based approvals with wildcards (`*`, `**`) or regex
+  - Manage patterns with `/patterns` commands
+  - Saves approved patterns to `~/.shammah/tool_patterns.json`
+  - See [docs/TOOL_CONFIRMATION.md](docs/TOOL_CONFIRMATION.md) for details
+
 - **Streaming Responses** - Real-time character-by-character output
   - Better UX for long responses
   - SSE (Server-Sent Events) parsing
@@ -135,6 +142,24 @@ cargo build --release
 > Search for all TODO comments in the codebase
 # Claude uses Grep with regex pattern
 
+# Piped input mode (non-interactive)
+echo "What is 2+2?" | ./target/release/shammah
+# Output: 4
+
+cat query.txt | ./target/release/shammah
+# Processes query from file and exits
+
+./target/release/shammah <<EOF
+What is the capital of France?
+EOF
+# Supports heredoc syntax
+
+# In piped mode:
+# - No REPL startup messages
+# - No interactive prompts
+# - Tool confirmations auto-approve
+# - Exits after printing response
+
 # Self-improvement workflow (advanced)
 > I want to optimize the router code
 # Claude reads code, suggests changes, uses tools to modify files
@@ -142,6 +167,12 @@ cargo build --release
 # Claude uses Bash tool: cargo build --release
 > Restart into the new binary
 # Claude uses Restart tool to exec into new version
+
+# Tool confirmation and pattern management
+> /patterns                    # List all saved approval patterns
+> /patterns add                # Create a new pattern interactively
+> /patterns remove abc12345    # Remove a specific pattern
+> /patterns clear               # Clear all patterns
 ```
 
 ## Architecture
@@ -181,6 +212,7 @@ All data stored in `~/.shammah/`:
 ├── config.toml               # API key and settings
 ├── constitution.md           # Optional: custom constitutional principles
 ├── crisis_keywords.txt       # Safety keywords for crisis detection
+├── tool_patterns.json        # Saved tool approval patterns
 ├── metrics/                  # Daily JSONL logs for training
 │   └── 2026-01-30.jsonl
 └── models/                   # Trained model weights
@@ -233,6 +265,12 @@ Shammah is now a working local-first AI proxy with tool execution, streaming res
   - Read, Glob, Grep, WebFetch, Bash, Restart
   - Multi-turn conversation loop
   - Self-improvement workflow
+
+- ✅ **Tool Confirmation**: Interactive approval system
+  - Pattern-based approvals (wildcard and regex)
+  - Session and persistent approval storage
+  - Pattern management commands (`/patterns`)
+  - Match count tracking and statistics
 
 - ✅ **Streaming**: Real-time responses (partial)
   - SSE parsing for character-by-character display
