@@ -5,287 +5,474 @@ This document provides context for AI assistants (like Claude Code) working on t
 ## Project Context
 
 **Project Name**: Shammah (שָׁמָה - "watchman/guardian")
-**Purpose**: Local-first Constitutional AI proxy
-**Core Innovation**: Learns to handle 95% of requests locally while maintaining Claude API compatibility
+**Purpose**: Local-first AI coding assistant with continuous improvement
+**Core Innovation**: Pre-trained Qwen models + weighted LoRA fine-tuning for domain adaptation
 
 ### The Problem
 
-Users of Claude API face:
-- High API costs for repetitive or simple queries
-- Privacy concerns sending all data to cloud
-- Network latency for every request
-- Inability to work offline
-- No learning/improvement over time
+Traditional AI coding assistants require:
+- Constant internet connection
+- High API costs for every query
+- No learning from your specific patterns
+- Months of training before becoming useful
+- Privacy concerns (code sent to cloud)
 
 ### The Solution
 
-Shammah acts as an intelligent proxy that:
-1. Initially forwards 100% of requests to Claude API
-2. Learns from every Claude response (patterns, reasoning, style)
-3. Gradually handles more requests locally using trained models
-4. Reaches steady state of ~5% forwarding (only novel/complex queries)
-5. Reduces costs by 76% while maintaining response quality
+Shammah provides **immediate quality** with **continuous improvement**:
+1. Uses pre-trained Qwen models (works well from day 1)
+2. Loads instantly with progressive bootstrap (<100ms startup)
+3. Learns from weighted feedback via LoRA fine-tuning
+4. Adapts to your coding style, frameworks, and patterns
+5. Works offline after initial model download
+6. Preserves privacy (code stays on your machine)
 
 ### Key Metrics
 
-- **Target**: 95% local processing, 5% API forwarding (steady state)
-- **Timeline**: ~6 months from 100% → 5% forwarding
-- **Cost Reduction**: 76% (accounting for training costs)
-- **Quality**: Maintain Claude-level responses through Constitutional AI
+- **Startup Time**: <100ms (instant REPL)
+- **First-Run Experience**: 0ms blocked (background download)
+- **Quality Day 1**: High (pre-trained Qwen)
+- **Quality Month 1**: Specialized (LoRA adapted to your domain)
+- **RAM Support**: 8GB to 64GB+ Macs (adaptive model selection)
 
 ## Architecture Overview
 
-### High-Level Design: 3-Model Ensemble
+### New Design: Pre-trained Qwen + LoRA Adaptation
 
-Shammah uses **three specialized neural networks** trained on your actual Claude usage:
+Shammah uses **pre-trained Qwen models** with **weighted LoRA fine-tuning** instead of training from scratch:
 
 ```
 User Request
     ↓
 ┌─────────────────────────────────────┐
-│ [1] Router Model (Small, ~1-3B)     │  Pre-generation decision
-│     "Can we handle this locally?"   │  Based on query features
-│     Confidence score: 0.0 - 1.0     │  <50ms inference
-└─────────────────────────────────────┘
-    ↓
-Confidence > threshold?
-    │
-    ├─ NO → Forward to Claude API (log for training)
-    │
-    └─ YES (try locally)
-         ↓
-    ┌─────────────────────────────────────┐
-    │ [2] Generator Model (Medium, ~7-13B)│  Produces response
-    │     Generates Claude-style response  │  Trained via distillation
-    │     Mimics Claude's patterns         │  ~500ms-2s inference
-    └─────────────────────────────────────┘
-         ↓
-    ┌─────────────────────────────────────┐
-    │ [3] Validator Model (Small, ~1-3B)  │  Post-generation quality gate
-    │     "Is this response good enough?"  │  Catches generator errors
-    │     Detects hallucinations/mistakes  │  <100ms inference
-    └─────────────────────────────────────┘
-         ↓
-    Response passes?
-         ├─ YES → Return to user
-         └─ NO → Forward to Claude (generator made mistake)
+│ Router with Model Check              │
+│ - Crisis detection (safety)          │
+│ - Model ready? Use local             │
+│ - Model loading? Forward to Claude   │
+└──────────┬──────────────────────────┘
+           │
+    Model Ready?
+           │
+    ├─ NO  → Forward to Claude API
+    └─ YES → Continue
+           │
+           v
+    ┌──────────────────────────────────┐
+    │ Pre-trained Qwen Model           │
+    │ (1.5B / 3B / 7B / 14B)          │
+    │ + LoRA Adapters                  │
+    │   (your learned patterns)        │
+    └──────────┬───────────────────────┘
+           │
+           v
+    ┌──────────────────────────────────┐
+    │ Response to User                 │
+    └──────────┬───────────────────────┘
+           │
+           v
+    User Feedback?
+           │
+    ├─ 🔴 High-weight (10x)
+    ├─ 🟡 Medium-weight (3x)
+    └─ 🟢 Normal-weight (1x)
+           │
+           v
+    ┌──────────────────────────────────┐
+    │ Background LoRA Fine-Tuning      │
+    │ - Collects weighted examples     │
+    │ - Trains in batches (non-blocking)│
+    │ - Saves adapters incrementally   │
+    └──────────────────────────────────┘
 ```
 
-**Key Insight:** All three models are **trained from scratch** on YOUR Claude usage data. They learn your specific query patterns and Claude's response style for your domain.
+### Why This Approach?
 
-### The Three Models Explained
+**Pre-trained Qwen vs. Training from Scratch:**
+- ✅ **Immediate quality** - Works well from day 1
+- ✅ **No cold start** - No months of data collection
+- ✅ **Proven performance** - Qwen models are battle-tested
+- ✅ **Broad knowledge** - Trained on diverse coding data
 
-**1. Router Model (Classifier)**
-- **Purpose:** Quick pre-generation decision: "Should we try locally?"
-- **Input:** Query text + context features
-- **Output:** Confidence score (0.0 = must forward, 1.0 = can handle)
-- **Training:** Learns which queries had low divergence (handled well locally)
-- **Size:** 1-3B parameters for speed
-- **Runs on:** Apple Neural Engine (ultra-fast)
+**LoRA vs. Full Fine-Tuning:**
+- ✅ **Efficient** - Trains only 0.1-1% of parameters
+- ✅ **Fast** - Minutes instead of hours
+- ✅ **Low memory** - Works on consumer hardware
+- ✅ **Multiple adapters** - Switch between domains easily
+- ✅ **No degradation** - Base model quality preserved
 
-**2. Generator Model (Response Producer)**
-- **Purpose:** Generate actual response mimicking Claude
-- **Input:** Query text + context
-- **Output:** Full response text
-- **Training:** Distillation from Claude's responses (learn query → response mapping)
-- **Size:** 7-13B parameters for quality
-- **Runs on:** Apple GPU (or Neural Engine with quantization)
-
-**3. Validator Model (Quality Gate)**
-- **Purpose:** Detect generator errors before returning to user
-- **Input:** Query + generated response
-- **Output:** Quality score + error flags (hallucination, off-topic, incoherent)
-- **Training:** Learns to detect divergence from Claude's quality
-- **Size:** 1-3B parameters for speed
-- **Runs on:** Apple Neural Engine
-
-### Why Three Models?
-
-**Efficiency:** Router is tiny and fast - can reject queries in <50ms without running expensive generator
-
-**Accuracy:** Generator specializes in response quality, validator catches its mistakes
-
-**Safety:** Two decision points (router + validator) prevent bad local responses from reaching users
+**Weighted Examples vs. Uniform Training:**
+- ✅ **Prioritize critical feedback** - Strategy errors get 10x weight
+- ✅ **Faster adaptation** - Learn from mistakes more quickly
+- ✅ **User control** - You decide what's important
+- ✅ **Efficient learning** - Focus on what matters
 
 ### Core Components
 
-1. **Router** (`src/router/`)
-   - Current: Crisis detection for safety
-   - Phase 2a: Threshold-based routing with statistics
-   - Phase 2b+: Hybrid threshold + neural network classifier
-   - Tracks routing decisions and accuracy
+#### 1. **Progressive Bootstrap** (`src/models/bootstrap.rs`)
 
-   **IMPORTANT - Learning API:**
-   - Use `learn_local_attempt(query, was_successful)` when we TRIED local generation
-   - Use `learn_forwarded(query)` when we forwarded directly to Claude (no local attempt)
-   - Do NOT use deprecated `learn()` method in new code
-   - Correct usage ensures accurate statistics: `total_queries >= total_local_attempts`
+**Purpose:** Instant startup with background model loading
 
-2. **Generator** (`src/models/generator/`)
-   - Phase 2+: Custom LLM trained on Claude responses
-   - Learns your specific usage patterns
-   - Will use distillation from Claude
+**GeneratorState:**
+- `Initializing` - Selecting model based on RAM
+- `Downloading` - Downloading from HuggingFace Hub (first run)
+- `Loading` - Loading weights into memory
+- `Ready` - Model ready for use
+- `Failed` - Load failed with error
+- `NotAvailable` - Offline mode
 
-3. **Validator** (`src/models/validator/`)
-   - Current: Crisis detection (safety mechanism)
-   - Phase 2a: Threshold-based validation with heuristics
-   - Phase 2b+: Neural quality assessment model
-   - Detects errors before returning to user
+**Bootstrap Flow:**
+```rust
+1. REPL appears instantly (<100ms)
+2. Background task spawned
+3. Check cache (HF Hub: ~/.cache/huggingface/)
+4. Download if needed (with progress)
+5. Load model weights
+6. Update state to Ready
+7. Future queries use local
+```
 
-4. **Claude Client** (`src/claude/`)
-   - HTTP client for Claude API
-   - Logs all (query, response) pairs for training
-   - Streaming support via SSE parsing
-   - Retry logic and error handling
+**Key Files:**
+- `src/models/bootstrap.rs` - BootstrapLoader, GeneratorState
+- `src/models/download.rs` - ModelDownloader with HF Hub integration
+- `src/models/model_selector.rs` - RAM-based model selection
 
-5. **Tool Execution System** (`src/tools/`)
-   - 6 implemented tools: Read, Glob, Grep, WebFetch, Bash, Restart
-   - Multi-turn execution loop for complex tasks
-   - Real-time tool output visibility (user sees results as they execute)
-   - Infinite loop detection (prevents repeated identical tool calls)
-   - Conversation state validation (prevents API errors)
-   - XML-structured tool results for better Claude parsing
-   - Permission system (currently allows all)
-   - Enables Claude to inspect code and make modifications
+#### 2. **Qwen Model Integration** (`src/models/qwen_loader.rs`)
 
-6. **Learning Engine** (`src/learning/`)
-   - Phase 2+: Processes logged data into training sets
-   - Trains all three models
-   - Retrains models periodically
-   - Tracks performance metrics
+**Purpose:** Load pre-trained Qwen2 models from safetensors
 
-7. **Configuration** (`src/config/`)
-   - Reads `~/.shammah/config.toml` for settings
-   - API key management
-   - Constitution path configuration
-   - Streaming and UI preferences
+**Model Selection:**
+- 8GB Mac → Qwen-2.5-1.5B (3GB RAM, fast)
+- 16GB Mac → Qwen-2.5-3B (6GB RAM, balanced)
+- 32GB Mac → Qwen-2.5-7B (14GB RAM, powerful)
+- 64GB+ Mac → Qwen-2.5-14B (28GB RAM, maximum)
+
+**Features:**
+- Uses candle-transformers' built-in Qwen2 support
+- Automatic tokenizer loading (tokenizer.json)
+- Metal acceleration on Apple Silicon
+- Graceful CPU fallback
+
+**Key Files:**
+- `src/models/qwen_loader.rs` - QwenLoader, LoadedQwenModel
+- `src/models/generator_new.rs` - Unified GeneratorModel (Qwen + custom)
+- `src/models/common.rs` - GeneratorConfig enum
+
+#### 3. **LoRA Fine-Tuning** (`src/models/lora.rs`)
+
+**Purpose:** Efficient domain-specific adaptation with weighted examples
+
+**LoRAConfig:**
+```rust
+pub struct LoRAConfig {
+    rank: usize,              // Low-rank dimension (4-64)
+    alpha: f64,               // Scaling factor (1.0-32.0)
+    dropout: f64,             // Regularization (0.0-0.3)
+    target_modules: Vec<String>, // Layers to adapt
+
+    // Weighted training
+    high_weight: f64,         // Critical issues (10x)
+    medium_weight: f64,       // Improvements (3x)
+    normal_weight: f64,       // Good examples (1x)
+}
+```
+
+**Weighted Training:**
+- **High-weight (10x)**: Critical strategy errors
+  - Example: "Never use .unwrap() in production"
+  - Example: "This algorithm is O(n²), use O(n log n)"
+  - Impact: Model strongly learns to avoid this
+
+- **Medium-weight (3x)**: Style preferences
+  - Example: "Prefer iterator chains over manual loops"
+  - Example: "Use library X instead of library Y"
+  - Impact: Model learns your preferred approach
+
+- **Normal-weight (1x)**: Good examples
+  - Example: "This is exactly right"
+  - Example: "Remember this pattern"
+  - Impact: Model learns normally
+
+**Training Flow:**
+```rust
+1. User provides feedback with weight
+2. Example stored in training buffer
+3. Buffer reaches threshold (e.g., 10 examples)
+4. Background training triggered (non-blocking)
+5. LoRA adapter trained for N epochs
+6. Adapter saved to ~/.shammah/adapters/
+7. Adapter loaded for future queries
+8. Process repeats continuously
+```
+
+**Key Files:**
+- `src/models/lora.rs` - LoRAAdapter, LoRAConfig, weighted training
+- `src/models/generator_new.rs` - fine_tune(), save_lora(), load_lora()
+
+#### 4. **Router with Graceful Degradation** (`src/router/decision.rs`)
+
+**Purpose:** Decide when to use local vs. Claude, handle model loading
+
+**ForwardReasons:**
+- `Crisis` - Safety issue detected
+- `ModelNotReady` - Model still loading (progressive bootstrap)
+- `NoMatch` - No local pattern match
+- `LowConfidence` - Threshold router uncertain
+
+**New Method:**
+```rust
+fn route_with_generator_check(
+    query: &str,
+    generator_is_ready: bool,
+) -> RouteDecision
+```
+
+**Behavior:**
+- Checks if generator loaded before considering local
+- Forwards to Claude gracefully during bootstrap
+- Enables seamless transition: Claude → local
+- No blocking or errors during model load
+
+**Key Files:**
+- `src/router/decision.rs` - Router, RouteDecision, route_with_generator_check()
+- `src/router/hybrid_router.rs` - Hybrid threshold + neural routing
+
+#### 5. **Tool Execution System** (`src/tools/`)
+
+**Purpose:** Enable Claude to inspect and modify code
+
+**Tools:**
+- `Read` - Read file contents (code, configs, docs)
+- `Glob` - Find files by pattern (`**/*.rs`)
+- `Grep` - Search with regex (`TODO.*`)
+- `WebFetch` - Fetch URLs (documentation, examples)
+- `Bash` - Execute commands (tests, build, etc.)
+- `Restart` - Self-improvement (modify code, rebuild, restart)
+
+**Features:**
+- Multi-turn execution (tools → results → more tools)
+- Real-time output visibility
+- Infinite loop detection
+- Conversation state validation
+- Permission system with patterns
+- XML-structured results
+
+**Key Files:**
+- `src/tools/executor.rs` - ToolExecutor, multi-turn loop
+- `src/tools/implementations/` - Individual tool implementations
+- `src/tools/permissions.rs` - PermissionManager, approval patterns
+
+#### 6. **Claude Client** (`src/claude/`)
+
+**Purpose:** Forward queries to Claude API, collect training data
+
+**Features:**
+- HTTP client with retry logic
+- Streaming support (SSE parsing)
+- Tool definitions sent with requests
+- Logs (query, response) for LoRA training
+- Graceful fallback when streaming unavailable
+
+**Key Files:**
+- `src/claude/client.rs` - ClaudeClient, send_message(), send_message_stream()
+- `src/claude/types.rs` - API request/response types
+
+#### 7. **Configuration** (`src/config/`)
+
+**Purpose:** User preferences and API key management
+
+**Config File (`~/.shammah/config.toml`):**
+```toml
+api_key = "your_anthropic_api_key"
+streaming_enabled = true
+
+[model]
+# Optional: Force specific model size
+# size = "3B"
+device = "auto"  # "auto", "metal", "cpu"
+
+[lora]
+rank = 16
+alpha = 32.0
+learning_rate = 1e-4
+batch_size = 4
+auto_train = true
+auto_train_threshold = 10
+
+# Weighted feedback
+high_weight = 10.0
+medium_weight = 3.0
+normal_weight = 1.0
+
+adapters_dir = "~/.shammah/adapters"
+```
+
+**Key Files:**
+- `src/config/mod.rs` - Config loading and validation
 
 ### Technology Stack
 
-- **Language**: Rust (memory safety, performance, Apple Silicon optimization)
-- **ML Framework**:
-  - Phase 2: PyTorch/Candle for training custom models
-  - Phase 4: CoreML for inference (Apple Neural Engine)
-  - ONNX for cross-platform model format
-- **Models** (all trained from scratch on your data):
-  - Router: ~1-3B parameters (binary classifier)
-  - Generator: ~7-13B parameters (text generation)
-  - Validator: ~1-3B parameters (quality assessment)
-- **Training**: Distillation from Claude's responses
-- **API**: Compatible with Claude API format
-- **Storage**: `~/.shammah/` for all data
-- **Async**: Tokio runtime
-- **HTTP**: Reqwest client
-- **CLI**: Clap for argument parsing
+**Language:** Rust
+- Memory safety without GC
+- High performance
+- Excellent Apple Silicon support
+
+**ML Framework:** Candle
+- Rust-native ML framework
+- Metal backend for Apple Silicon
+- Built-in Qwen2 support
+- SafeTensors format
+
+**Models:**
+- Base: Qwen-2.5-1.5B/3B/7B/14B (pre-trained)
+- Adapters: LoRA (domain-specific, ~5MB each)
+
+**Storage:**
+- Models: `~/.cache/huggingface/hub/` (standard HF cache)
+- Adapters: `~/.shammah/adapters/`
+- Config: `~/.shammah/config.toml`
+- Metrics: `~/.shammah/metrics/`
+
+**Dependencies:**
+- `hf-hub` - HuggingFace Hub integration
+- `indicatif` - Progress bars
+- `candle-transformers` - Qwen2 support
+- `tokenizers` - Tokenization
+- `tokio` - Async runtime
 
 ## Key Design Decisions
 
-### 1. Claude Code Compatibility
+### 1. Pre-trained vs. Training from Scratch
 
-**Decision**: Use `~/.claude/settings.json` for configuration
-**Rationale**: Seamless integration with Claude Code CLI tool
-**Implication**: Must respect Claude Code's config format and behavior
+**Decision:** Use pre-trained Qwen models
 
-### 2. Storage Location
+**Rationale:**
+- Immediate quality (works day 1)
+- No cold start period (no months waiting for data)
+- Proven performance (Qwen is well-tested)
+- Broad knowledge base (trained on diverse code)
+- LoRA provides domain adaptation without full retraining
 
-**Decision**: Store everything in `~/.shammah/`
-**Rationale**:
-- Simple, single directory for all Shammah data
-- Traditional Unix convention (dot-directory in home)
-- Clear separation from Claude Code
-- User can easily find/delete data
+**Trade-offs:**
+- Pro: Instant value for users
+- Pro: No expensive compute for initial training
+- Pro: Smaller download than training from scratch
+- Con: Slightly larger models than custom-trained ones
+- Con: Includes knowledge not specific to user's domain (acceptable)
 
-**Structure**:
+### 2. Weighted LoRA Training
+
+**Decision:** Allow users to weight training examples
+
+**Rationale:**
+- Critical feedback (strategy errors) needs more impact
+- Not all examples are equally important
+- Faster adaptation to user's specific needs
+- User control over what model learns
+
+**Implementation:**
+```rust
+// High-weight example (10x impact)
+lora.add_example(
+    query,
+    response,
+    feedback,
+    weight: 10.0,  // Critical issue
+);
+
+// This example will be sampled 10x more during training
+// Model learns to avoid this pattern strongly
+```
+
+**Trade-offs:**
+- Pro: Faster learning from critical feedback
+- Pro: User control and transparency
+- Pro: More efficient training (focus on important patterns)
+- Con: Requires user to categorize feedback (worth it)
+
+### 3. Progressive Bootstrap
+
+**Decision:** Instant REPL startup with background model loading
+
+**Rationale:**
+- Professional UX (no waiting)
+- Users can start querying immediately
+- Model downloads don't block
+- Graceful degradation (forward to Claude while loading)
+
+**Implementation:**
+```rust
+// REPL appears instantly
+let state = Arc::new(RwLock::new(GeneratorState::Initializing));
+
+// Spawn background task
+tokio::spawn(async move {
+    loader.load_generator_async().await
+});
+
+// User can query immediately
+// Routes forward to Claude until model ready
+```
+
+**Trade-offs:**
+- Pro: 20-50x faster startup (2-5s → <100ms)
+- Pro: First-run download doesn't block (5-30min → 0ms)
+- Pro: Better user experience
+- Con: Slightly more complex state management (acceptable)
+
+### 4. Storage Location
+
+**Decision:** Store everything in `~/.shammah/`
+
+**Structure:**
 ```
 ~/.shammah/
-├── config.toml              # API key and settings
-├── metrics/                 # Daily JSONL logs for training
-│   ├── 2026-01-29.jsonl
-│   ├── 2026-01-30.jsonl
-│   └── ...
-└── models/                  # Phase 2+: trained models
-    ├── router.onnx
-    ├── generator.onnx
-    └── validator.onnx
+├── config.toml              # User configuration
+├── adapters/                # LoRA adapters
+│   ├── coding_2026-02-06.safetensors
+│   ├── python_async.safetensors
+│   └── rust_advanced.safetensors
+├── metrics/                 # Training data
+│   └── 2026-02-06.jsonl
+└── tool_patterns.json       # Approved tool patterns
+
+~/.cache/huggingface/hub/    # Base models (HF standard)
+├── models--Qwen--Qwen2.5-1.5B-Instruct/
+├── models--Qwen--Qwen2.5-3B-Instruct/
+└── models--Qwen--Qwen2.5-7B-Instruct/
 ```
 
-### 3. Command Name
+**Rationale:**
+- Simple, single directory for Shammah data
+- Standard HF cache for base models (community convention)
+- Clear separation: base models vs. adapters
+- Easy to backup/share adapters
 
-**Decision**: Use `shammah` as the binary name
-**Rationale**:
+### 5. Command Name
+
+**Decision:** Use `shammah` as the binary name
+
+**Rationale:**
 - Distinct from `claude` command
-- Memorable and meaningful (Hebrew "watchman")
-- Easy to type
+- Meaningful (Hebrew "watchman")
+- Easy to type and remember
 
-### 4. Three Operating Modes
+### 6. Three Operating Modes
 
-**Interactive REPL**:
+**Interactive REPL:**
 ```bash
 shammah
 > How do I use lifetimes in Rust?
 ```
 
-**Daemon Mode** (background service):
+**Single Query:**
 ```bash
-shammah daemon
-# Runs HTTP server on localhost:8000
-# Claude Code connects via proxy settings
+shammah query "What is 2+2?"
 ```
 
-**Single Query**:
+**HTTP Daemon:**
 ```bash
-shammah query "What is the time complexity of quicksort?"
+shammah daemon --bind 127.0.0.1:8000
 ```
-
-### 5. Learning Strategy
-
-**Decision**: Continuous learning from all forwarded requests
-**Rationale**: Every API call is a training opportunity
-
-**Process**:
-1. Forward request to Claude
-2. Receive response
-3. Log (request, response, metadata) to training set
-4. Periodically retrain models
-5. Update router confidence thresholds
-
-### 6. Training Strategy: Distillation from Claude
-
-**Decision**: Train all models from scratch using Claude as the teacher
-
-**How It Works:**
-1. Forward queries to Claude, log (query, response) pairs
-2. Collect 1000+ examples of your actual usage
-3. Train Router: "Which queries had low divergence when handled locally?"
-4. Train Generator: "Given query X, what would Claude say?" (distillation)
-5. Train Validator: "Is this response as good as Claude's?"
-6. Deploy models and continue learning from mistakes
-
-**Why Distillation:**
-- Models learn YOUR specific query patterns
-- Generator inherits Claude's quality and safety properties
-- No need for pre-trained models
-- Personalized to your domain/usage
-
-**Data Requirements:**
-- Phase 1: Collect 1000+ query/response pairs
-- Phase 2: Train initial models
-- Ongoing: Continuous learning from forwards
-
-### 7. Constitutional AI (Quality & Safety)
-
-**Decision**: Validator ensures local responses meet constitutional principles
-
-**Principles**:
-- **Helpful**: Response must address the query
-- **Harmless**: No harmful, illegal, or unethical content
-- **Honest**: Acknowledge uncertainty, don't make things up
-- **Consistent**: Style matches Claude's tone
-
-**Implementation:**
-- Validator model learns these from Claude's examples
-- Two decision points (Router + Validator) prevent bad responses
-- If either model is uncertain → forward to Claude
 
 ## Development Guidelines
 
@@ -294,16 +481,10 @@ shammah query "What is the time complexity of quicksort?"
 - **Formatting**: Always use `cargo fmt` before committing
 - **Linting**: Run `cargo clippy` and address warnings
 - **Documentation**: Doc comments for all public items
-- **Error Messages**: User-friendly, actionable error messages
+- **Error Messages**: User-friendly, actionable
 
 ### Error Handling
 
-- Use `anyhow::Result` for application code
-- Use `thiserror` for library-style errors with custom types
-- Always provide context with `.context()` or `.with_context()`
-- Never use `.unwrap()` or `.expect()` in production code paths
-
-Example:
 ```rust
 use anyhow::{Context, Result};
 
@@ -321,414 +502,123 @@ fn load_config() -> Result<Config> {
 
 ### Testing
 
-- **Unit tests**: Test individual functions in module files
-- **Integration tests**: Test cross-module behavior in `tests/`
-- **Property tests**: Use `proptest` for complex logic
-- **Mocking**: Use `mockito` for external API calls
-
-Minimum coverage: 80% for new code
+- **Unit tests**: Test individual functions
+- **Integration tests**: Test cross-module behavior
+- **Examples**: Demonstrate features
 
 ### Logging
 
-Use `tracing` for structured logging:
-
 ```rust
-use tracing::{debug, info, warn, error, instrument};
+use tracing::{debug, info, warn, error};
 
 #[instrument]
-async fn forward_request(req: Request) -> Result<Response> {
-    info!("Forwarding request to Claude API");
-    debug!(?req, "Request details");
+async fn load_model(config: &QwenConfig) -> Result<GeneratorModel> {
+    info!("Loading Qwen model");
+    debug!(?config, "Model configuration");
 
-    let response = claude_client.send(req).await
-        .context("Failed to forward request")?;
+    let model = QwenLoader::load(config)
+        .context("Failed to load model")?;
 
-    info!(status = %response.status, "Received response");
-    Ok(response)
+    info!("Model loaded successfully");
+    Ok(model)
 }
 ```
 
-### Git Workflow for AI Assistants
+### Git Workflow
 
-When working on this project, create commits after completing each logical unit of work. **Each commit should include all related changes: code, tests, documentation, and design updates.**
+**Commit After:**
+- Implementing complete feature
+- Fixing a bug
+- Adding/updating documentation
+- Refactoring (maintains functionality)
 
-#### When to Commit
-- After implementing a complete feature
-- After fixing a bug
-- After adding/updating documentation
-- After refactoring that maintains functionality
-- Do NOT commit: work-in-progress, broken code, or experimental changes
+**Include in Commit:**
+- Code changes
+- Test updates
+- Documentation updates
+- Design document updates (if needed)
 
-#### What to Include in Each Commit
-A complete commit includes:
-1. **Code changes** (src/, examples/, tests/)
-2. **Test updates** if behavior changed
-3. **Documentation updates**:
-   - README.md if user-facing changes
-   - CLAUDE.md if AI assistant context changed
-   - docs/ARCHITECTURE.md if design changed
-   - Code comments/docstrings for new public APIs
-4. **Design document updates** if implementation differs from spec
-5. **Examples** if new functionality added
+**Commit Message Format:**
+```
+feat: add weighted LoRA training
 
-#### Commit Message Format
-Use conventional commits with high-level descriptions:
-- **feat**: new functionality (e.g., "feat: add threshold-based router for immediate learning")
-- **fix**: bug fixes (e.g., "fix: handle empty tokenizer vocabulary with character fallback")
-- **docs**: documentation only (e.g., "docs: update architecture with Phase 2 design")
-- **test**: adding/updating tests (e.g., "test: add training verification tests")
-- **refactor**: code changes without behavior change (e.g., "refactor: extract routing logic into hybrid module")
-
-#### Message Content
-- **Subject**: what was done (imperative mood, <70 chars)
-- **Body** (optional): why it was done, what problem it solves, what docs updated
-- Keep it high-level - avoid implementation details
-
-#### Example Complete Commit
-```bash
-# After implementing threshold router:
-git add \
-  src/models/threshold_router.rs \
-  src/models/threshold_validator.rs \
-  src/models/mod.rs \
-  examples/threshold_demo.rs \
-  docs/ARCHITECTURE.md \
-  CLAUDE.md
-
-git commit -m "feat: add threshold-based router and validator
-
-Implements statistics-driven routing that learns from query 1, providing
-immediate value during cold start period before neural networks trained.
+Enables users to weight training examples (10x/3x/1x) for faster
+adaptation to critical feedback patterns.
 
 Changes:
-- New threshold_router.rs: query categorization + success tracking
-- New threshold_validator.rs: heuristic quality validation
-- Updated ARCHITECTURE.md: added Phase 2a (threshold approach)
-- Updated CLAUDE.md: documented hybrid strategy
-- Added threshold_demo.rs: demonstrates immediate learning"
+- Add weight parameter to LoRA training API
+- Implement weighted sampling in training loop
+- Add /feedback high|medium|normal commands
+- Update documentation
+
+Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
 ```
 
-```bash
-# After fixing metrics bug:
-git add \
-  src/models/threshold_router.rs \
-  src/cli/repl.rs \
-  src/claude/client.rs \
-  src/router/decision.rs \
-  src/router/hybrid_router.rs \
-  FIX_CORRUPTED_METRICS.md
+## Current Project Status
 
-git commit -m "fix: correct semantic bug in learn() and add streaming retry logic
+**Phase**: Qwen Integration Complete (Phases 1-4) ✅
+**Next**: Implement actual LoRA fine-tuning (currently placeholders)
 
-Fixes corrupted metrics where all queries were counted as local attempts,
-and adds retry logic to streaming API requests for better reliability.
+### What's Done
 
-Changes:
-- Split learn() into learn_local_attempt() and learn_forwarded()
-- Update all call sites to use correct method based on routing decision
-- Add retry logic to streaming requests (matches buffered behavior)
-- Update tests for new API
-- Deprecated old learn() method for backward compatibility
+- ✅ **Model Download** - HF Hub integration with progress
+- ✅ **Model Selection** - RAM-based automatic selection
+- ✅ **Qwen Loading** - Load pre-trained models from safetensors
+- ✅ **Progressive Bootstrap** - Instant startup with background loading
+- ✅ **Router Graceful Degradation** - Forward during model load
+- ✅ **LoRA Placeholders** - API designed, ready for implementation
+- ✅ **Tool Execution** - 6 tools working reliably
+- ✅ **Streaming Responses** - Real-time output
+- ✅ **Documentation** - Comprehensive phase docs
 
-Impact: Fixes 3.9M corrupted metric entries and improves streaming reliability
+### What's Next
 
-Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>"
-```
+**Immediate (Current Sprint):**
+- [ ] Implement actual LoRA fine-tuning (not placeholders)
+- [ ] Add weighted example storage
+- [ ] Implement background training loop
+- [ ] Add /feedback commands for weighted training
+- [ ] Test LoRA convergence on coding examples
 
-#### Verification Before Commit
-- Run `cargo test` - all tests pass
-- Run `cargo fmt` - code formatted
-- Run `cargo clippy` - no warnings
-- Verify documentation reflects current implementation
-- Check that examples still work
+**Near-term:**
+- [ ] Multiple adapter support (switch domains)
+- [ ] Adapter sharing (export/import)
+- [ ] Training metrics visualization
+- [ ] Automatic adapter selection
 
-### No Code in CLAUDE.md
-
-**IMPORTANT**: This file (CLAUDE.md) should contain context, architecture, and guidelines, but NOT implementation code. Code belongs in `src/`, `tests/`, or `examples/`.
-
-This document is for helping AI assistants understand the project - it's a "map" not the "territory."
-
-## Current Project Phase
-
-**Phase**: Phase 2a - Threshold Models ✅
-**Status**: Threshold-based router and validator implemented, learning from query 1
-**Next Steps**:
-- Deploy threshold models in production to collect data
-- Train neural networks once sufficient data collected (500+ queries)
-- Transition to hybrid approach (threshold + neural)
-
-### What's Done (Phase 1)
-
-- ✅ **Router:** Crisis detection (safety mechanism for harmful queries)
-  - Pattern matching system removed (was placeholder, now replaced by threshold models)
-- ✅ **Validator (partial):** Crisis detection demonstrates safety checking
-- ✅ **Claude API Client:** Full integration with retry logic and streaming support
-- ✅ **Metrics Logger:** Collects (query, response, routing) data for Phase 2 training
-- ✅ **CLI/REPL:** Interactive interface with readline support
-- ✅ **Tool Execution:** 6 tools enable Claude to inspect code, search files, run commands
-- ✅ **Tests:** All passing (unit + integration)
-
-**Current Performance:**
-- 100% of queries forward to Claude (correct - learning phase)
-- 100% crisis detection accuracy
-- Tool execution working reliably
-- Collecting training data for threshold models
-
-### What's Done (Phase 2a - Threshold Models)
-
-- ✅ **ThresholdRouter:** Statistics-based routing using query categorization
-  - Tracks success rates per category (Greeting, Definition, HowTo, etc.)
-  - Adaptive confidence thresholds (starts 0.95, adjusts based on performance)
-  - Learns from query 1 (no cold start period)
-  - Fully interpretable decisions
-- ✅ **ThresholdValidator:** Rule-based quality validation using heuristics
-  - 8 quality signals (TooShort, Repetitive, AnswersQuestion, etc.)
-  - Learns signal correlations over time
-  - Conservative at start (forces Claude learning for first 10 queries)
-- ✅ **HybridRouter:** Smooth transition from threshold to neural
-  - Phase 1 (queries 1-50): Pure threshold-based
-  - Phase 2 (queries 51-200): Hybrid with gradually increasing neural weight
-  - Phase 3 (queries 201+): Primarily neural with threshold safety checks
-- ✅ **Neural Network Models:** Basic implementations (Router, Generator, Validator)
-  - Candle-based training with SGD optimizer
-  - Online learning after each query
-  - Tests verify loss reduction and pattern learning
-- ✅ **Examples:** threshold_demo.rs, hybrid_demo.rs demonstrate immediate learning
-
-**Key Innovation:**
-The threshold models provide **immediate value** from query 1, unlike neural networks that need 200+ queries for cold start. This hybrid approach combines interpretability and instant learning (threshold) with adaptive power (neural).
-
-### Bug Fix: Corrupted Metrics (January 31, 2026) ✅
-
-**Problem Discovered:**
-- ThresholdRouter had a semantic bug where `learn()` was called for ALL queries but incremented `total_local_attempts` every time
-- This caused 3.9M+ queries to be incorrectly counted as "local attempts" (should have been ~0)
-- Success rate showed 0% because most "local attempts" were actually forwards to Claude
-- Streaming requests had no retry logic, failing immediately on network issues
-
-**Solution Implemented:**
-- ✅ **Split `learn()` into two methods with clear semantics:**
-  - `learn_local_attempt(query, was_successful)` - only called when we tried local generation
-  - `learn_forwarded(query)` - only called when we forwarded directly to Claude
-  - Old `learn()` method deprecated but kept for backward compatibility
-- ✅ **Updated call sites:** `repl.rs` now calls correct method based on routing decision ("local", "local_attempted", "forward")
-- ✅ **Added streaming retry logic:** `send_message_stream()` now uses same retry wrapper as buffered requests (3 retries, exponential backoff)
-- ✅ **Reset corrupted statistics:** Deleted corrupted files, fresh start with accurate tracking
-
-**Files Modified:**
-- `src/models/threshold_router.rs` - Core logic split and tests updated
-- `src/cli/repl.rs` - Learning logic now uses match statement
-- `src/claude/client.rs` - Streaming retry logic added
-- `src/router/decision.rs` - Wrapper methods added
-- `src/router/hybrid_router.rs` - Updated to use new API
-
-**Impact:**
-- Statistics now accurately distinguish between local attempts and forwards
-- `total_queries >= total_local_attempts` (not equal as before)
-- Better routing decisions based on accurate success rates
-- Improved streaming reliability with automatic retries
-
-**Documentation:** See `FIX_CORRUPTED_METRICS.md` for detailed analysis
-
-### Apple Silicon Optimization ✅
-
-- ✅ **Metal Backend Support:** Automatic GPU acceleration on M1/M2/M3/M4 Macs
-  - `DevicePreference::Auto` - tries Metal, falls back to CPU
-  - `DevicePreference::Metal` - forces Metal (errors if unavailable)
-  - `DevicePreference::Cpu` - forces CPU (for debugging)
-- ✅ **Device Detection:** Automatic detection with informative logging
-- ✅ **Performance Monitoring:** `metal_benchmark` example shows 10-100x speedup
-- ✅ **Intelligent Fallback:** Gracefully handles non-Apple Silicon Macs
-
-**Expected Performance:**
-- Small models (128 hidden dim): 2-5x speedup on Metal
-- Large models (768+ hidden dim): 10-100x speedup on Metal
-- Best performance on M1 Pro/Max, M2 Pro/Max, M3/M4
-
-### Tool Execution System ✅
-
-- ✅ **6 Working Tools:** Read, Glob, Grep, WebFetch, Bash, Restart
-  - **Read:** Read file contents (10K char limit) for code inspection
-  - **Glob:** Find files by pattern (e.g., "**/*.rs") with 100 file limit
-  - **Grep:** Search with regex across codebase (50 match limit)
-  - **WebFetch:** Fetch URLs with 10s timeout (10K char limit)
-  - **Bash:** Execute shell commands (5K output limit)
-  - **Restart:** Self-improvement tool to restart into new binary
-- ✅ **Multi-Turn Loop:** Execute tools → send results to Claude → repeat (max 5 iterations)
-- ✅ **Real-Time Output Visibility:** User sees tool results as they execute (interactive mode)
-  - Success/error status with ✓/✗ icons
-  - Preview of results (first 500 chars with truncation indicator)
-  - Indented, readable formatting
-  - Black-box problem solved - users understand what tools are doing
-- ✅ **Infinite Loop Detection:** Prevents Claude from calling same tool repeatedly
-  - Tracks tool call signatures (name + input hash)
-  - Breaks after 3 identical calls with warning
-  - Saves time by not hitting max iterations on stuck queries
-- ✅ **Conversation State Management:** Robust handling prevents API errors
-  - Proper empty message handling with "[Tool request]" placeholder
-  - Always adds final response, even at max iterations
-  - Validation checks prevent conversation corruption
-  - Fixes "messages.N: all messages must have non-empty content" errors
-- ✅ **XML-Structured Results:** Tool results formatted for better Claude parsing
-  - Uses `<tool_result>`, `<tool_name>`, `<status>`, `<content>` tags
-  - Format Claude API is trained to understand
-  - Clearer than previous plain text format
-- ✅ **Tool Definitions:** Sent to Claude API with every request
-- ✅ **Error Handling:** Graceful failures with user feedback
-
-**Key Design Decisions:**
-- Tools enable Claude to inspect code, search files, and make modifications
-- Multi-turn loop allows Claude to use multiple tools in sequence
-- Restart tool enables self-improvement workflow (modify code → build → restart)
-- Security design for restart tool deferred to Phase 2 (currently unrestricted)
-- Tool visibility critical for user trust and debugging
-- Loop detection prevents frustration from stuck queries
-
-### Streaming Responses ✅
-
-- ✅ **SSE Parsing:** Server-Sent Events from Claude API
-- ✅ **Character-by-Character Display:** Real-time output for better UX
-- ✅ **Streaming Client Method:** `send_message_stream()` with tokio channels
-- ✅ **Retry Logic:** Automatic retries with exponential backoff (3 attempts, 1s/2s/4s delays)
-  - Matches buffered request behavior for consistency
-  - Improves reliability on transient network issues
-- ⚠️ **Current Limitation:** Streaming disabled when tools are used
-  - **Reason:** Can't detect tool_use in SSE stream yet (needs full stream parsing)
-  - **Workaround:** Falls back to buffered response for tool execution
-  - **Future:** Parse tool_use blocks from SSE stream to enable streaming + tools
-
-### Concurrent Weight Merging ✅
-
-- ✅ **File Locking:** Exclusive locks with fs2 crate for safe concurrent access
-- ✅ **Merge Strategy:** Accumulates statistics from multiple sessions
-  - Category stats: Add attempt counts, successes, failures
-  - Global stats: Merge total queries and local attempts
-  - Confidence: Average thresholds from both sessions
-- ✅ **Atomic Writes:** Temp file + rename pattern prevents corruption
-- ✅ **Safe Multi-Session:** Multiple Shammah instances can run without data loss
-
-**Implementation:**
-- Lock acquired before read → merge with existing → atomic write
-- Prevents race conditions when multiple sessions save at same time
-- Critical for training data integrity across concurrent sessions
-
-### Constitution Support ✅ (Infrastructure)
-
-- ✅ **Configurable Path:** `~/.shammah/constitution.md` by default
-- ✅ **Loaded on Startup:** Constitution file read if it exists
-- ✅ **Not Sent to API:** Keeps constitutional principles private
-- ⚠️ **Usage Pending:** Infrastructure complete, but not yet applied
-  - **Future:** Prepend to local model system prompts
-  - **When:** Will activate when local generation becomes primary
-
-**Purpose:**
-Allows users to define custom constitutional principles for local generation without sharing them with Claude API.
-
-### What's NOT Done Yet (Phase 2b+)
-
-- ❌ No production deployment yet
-- ❌ Neural networks not trained on real data (random weights)
-- ❌ Generator model needs actual LLM (currently placeholder)
-- ❌ No uncertainty estimation
-- ❌ No Core ML export (.mlmodel format for maximum Apple Silicon optimization)
-
-### Known Issues (As of January 31, 2026)
-
-**Build Status:**
-- ⚠️ **Pre-existing compilation errors** in some modules (unrelated to metrics fix):
-  - `src/local/generator.rs` - trait implementation mismatches
-  - `src/server/handlers.rs` - private module access issues
-  - `src/training/batch_trainer.rs` - incomplete implementations
-- ✅ **Recent changes compile successfully** (threshold_router, repl, client)
-- ✅ **Tests updated and passing** for threshold router module
-- **Note:** These errors existed before the metrics fix and are part of ongoing development
-
-**Statistics Files:**
-- ✅ Corrupted metrics files deleted and backed up to `~/.shammah/models/*.backup`
-- ✅ Fresh statistics will be created on next successful run
-- Expected behavior: `total_queries >= total_local_attempts` (not equal)
-
-### Deferred Work
-
-**Security Design for Self-Improvement** (Restart Tool):
-- ⚠️ **Current State:** Basic implementation (Phase 1)
-- ⚠️ **Missing Security Measures:**
-  - User confirmation prompts before code modification
-  - Git backup/stash before changes
-  - Rollback mechanism (keep previous binary)
-  - Dev mode flag (disable in production)
-  - Change review UI
-- **Rationale:** Get basic functionality working first, add safety later
-- **Risk:** Claude can modify any code and restart without confirmation
-- **Mitigation:** Only use in development environment with version control
-- **Timeline:** Phase 2 of self-improvement (TBD)
-
-**Streaming + Tool Detection:**
-- Need to parse tool_use events from SSE stream
-- Currently falls back to buffered responses when tools are used
-- Low priority (buffered responses work fine for now)
-
-## Working with This Project
-
-### For AI Assistants (Claude Code, etc.)
-
-When working on this project:
-
-1. **Read the spec first**: `CONSTITUTIONAL_PROXY_SPEC.md` is the authoritative design document
-2. **Check current phase**: Don't implement Phase 3 features when we're in Phase 1
-3. **Follow Rust conventions**: Prefer standard patterns over clever tricks
-4. **Think about Apple Silicon**: This targets M1/M2/M3/M4 Macs specifically
-5. **Test as you go**: Write tests alongside implementation code
-6. **Document trade-offs**: When you make a design choice, explain why in code comments
-
-### Common Tasks
-
-**Adding a new module**:
-1. Create file in `src/` (e.g., `src/metrics.rs`)
-2. Add `pub mod metrics;` to `src/lib.rs`
-3. Implement with proper error handling and tests
-4. Add documentation to relevant `docs/` files
-
-**Implementing a feature**:
-1. Read the spec section for that feature
-2. Design the API (functions, structs, traits)
-3. Write tests first (TDD)
-4. Implement the feature
-5. Run `cargo test`, `cargo clippy`, `cargo fmt`
-6. Update documentation
-
-**Debugging an issue**:
-1. Check logs (structured with `tracing`)
-2. Add more instrumentation if needed
-3. Write a failing test that reproduces the issue
-4. Fix the issue
-5. Verify test passes
+**Future:**
+- [ ] Multi-model support (switch between Qwen sizes)
+- [ ] Quantization for lower memory usage
+- [ ] Batch inference for multiple queries
+- [ ] CoreML export for Neural Engine
 
 ## Reference Documents
 
-- **CONSTITUTIONAL_PROXY_SPEC.md**: Complete technical specification (authoritative)
 - **README.md**: User-facing documentation
-- **docs/ARCHITECTURE.md**: Detailed architecture breakdown
-- **docs/CONFIGURATION.md**: Configuration options and setup
-- **docs/DEVELOPMENT.md**: Development workflow and guidelines
+- **CLAUDE.md**: This file (AI assistant context)
+- **QWEN_INTEGRATION_COMPLETE.md**: Phases 1-4 implementation summary
+- **PHASE_3_BOOTSTRAP_COMPLETE.md**: Progressive bootstrap details
+- **PHASE_4_LORA_PLACEHOLDERS.md**: LoRA design (placeholders)
+- **docs/TOOL_CONFIRMATION.md**: Tool permission system
 
 ## Questions?
 
 If you're unsure about something:
 
-1. Check `CONSTITUTIONAL_PROXY_SPEC.md` first
-2. Check this file (CLAUDE.md) for context
+1. Check this file (CLAUDE.md) for context
+2. Check README.md for user perspective
 3. Look at existing code for patterns
 4. Ask the user if still unclear
 
 ## Key Principles
 
-1. **Local-first**: Prioritize privacy and performance
-2. **Gradual improvement**: Learn continuously, don't expect perfection
-3. **Constitutional AI**: Maintain safety and quality at all times
-4. **User experience**: Fast, reliable, transparent
-5. **Rust best practices**: Safe, idiomatic, performant code
+1. **Immediate Quality**: Pre-trained models work day 1
+2. **Continuous Improvement**: LoRA fine-tuning adapts to user
+3. **User Control**: Weighted feedback, manual overrides
+4. **Privacy First**: Local inference, offline capability
+5. **Professional UX**: Instant startup, graceful degradation
+6. **Rust Best Practices**: Safe, idiomatic, performant code
 
 ---
 
-This document should evolve as the project grows. Keep it updated with new design decisions and context that helps AI assistants work effectively on Shammah.
+This document evolves with the project. Keep it updated with new design decisions and context that helps AI assistants work effectively on Shammah.
