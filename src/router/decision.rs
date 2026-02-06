@@ -10,6 +10,7 @@ pub enum ForwardReason {
     Crisis,
     NoMatch,
     LowConfidence,
+    ModelNotReady, // New: Model is still loading/downloading
 }
 
 impl ForwardReason {
@@ -18,6 +19,7 @@ impl ForwardReason {
             ForwardReason::Crisis => "crisis",
             ForwardReason::NoMatch => "no_match",
             ForwardReason::LowConfidence => "low_confidence",
+            ForwardReason::ModelNotReady => "model_not_ready",
         }
     }
 }
@@ -72,6 +74,27 @@ impl Router {
         }
     }
 
+    /// Make routing decision with generator state check (progressive bootstrap support)
+    ///
+    /// This method checks if the generator is ready before considering local routing.
+    /// If the model is still loading/downloading, it forwards to Claude for graceful degradation.
+    pub fn route_with_generator_check(
+        &self,
+        query: &str,
+        generator_is_ready: bool,
+    ) -> RouteDecision {
+        // Layer 0: Check if generator is ready (progressive bootstrap)
+        if !generator_is_ready {
+            tracing::info!("Routing decision: FORWARD (model not ready yet)");
+            return RouteDecision::Forward {
+                reason: ForwardReason::ModelNotReady,
+            };
+        }
+
+        // Otherwise, use normal routing logic
+        self.route(query)
+    }
+
     /// Learn from a local generation attempt
     pub fn learn_local_attempt(&mut self, query: &str, was_successful: bool) {
         self.threshold_router
@@ -118,5 +141,42 @@ mod tests {
         assert_eq!(ForwardReason::Crisis.as_str(), "crisis");
         assert_eq!(ForwardReason::NoMatch.as_str(), "no_match");
         assert_eq!(ForwardReason::LowConfidence.as_str(), "low_confidence");
+        assert_eq!(ForwardReason::ModelNotReady.as_str(), "model_not_ready");
+    }
+
+    #[test]
+    fn test_route_with_generator_check_not_ready() {
+        let crisis_detector = CrisisDetector::new(vec!["bomb".to_string()]);
+        let threshold_router = ThresholdRouter::new();
+        let router = Router::new(crisis_detector, threshold_router);
+
+        // When generator is not ready, should always forward
+        let decision = router.route_with_generator_check("Hello, world!", false);
+
+        match decision {
+            RouteDecision::Forward { reason } => {
+                assert!(matches!(reason, ForwardReason::ModelNotReady));
+            }
+            _ => panic!("Expected Forward decision"),
+        }
+    }
+
+    #[test]
+    fn test_route_with_generator_check_ready() {
+        let crisis_detector = CrisisDetector::new(vec!["bomb".to_string()]);
+        let threshold_router = ThresholdRouter::new();
+        let router = Router::new(crisis_detector, threshold_router);
+
+        // When generator is ready, should use normal routing logic
+        let decision = router.route_with_generator_check("Hello, world!", true);
+
+        // With default threshold router, should forward (low confidence initially)
+        match decision {
+            RouteDecision::Forward { reason } => {
+                // Should NOT be ModelNotReady
+                assert!(!matches!(reason, ForwardReason::ModelNotReady));
+            }
+            _ => {}
+        }
     }
 }

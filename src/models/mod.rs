@@ -1,6 +1,7 @@
 // Machine learning models
 // All models support online learning (update after each forward to Claude)
 
+pub mod bootstrap; // Progressive bootstrap for instant startup
 pub mod common;
 pub mod download;
 pub mod ensemble;
@@ -17,6 +18,7 @@ pub mod threshold_validator;
 pub mod tokenizer;
 pub mod validator;
 
+pub use bootstrap::{BootstrapLoader, DownloadProgressSnapshot, GeneratorState};
 pub use common::{
     device_info, get_device, get_device_with_preference, is_metal_available, DevicePreference,
     GeneratorConfig, ModelConfig, Saveable,
