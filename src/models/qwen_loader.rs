@@ -118,13 +118,16 @@ impl QwenLoader {
 
         tracing::debug!("Loaded tokenizer with vocab size: {}", tokenizer.get_vocab_size(true));
 
-        // 3. Load model weights from safetensors
-        let weights_path = Self::find_safetensors_file(&config.cache_dir)?;
-        tracing::info!("Loading weights from {:?}", weights_path);
+        // 3. Load model weights from safetensors (single file or sharded)
+        let weights_paths = Self::find_safetensors_files(&config.cache_dir)?;
+        tracing::info!("Loading weights from {} file(s)", weights_paths.len());
+        for path in &weights_paths {
+            tracing::debug!("  - {:?}", path.file_name().unwrap_or_default());
+        }
 
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(
-                &[weights_path],
+                &weights_paths,
                 candle_core::DType::F32,
                 &config.device,
             )?
@@ -144,18 +147,20 @@ impl QwenLoader {
         })
     }
 
-    /// Find safetensors file in cache directory
+    /// Find safetensors files in cache directory
     ///
     /// Handles both single file (model.safetensors) and sharded files
     /// (model-00001-of-00002.safetensors, etc.)
-    fn find_safetensors_file(cache_dir: &Path) -> Result<std::path::PathBuf> {
+    fn find_safetensors_files(cache_dir: &Path) -> Result<Vec<std::path::PathBuf>> {
         // Try single file first
         let single_file = cache_dir.join("model.safetensors");
         if single_file.exists() {
-            return Ok(single_file);
+            tracing::debug!("Found single safetensors file");
+            return Ok(vec![single_file]);
         }
 
-        // Try sharded files (use first shard)
+        // Try sharded files - collect all shards
+        let mut shards = Vec::new();
         for entry in std::fs::read_dir(cache_dir)
             .context("Failed to read cache directory")?
         {
@@ -165,45 +170,34 @@ impl QwenLoader {
             if let Some(filename) = path.file_name() {
                 if let Some(name) = filename.to_str() {
                     if name.starts_with("model-") && name.ends_with(".safetensors") {
-                        // For sharded models, we need all shards
-                        // For now, just return error - will handle sharding later
-                        anyhow::bail!(
-                            "Sharded model detected ({}) - not yet supported. \
-                             Please use a model with single safetensors file.",
-                            name
-                        );
+                        shards.push(path);
                     }
                 }
             }
         }
 
+        if !shards.is_empty() {
+            // Sort shards by name to ensure correct order
+            shards.sort();
+            tracing::info!("Found {} sharded safetensors files", shards.len());
+            return Ok(shards);
+        }
+
         Err(anyhow::anyhow!(
-            "No safetensors file found in {:?}. Expected model.safetensors",
+            "No safetensors files found in {:?}. Expected model.safetensors or model-*-of-*.safetensors",
             cache_dir
         ))
     }
 
     /// Check if model is loadable from cache directory
     pub fn is_loadable(cache_dir: &Path) -> bool {
-        cache_dir.join("config.json").exists()
-            && cache_dir.join("tokenizer.json").exists()
-            && (cache_dir.join("model.safetensors").exists()
-                || Self::has_sharded_safetensors(cache_dir))
+        let has_config = cache_dir.join("config.json").exists();
+        let has_tokenizer = cache_dir.join("tokenizer.json").exists();
+        let has_weights = Self::find_safetensors_files(cache_dir).is_ok();
+
+        has_config && has_tokenizer && has_weights
     }
 
-    /// Check if directory contains sharded safetensors files
-    fn has_sharded_safetensors(cache_dir: &Path) -> bool {
-        if let Ok(entries) = std::fs::read_dir(cache_dir) {
-            for entry in entries.flatten() {
-                if let Some(name) = entry.file_name().to_str() {
-                    if name.starts_with("model-") && name.ends_with(".safetensors") {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    }
 }
 
 #[cfg(test)]

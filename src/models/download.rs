@@ -84,57 +84,76 @@ impl ModelDownloader {
         // Get repository reference
         let repo = api.repo(Repo::new(model_id.to_string(), RepoType::Model));
 
-        // Download required files
-        let files_to_download = vec![
-            "config.json",
-            "tokenizer.json",
-            "tokenizer_config.json",
-            "model.safetensors", // Single file for smaller models
-                                  // Note: larger models may have multiple safetensors files
-        ];
-
         tracing::info!("Downloading {} to cache...", model_id);
 
-        // Create progress bar for visual feedback
-        let pb = ProgressBar::new(files_to_download.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} {msg}")
-                .unwrap()
-                .progress_chars("=>-"),
-        );
-
-        let total_files = files_to_download.len();
         let mut downloaded_files = Vec::new();
 
-        for (idx, file) in files_to_download.iter().enumerate() {
-            pb.set_position((idx + 1) as u64);
-            pb.set_message(format!("Downloading {}", file));
-
-            // Send progress update
-            tx.send(DownloadProgress::Downloading {
-                model_id: model_id.to_string(),
-                file_name: file.to_string(),
-                current_file: idx + 1,
-                total_files,
-            })
-            .ok();
-
-            // Download file (with resume support)
+        // Download config files first
+        let config_files = vec!["config.json", "tokenizer.json", "tokenizer_config.json"];
+        for file in &config_files {
             match repo.get(file) {
                 Ok(path) => {
                     tracing::debug!("Downloaded {} to {:?}", file, path);
                     downloaded_files.push(path);
                 }
                 Err(e) => {
-                    // Some files may not exist (e.g., single safetensors vs sharded)
-                    // This is OK for optional files
-                    tracing::debug!("Skipped {} ({})", file, e);
+                    tracing::warn!("Failed to download {}: {}", file, e);
                 }
             }
         }
 
-        pb.finish_with_message("Download complete");
+        // Try to download model weights (single file or sharded)
+        // First, try single model.safetensors file
+        match repo.get("model.safetensors") {
+            Ok(path) => {
+                tracing::info!("Downloaded single model file");
+                downloaded_files.push(path);
+            }
+            Err(_) => {
+                // Single file doesn't exist, try sharded files
+                tracing::info!("Single model file not found, looking for sharded files...");
+
+                let mut shard_idx = 1;
+                loop {
+                    // Try downloading shards sequentially: model-00001-of-00002.safetensors, etc.
+                    let mut found_this_shard = false;
+
+                    // Try different total counts (models can have 2, 3, 4, ... shards)
+                    for total in shard_idx..=20 {  // Try up to 20 total shards
+                        let shard_file = format!("model-{:05}-of-{:05}.safetensors", shard_idx, total);
+                        match repo.get(&shard_file) {
+                            Ok(path) => {
+                                tracing::info!("Downloaded shard {}/{}: {}", shard_idx, total, shard_file);
+                                downloaded_files.push(path);
+                                found_this_shard = true;
+
+                                // If we found shard N of N, we're done
+                                if shard_idx == total {
+                                    tracing::info!("✓ Downloaded all {} shards", total);
+                                    shard_idx = total + 1;  // Exit outer loop
+                                }
+                                break;  // Move to next shard
+                            }
+                            Err(_) => continue,
+                        }
+                    }
+
+                    if !found_this_shard {
+                        // No more shards found
+                        if shard_idx == 1 {
+                            tracing::error!("No model files found (neither single nor sharded)");
+                        } else {
+                            tracing::info!("✓ Found {} total shards", shard_idx - 1);
+                        }
+                        break;
+                    }
+
+                    shard_idx += 1;
+                }
+            }
+        }
+
+        tracing::info!("✓ Download complete: {} files", downloaded_files.len());
 
         // Determine cache path from first downloaded file
         let cache_path = if let Some(first_file) = downloaded_files.first() {
