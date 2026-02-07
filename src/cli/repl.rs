@@ -458,20 +458,22 @@ impl Repl {
     // to stdout during the transition.
     // ========================================================================
 
-    /// Output a user message (dual: buffer + stdout)
+    /// Output a user message (dual: buffer + stdout, or TUI only)
     fn output_user(&self, content: impl Into<String> + Clone) {
         let content_str = content.clone().into();
         self.output_manager.write_user(content_str.clone());
-        if self.is_interactive {
+        // Only print to stdout if TUI is not active
+        if self.is_interactive && self.tui_renderer.is_none() {
             println!("> {}", content_str);
         }
     }
 
-    /// Output a Claude response (dual: buffer + stdout)
+    /// Output a Claude response (dual: buffer + stdout, or TUI only)
     fn output_claude(&self, content: impl Into<String> + Clone) {
         let content_str = content.clone().into();
         self.output_manager.write_claude(content_str.clone());
-        if self.is_interactive {
+        // Only print to stdout if TUI is not active
+        if self.is_interactive && self.tui_renderer.is_none() {
             println!("{}", content_str);
         }
     }
@@ -480,36 +482,40 @@ impl Repl {
     fn output_claude_append(&self, content: impl AsRef<str>) {
         let content_str = content.as_ref();
         self.output_manager.append_claude(content_str);
-        if self.is_interactive {
+        // Only print to stdout if TUI is not active
+        if self.is_interactive && self.tui_renderer.is_none() {
             print!("{}", content_str);
             let _ = io::stdout().flush();
         }
     }
 
-    /// Output tool execution result (dual: buffer + stdout)
+    /// Output tool execution result (dual: buffer + stdout, or TUI only)
     fn output_tool(&self, tool_name: impl Into<String>, content: impl Into<String> + Clone) {
         let content_str = content.clone().into();
         self.output_manager
             .write_tool(tool_name, content_str.clone());
-        if self.is_interactive {
+        // Only print to stdout if TUI is not active
+        if self.is_interactive && self.tui_renderer.is_none() {
             println!("{}", content_str);
         }
     }
 
-    /// Output status information (dual: buffer + stdout)
+    /// Output status information (dual: buffer + stdout, or TUI only)
     fn output_status(&self, content: impl Into<String> + Clone) {
         let content_str = content.clone().into();
         self.output_manager.write_status(content_str.clone());
-        if self.is_interactive {
+        // Only print to stdout if TUI is not active
+        if self.is_interactive && self.tui_renderer.is_none() {
             eprintln!("{}", content_str);
         }
     }
 
-    /// Output error message (dual: buffer + stdout)
+    /// Output error message (dual: buffer + stdout, or TUI only)
     fn output_error(&self, content: impl Into<String> + Clone) {
         let content_str = content.clone().into();
         self.output_manager.write_error(content_str.clone());
-        if self.is_interactive {
+        // Only print to stdout if TUI is not active
+        if self.is_interactive && self.tui_renderer.is_none() {
             eprintln!("{}", content_str);
         }
     }
@@ -1049,27 +1055,51 @@ impl Repl {
             // Read input using readline or fallback
             let input = if self.input_handler.is_some() {
                 // Interactive mode with readline support
-                println!();
-                self.print_separator();
+
+                // Render TUI before showing prompt (if enabled)
+                self.render_tui();
+
+                if self.tui_renderer.is_none() {
+                    // Standard mode: print separator
+                    println!();
+                    self.print_separator();
+                }
 
                 let line = {
                     let prompt = self.get_prompt();
+
+                    // Suspend TUI before readline (if enabled)
+                    if let Some(ref mut tui) = self.tui_renderer {
+                        let _ = tui.suspend();
+                    }
+
                     let handler = self.input_handler.as_mut().unwrap();
-                    handler.read_line(&prompt)?
+                    let result = handler.read_line(&prompt)?;
+
+                    // Resume TUI after readline (if enabled)
+                    if let Some(ref mut tui) = self.tui_renderer {
+                        let _ = tui.resume();
+                    }
+
+                    result
                 };
 
                 match line {
                     Some(text) => text,
                     None => {
                         // Ctrl+C or Ctrl+D - graceful exit
-                        println!();
+                        if self.tui_renderer.is_none() {
+                            println!();
+                        }
                         self.save_models().await?;
                         if let Some(ref mut handler) = self.input_handler {
                             if let Err(e) = handler.save_history() {
                                 eprintln!("Warning: Failed to save history: {}", e);
                             }
                         }
-                        println!("Models saved. Goodbye!");
+                        if self.tui_renderer.is_none() {
+                            println!("Models saved. Goodbye!");
+                        }
                         break;
                     }
                 }

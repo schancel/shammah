@@ -20,9 +20,11 @@ use std::io;
 
 use super::{OutputManager, StatusBar};
 
+mod input_handler;
 mod output_widget;
 mod status_widget;
 
+pub use input_handler::TuiInputHandler;
 pub use output_widget::OutputWidget;
 pub use status_widget::StatusWidget;
 
