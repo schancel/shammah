@@ -43,6 +43,9 @@ use super::output_manager::OutputManager;
 use super::status_bar::StatusBar;
 use super::tui::TuiRenderer;
 
+// Phase 3.5: Import output macros for global output routing
+use crate::{output_claude, output_error, output_progress, output_status, output_tool, output_user};
+
 /// User's menu choice for tool confirmation
 #[derive(Debug, Clone)]
 enum ConfirmationChoice {
@@ -158,8 +161,8 @@ impl Repl {
             match InputHandler::new() {
                 Ok(handler) => Some(handler),
                 Err(e) => {
-                    eprintln!("Warning: Failed to initialize readline: {}", e);
-                    eprintln!("Falling back to basic input mode");
+                    output_status!("⚠️  Failed to initialize readline: {}", e);
+                    output_status!("   Falling back to basic input mode");
                     None
                 }
             }
@@ -201,8 +204,8 @@ impl Repl {
         // Create tool executor
         let tool_executor = ToolExecutor::new(tool_registry, permissions, patterns_path)
             .unwrap_or_else(|e| {
-                eprintln!("Warning: Failed to initialize tool executor: {}", e);
-                eprintln!("Tool pattern persistence may not work correctly");
+                output_status!("⚠️  Failed to initialize tool executor: {}", e);
+                output_status!("   Tool pattern persistence may not work correctly");
                 // Create fresh registry and try with temp path
                 let mut fallback_registry = ToolRegistry::new();
                 fallback_registry.register(Box::new(ReadTool));
@@ -227,7 +230,7 @@ impl Repl {
             });
 
         if is_interactive {
-            eprintln!(
+            output_status!(
                 "✓ Tool execution enabled ({} tools)",
                 tool_executor.registry().len()
             );
@@ -245,8 +248,8 @@ impl Repl {
 
         // Initialize tokenizer
         let tokenizer = Arc::new(TextTokenizer::default().unwrap_or_else(|e| {
-            eprintln!("Warning: Failed to create tokenizer: {}", e);
-            eprintln!("Active learning tools may not work correctly");
+            output_status!("⚠️  Failed to create tokenizer: {}", e);
+            output_status!("   Active learning tools may not work correctly");
             panic!("Cannot create tokenizer")
         }));
 
@@ -255,7 +258,7 @@ impl Repl {
         let bootstrap_loader = Arc::new(BootstrapLoader::new(Arc::clone(&generator_state)));
 
         if is_interactive {
-            eprintln!("⏳ Initializing Qwen model (background)...");
+            output_progress!("⏳ Initializing Qwen model (background)...");
         }
 
         // Start background model loading
@@ -267,8 +270,8 @@ impl Repl {
                 .load_generator_async(None, DevicePreference::Auto)
                 .await
             {
-                eprintln!("⚠️  Model loading failed: {}", e);
-                eprintln!("    Will forward all queries to Claude");
+                output_status!("⚠️  Model loading failed: {}", e);
+                output_status!("   Will forward all queries to Claude");
                 let mut state = state_clone.write().await;
                 *state = GeneratorState::Failed {
                     error: format!("{}", e),
@@ -296,7 +299,7 @@ impl Repl {
                         Some(Arc::clone(&tok_clone)),
                     );
 
-                    eprintln!("✓ Qwen model ready - local generation enabled");
+                    output_status!("✓ Qwen model ready - local generation enabled");
                     break; // Stop monitoring once injected
                 } else if matches!(
                     *state,
@@ -318,7 +321,7 @@ impl Repl {
         let sampler = Arc::new(RwLock::new(Sampler::new(sampling_config)));
 
         if is_interactive {
-            eprintln!("✓ LoRA fine-tuning enabled (weighted training)");
+            output_status!("✓ LoRA fine-tuning enabled (weighted training)");
         }
 
         // Initialize output management (Phase 1: Terminal UI refactor)
@@ -329,12 +332,12 @@ impl Repl {
         let tui_renderer = if config.tui_enabled && is_interactive {
             match TuiRenderer::new(output_manager.clone(), status_bar.clone()) {
                 Ok(renderer) => {
-                    eprintln!("✓ TUI mode enabled (Ratatui)");
+                    output_status!("✓ TUI mode enabled (Ratatui)");
                     Some(renderer)
                 }
                 Err(e) => {
-                    eprintln!("⚠️  Failed to initialize TUI: {}", e);
-                    eprintln!("   Falling back to standard output mode");
+                    output_status!("⚠️  Failed to initialize TUI: {}", e);
+                    output_status!("   Falling back to standard output mode");
                     None
                 }
             }
@@ -397,7 +400,7 @@ impl Repl {
                 match LocalGenerator::load(&generator_path) {
                     Ok(_generator) => {
                         if is_interactive {
-                            eprintln!(
+                            output_status!(
                                 "✓ Loaded local generator from: {}",
                                 generator_path.display()
                             );
@@ -409,8 +412,8 @@ impl Repl {
                     }
                     Err(e) => {
                         if is_interactive {
-                            eprintln!("⚠️  Failed to load local generator: {}", e);
-                            eprintln!("   Starting with new generator");
+                            output_status!("⚠️  Failed to load local generator: {}", e);
+                            output_status!("   Starting with new generator");
                         }
                     }
                 }
@@ -432,7 +435,7 @@ impl Repl {
             match ThresholdValidator::load(&validator_path) {
                 Ok(validator) => {
                     if is_interactive {
-                        eprintln!(
+                        output_status!(
                             "✓ Loaded validator with {} validations",
                             validator.stats().total_validations
                         );
@@ -441,7 +444,7 @@ impl Repl {
                 }
                 Err(e) => {
                     if is_interactive {
-                        eprintln!("Warning: Failed to load validator: {}", e);
+                        output_status!("⚠️  Failed to load validator: {}", e);
                     }
                     ThresholdValidator::new()
                 }
@@ -552,7 +555,7 @@ impl Repl {
     fn render_tui(&mut self) {
         if let Some(ref mut tui) = self.tui_renderer {
             if let Err(e) = tui.render() {
-                eprintln!("⚠️  TUI render error: {}", e);
+                self.output_error(format!("⚠️  TUI render error: {}", e));
             }
         }
     }
@@ -1019,16 +1022,16 @@ impl Repl {
     pub async fn run(&mut self) -> Result<()> {
         if self.is_interactive {
             // Fancy startup for interactive mode
-            println!("Shammah v0.1.0 - Constitutional AI Proxy");
-            println!("Using API key from: ~/.shammah/config.toml ✓");
-            println!("Loaded crisis detection keywords ✓");
-            println!("Online learning: ENABLED (threshold models) ✓");
-            println!();
-            println!("Ready. Type /help for commands.");
+            self.output_status("Shammah v0.1.0 - Constitutional AI Proxy");
+            self.output_status("Using API key from: ~/.shammah/config.toml ✓");
+            self.output_status("Loaded crisis detection keywords ✓");
+            self.output_status("Online learning: ENABLED (threshold models) ✓");
+            self.output_status("");
+            self.output_status("Ready. Type /help for commands.");
             self.print_status_line();
         } else {
             // Minimal output for non-interactive mode (pipes, scripts)
-            eprintln!("# Shammah v0.1.0 - Non-interactive mode");
+            output_status!("# Shammah v0.1.0 - Non-interactive mode");
         }
 
         // Register Ctrl+C handler for graceful shutdown
@@ -1043,11 +1046,11 @@ impl Repl {
             // Check for shutdown
             if shutdown_flag.load(Ordering::SeqCst) {
                 if self.is_interactive {
-                    println!();
+                    self.output_status("");
                 }
                 self.save_models().await?;
                 if self.is_interactive {
-                    println!("Models saved. Goodbye!");
+                    self.output_status("Models saved. Goodbye!");
                 }
                 break;
             }
@@ -1089,16 +1092,16 @@ impl Repl {
                     None => {
                         // Ctrl+C or Ctrl+D - graceful exit
                         if self.tui_renderer.is_none() {
-                            println!();
+                            self.output_status("");
                         }
                         self.save_models().await?;
                         if let Some(ref mut handler) = self.input_handler {
                             if let Err(e) = handler.save_history() {
-                                eprintln!("Warning: Failed to save history: {}", e);
+                                self.output_status(format!("⚠️  Failed to save history: {}", e));
                             }
                         }
                         if self.tui_renderer.is_none() {
-                            println!("Models saved. Goodbye!");
+                            self.output_status("Models saved. Goodbye!");
                         }
                         break;
                     }
