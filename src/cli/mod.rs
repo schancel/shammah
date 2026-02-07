@@ -8,6 +8,7 @@ pub mod menu;
 mod output_manager;
 mod repl;
 mod status_bar;
+pub mod tui; // Phase 2: Terminal UI
 
 pub use commands::handle_command;
 pub use conversation::ConversationHistory;

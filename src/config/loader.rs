@@ -9,8 +9,8 @@ use super::settings::Config;
 /// Load configuration from Shammah config file or environment
 pub fn load_config() -> Result<Config> {
     // Try loading from ~/.shammah/config.toml first
-    if let Some(api_key) = try_load_from_shammah_config()? {
-        return Ok(Config::new(api_key));
+    if let Some(mut config) = try_load_from_shammah_config()? {
+        return Ok(config);
     }
 
     // Fall back to environment variable
@@ -35,7 +35,7 @@ pub fn load_config() -> Result<Config> {
     );
 }
 
-fn try_load_from_shammah_config() -> Result<Option<String>> {
+fn try_load_from_shammah_config() -> Result<Option<Config>> {
     let home = dirs::home_dir().context("Could not determine home directory")?;
     let config_path = home.join(".shammah/config.toml");
 
@@ -47,15 +47,27 @@ fn try_load_from_shammah_config() -> Result<Option<String>> {
         .with_context(|| format!("Failed to read {}", config_path.display()))?;
 
     // Parse TOML
-    let config: toml::Value = toml::from_str(&contents).context("Failed to parse config.toml")?;
+    let toml_config: toml::Value =
+        toml::from_str(&contents).context("Failed to parse config.toml")?;
 
-    // Extract api_key
-    let api_key = config
+    // Extract api_key (required)
+    let api_key = toml_config
         .get("api_key")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    Ok(api_key)
+    if let Some(api_key) = api_key {
+        let mut config = Config::new(api_key);
+
+        // Override tui_enabled if specified in config
+        if let Some(tui_enabled) = toml_config.get("tui_enabled").and_then(|v| v.as_bool()) {
+            config.tui_enabled = tui_enabled;
+        }
+
+        Ok(Some(config))
+    } else {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]

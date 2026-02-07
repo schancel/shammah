@@ -16,6 +16,9 @@ pub struct Config {
     /// Enable streaming responses (default: true)
     pub streaming_enabled: bool,
 
+    /// Enable TUI (Ratatui-based interface) (default: false for Phase 2)
+    pub tui_enabled: bool,
+
     /// Path to constitutional guidelines for local LLM (optional)
     /// Only used for local inference, NOT sent to Claude API
     pub constitution_path: Option<PathBuf>,
@@ -72,6 +75,7 @@ impl Config {
             crisis_keywords_path: project_dir.join("data/crisis_keywords.json"),
             metrics_dir: home.join(".shammah/metrics"),
             streaming_enabled: true, // Enable by default
+            tui_enabled: false,      // Disabled by default for Phase 2 (testing)
             constitution_path,
             server: ServerConfig::default(),
         }

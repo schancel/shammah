@@ -41,6 +41,7 @@ use super::input::InputHandler;
 use super::menu::{Menu, MenuOption};
 use super::output_manager::OutputManager;
 use super::status_bar::StatusBar;
+use super::tui::TuiRenderer;
 
 /// User's menu choice for tool confirmation
 #[derive(Debug, Clone)]
@@ -125,6 +126,8 @@ pub struct Repl {
     // Output management (Phase 1: Terminal UI refactor)
     output_manager: OutputManager,
     status_bar: StatusBar,
+    // TUI renderer (Phase 2: Optional Ratatui interface)
+    tui_renderer: Option<TuiRenderer>,
 }
 
 /// Background training statistics
@@ -322,6 +325,23 @@ impl Repl {
         let output_manager = OutputManager::new();
         let status_bar = StatusBar::new();
 
+        // Initialize TUI renderer if enabled (Phase 2: Ratatui interface)
+        let tui_renderer = if config.tui_enabled && is_interactive {
+            match TuiRenderer::new(output_manager.clone(), status_bar.clone()) {
+                Ok(renderer) => {
+                    eprintln!("✓ TUI mode enabled (Ratatui)");
+                    Some(renderer)
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Failed to initialize TUI: {}", e);
+                    eprintln!("   Falling back to standard output mode");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Self {
             _config: config,
             claude_client,
@@ -350,6 +370,8 @@ impl Repl {
             // Output management (Phase 1: Terminal UI refactor)
             output_manager,
             status_bar,
+            // TUI renderer (Phase 2: Optional Ratatui interface)
+            tui_renderer,
         }
     }
 
@@ -518,6 +540,15 @@ impl Repl {
     /// Clear operation status from status bar
     fn clear_operation_status(&self) {
         self.status_bar.clear_operation();
+    }
+
+    /// Render the TUI (if enabled)
+    fn render_tui(&mut self) {
+        if let Some(ref mut tui) = self.tui_renderer {
+            if let Err(e) = tui.render() {
+                eprintln!("⚠️  TUI render error: {}", e);
+            }
+        }
     }
 
     // ========================================================================
