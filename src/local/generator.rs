@@ -103,37 +103,49 @@ impl ResponseGenerator {
         // Classify the query pattern
         let (pattern, confidence) = self.pattern_classifier.classify(query);
 
-        // 1. Try neural generator FIRST (MUST succeed or fail, no template fallback)
+        // 1. Try neural generator FIRST - ALWAYS show the output if generation succeeds
         if let (Some(generator), Some(tokenizer)) = (&self.neural_generator, &self.tokenizer) {
             match self.try_neural_generate(query, generator, tokenizer) {
-                Ok(neural_response)
-                    if neural_response.len() > 10 && !neural_response.starts_with("[Error:") =>
-                {
+                Ok(neural_response) => {
+                    // ALWAYS return neural response if generation succeeded
+                    // Even if it's short or contains errors - let user see what model produces
+                    let quality_score = if neural_response.len() < 10 {
+                        0.1 // Very low confidence for short responses
+                    } else if neural_response.starts_with("[Error:") {
+                        0.2 // Low confidence for error responses
+                    } else {
+                        0.8 // High confidence for normal responses
+                    };
+
+                    let display_text = if neural_response.len() < 10 {
+                        format!("[NEURAL - LOW QUALITY]: {}", neural_response)
+                    } else if neural_response.starts_with("[Error:") {
+                        format!("[NEURAL - ERROR]: {}", neural_response)
+                    } else {
+                        neural_response
+                    };
+
                     return Ok(GeneratedResponse {
-                        text: neural_response,
+                        text: display_text,
                         method: "neural".to_string(),
-                        confidence: 0.9,
+                        confidence: quality_score,
                         pattern: pattern.as_str().to_string(),
                     });
                 }
-                Ok(neural_response) => {
-                    // Neural generation succeeded but response is too short or contains error
-                    tracing::debug!(
-                        "Neural generation produced insufficient response (len: {}, starts with error: {})",
-                        neural_response.len(),
-                        neural_response.starts_with("[Error:")
-                    );
-                    // Continue to learned responses fallback
-                }
                 Err(e) => {
-                    // Neural generation failed entirely
+                    // Neural generation failed entirely - show the error
                     tracing::debug!("Neural generation failed: {}", e);
-                    // Continue to learned responses fallback
+                    return Ok(GeneratedResponse {
+                        text: format!("[NEURAL GENERATION FAILED]: {}", e),
+                        method: "neural_error".to_string(),
+                        confidence: 0.0,
+                        pattern: pattern.as_str().to_string(),
+                    });
                 }
             }
         }
 
-        // 2. Check if we have learned responses for this pattern
+        // 2. Check if we have learned responses for this pattern (fallback)
         if let Some(learned) = self.learned_responses.get(pattern.as_str()) {
             if !learned.is_empty() {
                 // Use best learned response
@@ -154,10 +166,9 @@ impl ResponseGenerator {
             }
         }
 
-        // 3. NO TEMPLATE FALLBACK - force neural generation or error
-        // If we reach here, return error so router forwards to Claude
+        // 3. No neural models available - return error so router forwards to Claude
         Err(anyhow::anyhow!(
-            "No suitable local generation method available (neural generation produced insufficient response, model may need training)"
+            "No neural models available for local generation"
         ))
     }
 
@@ -171,18 +182,11 @@ impl ResponseGenerator {
         // Tokenize query
         let tokens = tokenizer.encode(query, true)?;
 
-        // Convert to tensor
-        let input_tensor = candle_core::Tensor::new(
-            tokens.as_slice(),
-            &candle_core::Device::Cpu, // Will use model's device
-        )?
-        .unsqueeze(0)?; // Add batch dimension
-
         // Generate with neural model (try non-blocking lock)
-        let gen = generator
-            .try_read()
+        let mut gen = generator
+            .try_write()
             .map_err(|_| anyhow::anyhow!("Generator model is locked"))?;
-        let output_tokens = gen.generate(&input_tensor, 100)?; // max 100 new tokens
+        let output_tokens = gen.generate(&tokens, 100)?; // max 100 new tokens
 
         // Decode back to text
         let response = tokenizer.decode(&output_tokens, true)?;
@@ -251,7 +255,7 @@ impl ResponseGenerator {
 #[derive(Debug, Clone)]
 pub struct GeneratedResponse {
     pub text: String,
-    pub method: String, // "template", "learned", or "neural"
+    pub method: String, // "template", "learned", "neural", or "neural_error"
     pub confidence: f64,
     pub pattern: String,
 }
@@ -279,37 +283,58 @@ impl LearningModel for ResponseGenerator {
     }
 
     fn predict(&self, input: &str) -> Result<ModelPrediction> {
-        // Note: This creates a mutable copy just for prediction
-        // In practice, we'd need to refactor generate() to not require &mut self
-        let mut generator_copy = self.clone();
-        match generator_copy.generate(input) {
-            Ok(response) => Ok(ModelPrediction {
-                confidence: response.confidence,
-                data: PredictionData::Response {
-                    text: response.text,
-                    method: response.method,
-                },
-            }),
-            Err(e) => Err(e),
-        }
+        let (pattern, confidence) = self.pattern_classifier.classify(input);
+
+        // Create prediction data based on what we'd generate
+        let data = if let Some(learned) = self.learned_responses.get(pattern.as_str()) {
+            if let Some(best) = learned.iter().max_by(|a, b| {
+                a.quality_score
+                    .partial_cmp(&b.quality_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }) {
+                PredictionData::Response {
+                    text: best.response_text.clone(),
+                    method: "learned".to_string(),
+                }
+            } else {
+                PredictionData::Response {
+                    text: "No learned response available".to_string(),
+                    method: "fallback".to_string(),
+                }
+            }
+        } else {
+            PredictionData::Response {
+                text: "No learned response available".to_string(),
+                method: "fallback".to_string(),
+            }
+        };
+
+        Ok(ModelPrediction {
+            confidence,
+            data,
+        })
     }
 
     fn save(&self, path: &Path) -> Result<()> {
-        let json =
-            serde_json::to_string_pretty(self).context("Failed to serialize response generator")?;
-        std::fs::write(path, json).context("Failed to write response generator")?;
-        Ok(())
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, json).context("Failed to save response generator")
     }
 
-    fn load(path: &Path) -> Result<Self> {
-        let json = std::fs::read_to_string(path).context("Failed to read response generator")?;
-        let generator =
-            serde_json::from_str(&json).context("Failed to deserialize response generator")?;
-        Ok(generator)
+    fn load(path: &Path) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        if !path.exists() {
+            anyhow::bail!("File not found: {}", path.display());
+        }
+
+        let json = std::fs::read_to_string(path)?;
+        let loaded: ResponseGenerator = serde_json::from_str(&json)?;
+        Ok(loaded)
     }
 
     fn name(&self) -> &str {
-        "response_generator"
+        "ResponseGenerator"
     }
 
     fn stats(&self) -> ModelStats {
@@ -317,30 +342,14 @@ impl LearningModel for ResponseGenerator {
     }
 }
 
-// Manual Clone for ResponseGenerator
-impl Clone for ResponseGenerator {
-    fn clone(&self) -> Self {
-        Self {
-            pattern_classifier: self.pattern_classifier.clone(),
-            templates: self.templates.clone(),
-            learned_responses: self.learned_responses.clone(),
-            stats: self.stats.clone(),
-            neural_generator: self.neural_generator.clone(),
-            tokenizer: self.tokenizer.clone(),
-        }
-    }
-}
-
-// Manual Serialize/Deserialize
-impl Serialize for ResponseGenerator {
+impl serde::Serialize for ResponseGenerator {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        // Note: We don't serialize neural models - they're loaded separately
-        let mut state = serializer.serialize_struct("ResponseGenerator", 4)?;
-        state.serialize_field("pattern_classifier", &self.pattern_classifier)?;
+
+        let mut state = serializer.serialize_struct("ResponseGenerator", 3)?;
         state.serialize_field("templates", &self.templates)?;
         state.serialize_field("learned_responses", &self.learned_responses)?;
         state.serialize_field("stats", &self.stats)?;
@@ -348,27 +357,26 @@ impl Serialize for ResponseGenerator {
     }
 }
 
-impl<'de> Deserialize<'de> for ResponseGenerator {
+impl<'de> serde::Deserialize<'de> for ResponseGenerator {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
         struct ResponseGeneratorData {
-            pattern_classifier: PatternClassifier,
             templates: HashMap<String, ResponseTemplate>,
             learned_responses: HashMap<String, Vec<LearnedResponse>>,
             stats: ModelStats,
         }
 
         let data = ResponseGeneratorData::deserialize(deserializer)?;
-        Ok(ResponseGenerator {
-            pattern_classifier: data.pattern_classifier,
+        Ok(Self {
+            pattern_classifier: PatternClassifier::new(),
             templates: data.templates,
             learned_responses: data.learned_responses,
             stats: data.stats,
-            neural_generator: None, // Loaded separately
-            tokenizer: None,        // Loaded separately
+            neural_generator: None,
+            tokenizer: None,
         })
     }
 }

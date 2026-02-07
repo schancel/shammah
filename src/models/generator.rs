@@ -91,6 +91,11 @@ impl GeneratorModel {
         Ok(generated)
     }
 
+    /// Get the device this model runs on
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
+
     /// Train on a single example (online learning)
     pub fn update(
         &mut self,

@@ -90,14 +90,11 @@ pub struct BatchTrainer {
 
 impl BatchTrainer {
     /// Create new batch trainer
-    pub fn new(
-        batch_size: usize,
-        learning_rate: f64,
-        config: &ModelConfig,
-    ) -> Result<Self> {
+    pub fn new(batch_size: usize, learning_rate: f64, config: &ModelConfig) -> Result<Self> {
         // Create models
         let router = RouterModel::new(config)?;
-        let generator = GeneratorModel::new(config)?;
+        let generator_config = crate::models::GeneratorConfig::RandomInit(config.clone());
+        let generator = GeneratorModel::new(generator_config)?;
         let validator = ValidatorModel::new(config)?;
 
         Ok(Self {
@@ -117,10 +114,7 @@ impl BatchTrainer {
         let mut queue = self.training_queue.lock().await;
         queue.push_back(example);
 
-        tracing::debug!(
-            queue_size = queue.len(),
-            "Added training example to queue"
-        );
+        tracing::debug!(queue_size = queue.len(), "Added training example to queue");
 
         Ok(())
     }
@@ -138,9 +132,10 @@ impl BatchTrainer {
     /// Train on accumulated examples (non-blocking - spawns background task)
     pub async fn train_async(&self) -> Result<()> {
         // Check if enough examples
-        if self.queue_size().await < self.batch_size {
+        let queue_size = self.queue_size().await;
+        if queue_size < self.batch_size {
             tracing::debug!(
-                queue_size = self.queue_size().await,
+                queue_size = queue_size,
                 batch_size = self.batch_size,
                 "Not enough examples for training batch"
             );
@@ -220,9 +215,7 @@ impl BatchTrainer {
         let batch = {
             let mut queue = training_queue.lock().await;
             let queue_len = queue.len();
-            let batch: Vec<TrainingExample> = queue
-                .drain(..batch_size.min(queue_len))
-                .collect();
+            let batch: Vec<TrainingExample> = queue.drain(..batch_size.min(queue_len)).collect();
             batch
         };
 
@@ -230,10 +223,7 @@ impl BatchTrainer {
             anyhow::bail!("No examples available for training");
         }
 
-        tracing::info!(
-            examples = batch.len(),
-            "Starting batch training"
-        );
+        tracing::info!(examples = batch.len(), "Starting batch training");
 
         // TODO: Actual training implementation
         // For now, return placeholder results
@@ -312,11 +302,8 @@ mod tests {
 
         // Add some examples
         for i in 0..10 {
-            let example = TrainingExample::new(
-                format!("Query {}", i),
-                format!("Response {}", i),
-                true,
-            );
+            let example =
+                TrainingExample::new(format!("Query {}", i), format!("Response {}", i), true);
             trainer.add_example(example).await.unwrap();
         }
 
@@ -333,11 +320,8 @@ mod tests {
 
         // Add examples
         for i in 0..5 {
-            let example = TrainingExample::new(
-                format!("Query {}", i),
-                format!("Response {}", i),
-                true,
-            );
+            let example =
+                TrainingExample::new(format!("Query {}", i), format!("Response {}", i), true);
             trainer.add_example(example).await.unwrap();
         }
 

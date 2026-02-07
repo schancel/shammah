@@ -2,7 +2,7 @@
 // Supports Qwen-2.5-1.5B/3B/7B/14B-Instruct variants
 
 use anyhow::{Context, Result};
-use candle_core::{Device, Tensor};
+use candle_core::{Device, IndexOp, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::qwen2::{Config as Qwen2Config, ModelForCausalLM as Qwen2Model};
 use std::path::Path;

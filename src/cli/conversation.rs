@@ -1,6 +1,6 @@
 // Conversation history manager for multi-turn interactions
 
-use crate::claude::Message;
+use crate::claude::{Message, ContentBlock};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -39,7 +39,7 @@ impl ConversationHistory {
     pub fn add_user_message(&mut self, content: String) {
         self.messages.push(Message {
             role: "user".to_string(),
-            content,
+            content: vec![ContentBlock::Text { text: content }],
         });
         self.trim_if_needed();
     }
@@ -48,8 +48,14 @@ impl ConversationHistory {
     pub fn add_assistant_message(&mut self, content: String) {
         self.messages.push(Message {
             role: "assistant".to_string(),
-            content,
+            content: vec![ContentBlock::Text { text: content }],
         });
+        self.trim_if_needed();
+    }
+
+    /// Add a complete message to the conversation
+    pub fn add_message(&mut self, message: Message) {
+        self.messages.push(message);
         self.trim_if_needed();
     }
 
@@ -88,13 +94,16 @@ impl ConversationHistory {
         }
 
         // Estimate token count (rough: 1 token ≈ 4 characters)
-        let total_chars: usize = self.messages.iter().map(|m| m.content.len()).sum();
+        let total_chars: usize = self.messages.iter()
+            .map(|m| m.text().len())
+            .sum();
 
         if total_chars > self.max_tokens_estimate {
             // Remove oldest messages until under limit
             while !self.messages.is_empty()
-                && self.messages.iter().map(|m| m.content.len()).sum::<usize>()
-                    > self.max_tokens_estimate
+                && self.messages.iter()
+                    .map(|m| m.text().len())
+                    .sum::<usize>() > self.max_tokens_estimate
             {
                 self.messages.remove(0);
             }
@@ -103,7 +112,9 @@ impl ConversationHistory {
 
     /// Get estimated token count (rough approximation)
     pub fn estimated_tokens(&self) -> usize {
-        let total_chars: usize = self.messages.iter().map(|m| m.content.len()).sum();
+        let total_chars: usize = self.messages.iter()
+            .map(|m| m.text().len())
+            .sum();
         total_chars / 4 // Rough estimate: 1 token ≈ 4 characters
     }
 
@@ -189,9 +200,9 @@ mod tests {
         let messages = conv.get_messages();
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, "user");
-        assert_eq!(messages[0].content, "What is 2+2?");
+        assert_eq!(messages[0].text_content(), "What is 2+2?");
         assert_eq!(messages[1].role, "assistant");
-        assert_eq!(messages[1].content, "4");
+        assert_eq!(messages[1].text_content(), "4");
     }
 
     #[test]
@@ -221,8 +232,8 @@ mod tests {
         assert_eq!(conv.message_count(), 4);
 
         let messages = conv.get_messages();
-        assert_eq!(messages[0].content, "User 1"); // First 2 messages removed
-        assert_eq!(messages[1].content, "Assistant 1");
+        assert_eq!(messages[0].text_content(), "User 1"); // First 2 messages removed
+        assert_eq!(messages[1].text_content(), "Assistant 1");
     }
 
     #[test]
@@ -265,9 +276,9 @@ mod tests {
         assert_eq!(loaded.message_count(), 2);
         let messages = loaded.get_messages();
         assert_eq!(messages[0].role, "user");
-        assert_eq!(messages[0].content, "Test message");
+        assert_eq!(messages[0].text_content(), "Test message");
         assert_eq!(messages[1].role, "assistant");
-        assert_eq!(messages[1].content, "Test response");
+        assert_eq!(messages[1].text_content(), "Test response");
 
         // Clean up
         let _ = std::fs::remove_file(temp_path);

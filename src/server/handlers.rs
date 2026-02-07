@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use super::AgentServer;
+use crate::claude::{ContentBlock, Message};
 
 /// Create the main application router
 pub fn create_router(server: Arc<AgentServer>) -> Router {
@@ -40,13 +41,6 @@ pub struct MessageRequest {
     pub session_id: Option<String>,
 }
 
-/// Message in Claude format
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Message {
-    pub role: String,
-    pub content: String,
-}
-
 /// Response body for /v1/messages endpoint (Claude-compatible)
 #[derive(Debug, Serialize)]
 pub struct MessageResponse {
@@ -58,14 +52,6 @@ pub struct MessageResponse {
     pub model: String,
     pub stop_reason: String,
     pub session_id: String,
-}
-
-/// Content block in response
-#[derive(Debug, Serialize)]
-pub struct ContentBlock {
-    #[serde(rename = "type")]
-    pub block_type: String,
-    pub text: String,
 }
 
 /// Handle POST /v1/messages - Main chat endpoint
@@ -89,16 +75,17 @@ async fn handle_message(
     let user_message = request
         .messages
         .last()
-        .ok_or_else(|| anyhow::anyhow!("No messages in request"))?
-        .content
-        .clone();
+        .ok_or_else(|| anyhow::anyhow!("No messages in request"))?;
+
+    // Extract text content from the user message for routing
+    let user_text = user_message.text();
 
     // Add to conversation history
-    session.conversation.add_user_message(user_message.clone());
+    session.conversation.add_message(user_message.clone());
 
     // Process query through router
     let router = server.router().read().await;
-    let decision = router.route(&user_message);
+    let decision = router.route(&user_text);
 
     let (response_text, routing_decision) = match decision {
         RouteDecision::Forward { reason } => {
@@ -113,10 +100,7 @@ async fn handle_message(
             let claude_request = ClaudeRequest::with_context(session.conversation.get_messages());
 
             // Forward to Claude
-            let response = server
-                .claude_client()
-                .send_message(&claude_request)
-                .await?;
+            let response = server.claude_client().send_message(&claude_request).await?;
 
             // Extract text from response
             let text = response.text();
@@ -129,10 +113,7 @@ async fn handle_message(
             // TODO: Use actual local generator when implemented
             // For now, fall back to Claude
             let claude_request = ClaudeRequest::with_context(session.conversation.get_messages());
-            let response = server
-                .claude_client()
-                .send_message(&claude_request)
-                .await?;
+            let response = server.claude_client().send_message(&claude_request).await?;
 
             let text = response.text();
 
@@ -143,7 +124,7 @@ async fn handle_message(
     let elapsed_ms = start_time.elapsed().as_millis() as u64;
 
     // Log metrics
-    let query_hash = crate::metrics::MetricsLogger::hash_query(&user_message);
+    let query_hash = crate::metrics::MetricsLogger::hash_query(&user_text);
     let metric = RequestMetric::new(
         query_hash,
         routing_decision,
@@ -163,8 +144,11 @@ async fn handle_message(
     );
     server.metrics_logger().log(&metric)?;
 
+    // Create assistant response message
+    let assistant_message = Message::assistant(&response_text);
+
     // Add response to conversation history
-    session.conversation.add_assistant_message(response_text.clone());
+    session.conversation.add_message(assistant_message);
 
     // Update session
     session.touch();
@@ -177,10 +161,7 @@ async fn handle_message(
         id: format!("msg_{}", uuid::Uuid::new_v4()),
         response_type: "message".to_string(),
         role: "assistant".to_string(),
-        content: vec![ContentBlock {
-            block_type: "text".to_string(),
-            text: response_text,
-        }],
+        content: vec![ContentBlock::text(&response_text)],
         model: request.model,
         stop_reason: "end_turn".to_string(),
         session_id: session.id,
@@ -194,9 +175,7 @@ async fn get_session(
     State(server): State<Arc<AgentServer>>,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionInfo>, AppError> {
-    let session = server
-        .session_manager()
-        .get_or_create(Some(&session_id))?;
+    let session = server.session_manager().get_or_create(Some(&session_id))?;
 
     let info = SessionInfo {
         id: session.id,

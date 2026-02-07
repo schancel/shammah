@@ -10,7 +10,7 @@ use super::generator as legacy_generator;
 use super::qwen_loader::{LoadedQwenModel, QwenConfig, QwenLoader};
 
 /// Text generation trait - abstraction over different generator backends
-pub trait TextGeneration {
+pub trait TextGeneration: Send + Sync {
     /// Generate text from input tokens
     fn generate(&mut self, input_ids: &[u32], max_new_tokens: usize) -> Result<Vec<u32>>;
 
@@ -29,12 +29,12 @@ struct LegacyGenerator {
 impl TextGeneration for LegacyGenerator {
     fn generate(&mut self, input_ids: &[u32], max_new_tokens: usize) -> Result<Vec<u32>> {
         let input_tensor =
-            Tensor::from_vec(input_ids.to_vec(), (1, input_ids.len()), &self.inner.device)?;
+            Tensor::from_vec(input_ids.to_vec(), (1, input_ids.len()), self.inner.device())?;
         self.inner.generate(&input_tensor, max_new_tokens)
     }
 
     fn device(&self) -> &Device {
-        &self.inner.device
+        self.inner.device()
     }
 
     fn name(&self) -> &str {
@@ -81,14 +81,23 @@ impl TextGeneration for QwenGenerator {
 
 /// Unified generator model supporting multiple backends
 pub struct GeneratorModel {
-    backend: Box<dyn TextGeneration + Send>,
+    backend: Box<dyn TextGeneration>,
     config: GeneratorConfig,
+}
+
+impl std::fmt::Debug for GeneratorModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GeneratorModel")
+            .field("name", &self.backend.name())
+            .field("config", &"<config>")
+            .finish()
+    }
 }
 
 impl GeneratorModel {
     /// Create new generator from configuration
     pub fn new(config: GeneratorConfig) -> Result<Self> {
-        let backend: Box<dyn TextGeneration + Send> = match &config {
+        let backend: Box<dyn TextGeneration> = match &config {
             GeneratorConfig::RandomInit(model_config) => {
                 tracing::info!("Creating custom transformer with random initialization");
                 let inner = legacy_generator::GeneratorModel::new(model_config)?;
