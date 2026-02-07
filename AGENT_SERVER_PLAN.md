@@ -145,6 +145,17 @@ All these logs:
   - [ ] Return model info when ready
 - [ ] Useful for debugging and monitoring
 
+#### Part E: Add dashboard endpoint (optional)
+- [ ] Add `/v1/dashboard` endpoint (HTTP GET):
+  - [ ] Return HTML page with real-time stats
+  - [ ] Show active sessions
+  - [ ] Show recent queries (anonymized)
+  - [ ] Show routing decisions (local vs Claude %)
+  - [ ] Show model state and performance
+  - [ ] Live update via SSE or polling
+- [ ] Access in browser: http://localhost:8000/v1/dashboard
+- [ ] Useful for monitoring during development
+
 **Testing:**
 ```bash
 # Start server

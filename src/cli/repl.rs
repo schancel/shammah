@@ -928,10 +928,10 @@ impl Repl {
         // Handle max iterations or completion
         if iteration >= MAX_ITERATIONS {
             if self.is_interactive {
-                eprintln!(
+                self.output_error(format!(
                     "⚠️  Warning: Max tool iterations reached ({})",
                     MAX_ITERATIONS
-                );
+                ));
                 self.output_error("⚠️  Claude may be stuck in a loop. Returning last response.");
             }
 
@@ -1734,11 +1734,7 @@ impl Repl {
             return Ok("No patterns to clear.".to_string());
         }
 
-        println!(
-            "This will remove {} pattern(s) and {} exact approval(s).",
-            store.patterns.len(),
-            store.exact_approvals.len()
-        );
+        self.output_status(format!("This will remove {} pattern(s) and {} exact approval(s).", store.patterns.len(), store.exact_approvals.len()));
 
         if !Menu::confirm("Are you sure?", false)? {
             return Ok("Clear cancelled.".to_string());
@@ -1804,7 +1800,7 @@ impl Repl {
                 self.output_status("  Standard regex syntax");
                 self.output_status("Examples:");
                 self.output_status("  ^cargo (test|build)$");
-                println!("  reading /project/src/.*\\.rs$");
+                self.output_status(r"  reading /project/src/.*\.rs$");
             }
         }
 
@@ -1837,7 +1833,7 @@ impl Repl {
         self.output_status("\nPattern created:");
         self.output_status(format!("  Tool: {}", pattern.tool_name));
         self.output_status(format!("  Pattern: {}", pattern.pattern));
-        println!("  Type: {:?}", pattern.pattern_type);
+        self.output_status(format!("  Type: {:?}", pattern.pattern_type));
 
         if Menu::confirm("\nTest pattern?", false)? {
             let test_str = Menu::text_input(
@@ -1969,7 +1965,7 @@ impl Repl {
         };
 
         // Print in gray, all on one line
-        println!("{}", truncated.dark_grey());
+        self.output_status(format!("{}", truncated.dark_grey()));
     }
 
     pub async fn process_query(&mut self, query: &str) -> Result<String> {
@@ -2006,9 +2002,9 @@ impl Repl {
                 confidence,
             } => {
                 if self.is_interactive {
-                    println!("✓ Crisis check: PASS");
-                    println!("✓ Threshold check: PASS (confidence: {:.2})", confidence);
-                    println!("→ Routing: LOCAL GENERATION");
+                    self.output_status("✓ Crisis check: PASS");
+                    self.output_status(format!("✓ Threshold check: PASS (confidence: {:.2})", confidence));
+                    self.output_status("→ Routing: LOCAL GENERATION");
                 }
 
                 // Try local generation
@@ -2017,7 +2013,7 @@ impl Repl {
                     Ok(Some(response_text)) => {
                         // Successfully generated locally
                         if self.is_interactive {
-                            println!("✓ Generated locally (confidence: {:.2})", confidence);
+                            self.output_status(format!("✓ Generated locally (confidence: {:.2})", confidence));
                         }
                         local_response = Some(response_text.clone());
                         claude_response = response_text;
@@ -2030,8 +2026,8 @@ impl Repl {
                         drop(gen); // Drop the read lock before forwarding to Claude
 
                         if self.is_interactive {
-                            println!("⚠️  Local generation insufficient confidence");
-                            println!("→ Forwarding to Claude");
+                            self.output_status("⚠️  Local generation insufficient confidence");
+                            self.output_status("→ Forwarding to Claude");
                         }
 
                         // Forward to Claude
@@ -2050,15 +2046,14 @@ impl Repl {
                                 }
                                 Err(e) if e.to_string().contains("TOOLS_DETECTED") => {
                                     if self.is_interactive {
-                                        println!(
-                                            "\n🔧 Tools needed - switching to buffered mode..."
-                                        );
+                                        self.output_status("
+🔧 Tools needed - switching to buffered mode...");
                                     }
                                     let response =
                                         self.claude_client.send_message(&request).await?;
                                     let elapsed = start_time.elapsed().as_millis();
                                     if self.is_interactive {
-                                        println!("✓ Received response ({}ms)", elapsed);
+                                        self.output_status(format!("✓ Received response ({}ms)", elapsed));
                                     }
                                     claude_response = self.execute_tool_loop(response).await?;
                                 }
@@ -2068,7 +2063,7 @@ impl Repl {
                             let response = self.claude_client.send_message(&request).await?;
                             let elapsed = start_time.elapsed().as_millis();
                             if self.is_interactive {
-                                println!("✓ Received response ({}ms)", elapsed);
+                                self.output_status(format!("✓ Received response ({}ms)", elapsed));
                             }
                             if response.has_tool_uses() {
                                 claude_response = self.execute_tool_loop(response).await?;
@@ -2088,13 +2083,13 @@ impl Repl {
                 if self.is_interactive {
                     match reason {
                         ForwardReason::Crisis => {
-                            println!("⚠️  CRISIS DETECTED");
-                            println!("→ Routing: FORWARDING TO CLAUDE");
+                            self.output_status("⚠️  CRISIS DETECTED");
+                            self.output_status("→ Routing: FORWARDING TO CLAUDE");
                         }
                         _ => {
-                            println!("✓ Crisis check: PASS");
-                            println!("✗ Threshold check: FAIL (confidence too low)");
-                            println!("→ Routing: FORWARDING TO CLAUDE");
+                            self.output_status("✓ Crisis check: PASS");
+                            self.output_status("✗ Threshold check: FAIL (confidence too low)");
+                            self.output_status("→ Routing: FORWARDING TO CLAUDE");
                         }
                     }
                 }
@@ -2117,13 +2112,13 @@ impl Repl {
                         Err(e) if e.to_string().contains("TOOLS_DETECTED") => {
                             // Tools detected in stream - fallback to buffered mode
                             if self.is_interactive {
-                                println!("\n🔧 Tools needed - switching to buffered mode...");
+                                self.output_status("\n🔧 Tools needed - switching to buffered mode...");
                             }
                             let response = self.claude_client.send_message(&request).await?;
 
                             let elapsed = start_time.elapsed().as_millis();
                             if self.is_interactive {
-                                println!("✓ Received response ({}ms)", elapsed);
+                                self.output_status(format!("✓ Received response ({}ms)", elapsed));
                             }
 
                             // Execute tool loop
@@ -2140,7 +2135,7 @@ impl Repl {
 
                     let elapsed = start_time.elapsed().as_millis();
                     if self.is_interactive {
-                        println!("✓ Received response ({}ms)", elapsed);
+                        self.output_status(format!("✓ Received response ({}ms)", elapsed));
                     }
 
                     // Check for tool uses and execute them
@@ -2262,10 +2257,10 @@ impl Repl {
 
             if has_marker || is_long {
                 if let Err(e) = std::fs::write(plan_path, &claude_response) {
-                    eprintln!("Warning: Failed to save plan: {}", e);
+                    self.output_error(format!("Warning: Failed to save plan: {}", e));
                 } else if self.is_interactive {
-                    println!("\n✓ Plan saved to: {}", plan_path.display());
-                    println!("Type /show-plan to review, /approve to execute, /reject to cancel.");
+                    self.output_status(format!("\n✓ Plan saved to: {}", plan_path.display()));
+                    self.output_status("Type /show-plan to review, /approve to execute, /reject to cancel.");
                 }
             }
         }
@@ -2341,9 +2336,9 @@ impl Repl {
             _ => "⚪",
         };
 
-        println!("{} Feedback recorded (weight: {}x)", weight_emoji, weight);
+        self.output_status(format!("{} Feedback recorded (weight: {}x)", weight_emoji, weight));
         if let Some(note_text) = note {
-            println!("   Note: {}", note_text);
+            self.output_status(format!("   Note: {}", note_text));
         }
 
         // Get buffer stats
@@ -2352,15 +2347,15 @@ impl Repl {
         let total_weight = buffer.total_weight();
         drop(buffer); // Release lock
 
-        println!(
+        self.output_status(format!(
             "   Training buffer: {} examples ({:.1} weighted)",
             example_count, total_weight
-        );
+        ));
 
         // Trigger training if threshold reached
         if should_train {
-            println!("\n🔄 Training threshold reached, starting background training...");
-            println!("   (Training runs in background, you can continue querying)");
+            self.output_status("\n🔄 Training threshold reached, starting background training...");
+            self.output_status("   (Training runs in background, you can continue querying)");
 
             // Spawn background training task
             let coordinator = Arc::clone(&self.training_coordinator);
@@ -2369,18 +2364,18 @@ impl Repl {
             tokio::spawn(async move {
                 match Self::run_background_training(coordinator, models_dir).await {
                     Ok(stats) => {
-                        println!("\n✓ Background training completed!");
-                        println!("   Trained on {} examples", stats.examples_trained);
-                        println!("   Final loss: {:.4}", stats.final_loss);
-                        println!("   Adapter saved to: {}", stats.adapter_path);
+                        output_status!("\n✓ Background training completed!");
+                        output_status!("   Trained on {} examples", stats.examples_trained);
+                        output_status!("   Final loss: {:.4}", stats.final_loss);
+                        output_status!("   Adapter saved to: {}", stats.adapter_path);
                     }
                     Err(e) => {
-                        eprintln!("\n⚠️  Background training failed: {}", e);
+                        output_error!("\n⚠️  Background training failed: {}", e);
                     }
                 }
             });
 
-            println!("   Training started in background...");
+            self.output_status("   Training started in background...");
         }
 
         Ok(())
@@ -2492,14 +2487,14 @@ impl Repl {
             self.mode,
             ReplMode::Planning { .. } | ReplMode::Executing { .. }
         ) {
-            println!(
+            self.output_status(format!(
                 "⚠️  Already in {} mode. Finish current task first.",
                 match self.mode {
                     ReplMode::Planning { .. } => "planning",
                     ReplMode::Executing { .. } => "executing",
                     _ => unreachable!(),
                 }
-            );
+            ));
             return Ok(());
         }
 
@@ -2521,20 +2516,20 @@ impl Repl {
             created_at: Utc::now(),
         };
 
-        println!("{}", "✓ Entered planning mode".blue().bold());
-        println!("📋 Task: {}", task);
-        println!("📁 Plan will be saved to: {}", plan_path.display());
+        self.output_status(format!("{}", "✓ Entered planning mode".blue().bold()));
+        self.output_status(format!("📋 Task: {}", task));
+        self.output_status(format!("📁 Plan will be saved to: {}", plan_path.display()));
         self.output_status("");
-        println!("{}", "Available tools:".green());
-        println!("  read, glob, grep, web_fetch");
-        println!("{}", "Blocked tools:".red());
-        println!("  bash, save_and_exec");
+        self.output_status(format!("{}", "Available tools:".green()));
+        self.output_status("  read, glob, grep, web_fetch");
+        self.output_status(format!("{}", "Blocked tools:".red()));
+        self.output_status("  bash, save_and_exec");
         self.output_status("");
-        println!("Ask me to explore the codebase and generate a plan.");
-        println!(
+        self.output_status("Ask me to explore the codebase and generate a plan.");
+        self.output_status(format!(
             "{}",
             "Type /show-plan to view, /approve to execute, /reject to cancel.".dark_grey()
-        );
+        ));
 
         // Add mode change notification to conversation
         self.conversation.add_user_message(format!(
@@ -2566,15 +2561,15 @@ impl Repl {
                 let task_clone = task.clone();
                 let plan_path_clone = plan_path.clone();
 
-                println!("{}", "✓ Plan approved!".green().bold());
+                self.output_status(format!("{}", "✓ Plan approved!".green().bold()));
                 self.output_status("");
 
                 // Show context clearing options
-                println!("The plan has been saved to: {}", plan_path_clone.display());
+                self.output_status(format!("The plan has been saved to: {}", plan_path_clone.display()));
                 self.output_status("");
-                println!("Would you like to:");
-                println!("  1. Clear conversation and execute plan (recommended)");
-                println!("  2. Keep conversation history and execute");
+                self.output_status("Would you like to:");
+                self.output_status("  1. Clear conversation and execute plan (recommended)");
+                self.output_status("  2. Keep conversation history and execute");
                 self.output_status("");
 
                 let options = vec![
@@ -2606,7 +2601,7 @@ impl Repl {
                 if clear_context {
                     // Clear conversation and add plan as context
                     self.output_status("");
-                    println!("{}", "Clearing conversation context...".blue());
+                    self.output_status(format!("{}", "Clearing conversation context...".blue()));
                     self.conversation.clear();
 
                     // Read plan file and add as initial context
@@ -2617,15 +2612,15 @@ impl Repl {
                             "Please execute this plan:\n\n{}",
                             plan_content
                         ));
-                        println!(
+                        self.output_status(format!(
                             "{}",
                             "✓ Context cleared. Plan loaded as primary reference.".green()
-                        );
+                        ));
                     } else {
-                        println!(
+                        self.output_status(format!(
                             "{}",
                             "⚠️  Plan file not found. Adding approval message only.".yellow()
-                        );
+                        ));
                         self.conversation.add_user_message(
                             "[System: Plan approved! All tools are now enabled. \
                              You may execute bash commands and modify files.]"
@@ -2635,7 +2630,7 @@ impl Repl {
                 } else {
                     // Keep history, just add approval message
                     self.output_status("");
-                    println!("{}", "Keeping conversation context...".blue());
+                    self.output_status(format!("{}", "Keeping conversation context...".blue()));
                     self.conversation.add_user_message(
                         "[System: Plan approved! All tools are now enabled. \
                          You may execute bash commands and modify files.]"
@@ -2644,10 +2639,10 @@ impl Repl {
                 }
 
                 self.output_status("");
-                println!(
+                self.output_status(format!(
                     "{}",
                     "All tools enabled. Please proceed with implementation.".green()
-                );
+                ));
 
                 if self.is_interactive {
                     self.output_status("");
@@ -2655,10 +2650,10 @@ impl Repl {
                 }
             }
             ReplMode::Normal => {
-                println!("⚠️  No plan to approve. Use /plan first.");
+                self.output_status("⚠️  No plan to approve. Use /plan first.");
             }
             ReplMode::Executing { .. } => {
-                println!("⚠️  Already executing plan.");
+                self.output_status("⚠️  Already executing plan.");
             }
         }
         Ok(())
@@ -2668,7 +2663,7 @@ impl Repl {
     async fn handle_reject_command(&mut self) -> Result<()> {
         match &self.mode {
             ReplMode::Planning { .. } | ReplMode::Executing { .. } => {
-                println!("{}", "✗ Plan rejected. Returning to normal mode.".yellow());
+                self.output_status(format!("{}", "✗ Plan rejected. Returning to normal mode.".yellow()));
                 self.mode = ReplMode::Normal;
                 self.conversation
                     .add_user_message("[System: Plan rejected by user.]".to_string());
@@ -2679,7 +2674,7 @@ impl Repl {
                 }
             }
             ReplMode::Normal => {
-                println!("⚠️  No active plan to reject.");
+                self.output_status("⚠️  No active plan to reject.");
             }
         }
         Ok(())
@@ -2691,17 +2686,17 @@ impl Repl {
             ReplMode::Planning { plan_path, .. } | ReplMode::Executing { plan_path, .. } => {
                 if plan_path.exists() {
                     let content = std::fs::read_to_string(plan_path)?;
-                    println!("\n{}", "=".repeat(60));
-                    println!("PLAN:");
-                    println!("{}", "=".repeat(60));
-                    println!("{}", content);
-                    println!("{}", "=".repeat(60));
+                    self.output_status(format!("\n{}", "=".repeat(60)));
+                    self.output_status("PLAN:");
+                    self.output_status(format!("{}", "=".repeat(60)));
+                    self.output_status(format!("{}", content));
+                    self.output_status(format!("{}", "=".repeat(60)));
                 } else {
-                    println!("⚠️  Plan file not yet created.");
+                    self.output_status("⚠️  Plan file not yet created.");
                 }
             }
             ReplMode::Normal => {
-                println!("⚠️  No active plan. Use /plan to start.");
+                self.output_status("⚠️  No active plan. Use /plan to start.");
             }
         }
         Ok(())
@@ -2721,7 +2716,7 @@ impl Repl {
             match &self.mode {
                 ReplMode::Planning { plan_path, .. } => {
                     std::fs::write(plan_path, &content)?;
-                    println!("✓ Plan saved to: {}", plan_path.display());
+                    self.output_status(format!("✓ Plan saved to: {}", plan_path.display()));
                 }
                 ReplMode::Normal | ReplMode::Executing { .. } => {
                     // Create a new plan file
@@ -2733,11 +2728,11 @@ impl Repl {
                     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
                     let plan_path = plans_dir.join(format!("plan_{}.md", timestamp));
                     std::fs::write(&plan_path, &content)?;
-                    println!("✓ Plan saved to: {}", plan_path.display());
+                    self.output_status(format!("✓ Plan saved to: {}", plan_path.display()));
                 }
             }
         } else {
-            println!(
+            self.output_status(
                 "⚠️  No assistant response to save. Please ask Claude to generate a plan first."
             );
         }
@@ -2748,16 +2743,16 @@ impl Repl {
     async fn handle_done_command(&mut self) -> Result<()> {
         match &self.mode {
             ReplMode::Executing { .. } => {
-                println!("✓ Plan execution complete. Returning to normal mode.");
+                self.output_status("✓ Plan execution complete. Returning to normal mode.");
                 self.mode = ReplMode::Normal;
             }
             ReplMode::Planning { .. } => {
-                println!(
+                self.output_status(
                     "⚠️  Currently in planning mode. Use /approve to execute or /reject to cancel."
                 );
             }
             ReplMode::Normal => {
-                println!("⚠️  Not in execution mode.");
+                self.output_status("⚠️  Not in execution mode.");
             }
         }
         Ok(())
