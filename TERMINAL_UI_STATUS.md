@@ -276,8 +276,30 @@ When TUI was enabled for testing, output was completely broken because:
 
 ## Phase 3.5: Fix Output Routing (CRITICAL)
 
-**Status:** ⏸️ Paused (Part 1-2/6 Complete, Part 3 33/228 calls)
-**Priority:** Agent Server work takes precedence (see AGENT_SERVER_PLAN.md)
+**Status:** ⏸️ Paused for Agent Server Integration (Part 1-2/6 Complete, Part 3 33/228 calls)
+**Priority:** Agent Server work takes precedence - will validate output routing in production context
+
+### Integration with Agent Server Work
+
+**Phase 3.5 Parts 1-2 already work in daemon mode! ✅**
+- Tracing integration (Part 2): Captures all logs in daemon mode
+- Global macros (Part 1): Available for server code, auto-detect non-interactive
+- Behavior: Silent unless `SHAMMAH_LOG=1` (perfect for headless server)
+
+**Agent Server Plan** (see AGENT_SERVER_PLAN.md):
+- Phase 1: Add Qwen to daemon mode → will use `output_status!()` macros
+- Phase 1.E: Add structured logging for production (JSON format)
+- All server initialization will use our output routing system
+- Validates that Phase 3.5 infrastructure works for production use case
+
+**Why this order makes sense:**
+1. Agent server needs Qwen initialization (similar to REPL)
+2. That initialization will use our output macros
+3. Testing daemon mode validates our output routing design
+4. Once server works, we know the pattern works for both REPL and daemon
+5. Then we can confidently finish Part 3 (REPL output cleanup) knowing the design is solid
+
+**Resume Part 3 after:** Agent server Phase 1 complete (Qwen integrated and tested)
 
 **Goal:** Route ALL output through OutputManager so TUI works properly
 

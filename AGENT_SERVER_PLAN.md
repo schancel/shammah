@@ -32,6 +32,82 @@
    - Need to verify Claude API format works with VS Code
    - May need adjustments to request/response format
 
+## Output Routing Integration (Phase 3.5)
+
+**Status:** ✅ Already works in daemon mode!
+
+### What's Already Set Up
+1. **Tracing integration** (Phase 3.5 Part 2) ✅
+   - `init_tracing()` called in `run_daemon()` (line 218 main.rs)
+   - Custom OutputManagerLayer captures all logs
+   - Dependency logs (tokio, reqwest, hf-hub, candle) routed through system
+
+2. **Global output macros** (Phase 3.5 Part 1) ✅
+   - Available once imported: `output_status!()`, `output_error!()`, etc.
+   - Automatically detect non-interactive mode
+   - Silent unless `SHAMMAH_LOG=1` in daemon mode
+
+3. **Non-interactive mode behavior** ✅
+   - Daemon has no TTY → `is_non_interactive()` returns true
+   - All status/progress messages silent by default
+   - Enable with: `SHAMMAH_LOG=1 cargo run -- daemon`
+   - Logs to stderr, not stdout
+
+### What We'll Add for Daemon Mode
+
+#### Phase 1.E: Structured Logging for Production
+- [ ] Add optional JSON logging format:
+  - [ ] Check `SHAMMAH_LOG_JSON=1` env var
+  - [ ] If set, format logs as JSON for parsing
+  - [ ] Include: timestamp, level, session_id, model, latency
+- [ ] Add optional file logging:
+  - [ ] Check `SHAMMAH_LOG_FILE=/path/to/log` env var
+  - [ ] Rotate logs daily
+  - [ ] Keep last 7 days
+- [ ] Keep human-readable format for development
+
+**Development mode:**
+```bash
+SHAMMAH_LOG=1 cargo run -- daemon
+# Logs to stderr in human-readable format
+```
+
+**Production mode:**
+```bash
+SHAMMAH_LOG=1 SHAMMAH_LOG_JSON=1 SHAMMAH_LOG_FILE=/var/log/shammah/daemon.log cargo run -- daemon
+# Structured JSON logs to file
+```
+
+### Output Routing in Server Code
+
+When we add Qwen initialization to daemon mode, we'll use the global macros:
+
+```rust
+// In run_daemon() - background model loading
+tokio::spawn(async move {
+    output_progress!("⏳ Initializing Qwen model (background)...");
+    if let Err(e) = loader.load_generator_async(...).await {
+        output_status!("⚠️  Model loading failed: {}", e);
+        output_status!("   Will forward all queries to Claude");
+    } else {
+        output_status!("✓ Qwen model ready - local generation enabled");
+    }
+});
+
+// In handle_message() - request handling
+if matches!(state, GeneratorState::Loading) {
+    tracing::info!("Model still loading, forwarding to Claude");
+}
+```
+
+All these logs:
+- Route through tracing → OutputManagerLayer
+- Silent in production (no SHAMMAH_LOG)
+- Visible in development (SHAMMAH_LOG=1)
+- Structured in production (SHAMMAH_LOG_JSON=1)
+
+---
+
 ## Implementation Plan
 
 ### Phase 1: Add Qwen/LocalGenerator to Server ✅ (High Priority)
