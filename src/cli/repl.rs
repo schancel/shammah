@@ -596,7 +596,7 @@ impl Repl {
         self.tool_executor.save_patterns()?;
 
         if self.is_interactive {
-            println!("✓");
+            self.output_status("✓");
         }
 
         Ok(())
@@ -624,7 +624,7 @@ impl Repl {
             let tool_uses = current_response.tool_uses();
 
             if self.is_interactive {
-                println!("🔧 Executing {} tool(s)...", tool_uses.len());
+                self.output_status(format!("🔧 Executing {} tool(s)...", tool_uses.len()));
             }
 
             // Check for excessive use of same tool (per-tool limit)
@@ -638,8 +638,8 @@ impl Repl {
                     );
 
                     if self.is_interactive {
-                        eprintln!("{}", error_msg);
-                        eprintln!("⚠️  Breaking to prevent infinite loop...");
+                        self.output_error(&error_msg);
+                        self.output_error("⚠️  Breaking to prevent infinite loop...");
                     }
 
                     // Add explanation to conversation
@@ -666,12 +666,12 @@ impl Repl {
 
                 if repeat_count >= 2 {
                     if self.is_interactive {
-                        eprintln!(
+                        self.output_error(format!(
                             "⚠️  Warning: Tool '{}' called {} times with same input",
                             tool_use.name,
                             repeat_count + 1
-                        );
-                        eprintln!("⚠️  Possible infinite loop detected. Breaking...");
+                        ));
+                        self.output_error("⚠️  Possible infinite loop detected. Breaking...");
                     }
 
                     // Add error message to conversation explaining the issue
@@ -692,7 +692,7 @@ impl Repl {
             let mut tool_results = Vec::new();
             for tool_use in &tool_uses {
                 if self.is_interactive {
-                    println!("  → {}", tool_use.name);
+                    self.output_tool(&tool_use.name, format!("  → {}", tool_use.name));
                 }
 
                 // Check mode-based permissions first
@@ -710,7 +710,7 @@ impl Repl {
                     );
                     tool_results.push(error_result);
                     if self.is_interactive {
-                        println!("    ✗ Blocked by plan mode");
+                        self.output_tool(&tool_use.name, "    ✗ Blocked by plan mode");
                     }
                     continue;
                 }
@@ -728,24 +728,24 @@ impl Repl {
                         if self.is_interactive {
                             match self.confirm_tool_execution(tool_use, &signature)? {
                                 ConfirmationResult::ApproveOnce => {
-                                    println!("  ✓ Approved");
+                                    self.output_tool(&tool_use.name, "  ✓ Approved");
                                 }
                                 ConfirmationResult::ApproveExactSession(sig) => {
                                     self.tool_executor.approve_exact_session(sig);
-                                    println!("  ✓ Approved (remembered for session)");
+                                    self.output_tool(&tool_use.name, "  ✓ Approved (remembered for session)");
                                 }
                                 ConfirmationResult::ApprovePatternSession(pattern) => {
-                                    println!("  ✓ Approved pattern: {} (session)", pattern.pattern);
+                                    self.output_tool(&tool_use.name, format!("  ✓ Approved pattern: {} (session)", pattern.pattern));
                                     self.tool_executor.approve_pattern_session(pattern);
                                 }
                                 ConfirmationResult::ApproveExactPersistent(sig) => {
                                     self.tool_executor.approve_exact_persistent(sig);
                                     // IMMEDIATE SAVE: Don't wait for checkpoint
                                     if let Err(e) = self.tool_executor.save_patterns() {
-                                        eprintln!("  ⚠️  Warning: Failed to save pattern: {}", e);
-                                        println!("  ✓ Approved (this session only - save failed)");
+                                        self.output_status(format!("  ⚠️  Warning: Failed to save pattern: {}", e));
+                                        self.output_tool(&tool_use.name, "  ✓ Approved (this session only - save failed)");
                                     } else {
-                                        println!("  ✓ Approved (saved permanently)");
+                                        self.output_tool(&tool_use.name, "  ✓ Approved (saved permanently)");
                                     }
                                 }
                                 ConfirmationResult::ApprovePatternPersistent(pattern) => {
@@ -753,16 +753,16 @@ impl Repl {
                                     self.tool_executor.approve_pattern_persistent(pattern);
                                     // IMMEDIATE SAVE: Don't wait for checkpoint
                                     if let Err(e) = self.tool_executor.save_patterns() {
-                                        eprintln!("  ⚠️  Warning: Failed to save pattern: {}", e);
-                                        println!(
+                                        self.output_status(format!("  ⚠️  Warning: Failed to save pattern: {}", e));
+                                        self.output_tool(&tool_use.name, format!(
                                             "  ✓ Approved pattern: {} (this session only - save failed)",
                                             pattern_str
-                                        );
+                                        ));
                                     } else {
-                                        println!(
+                                        self.output_tool(&tool_use.name, format!(
                                             "  ✓ Approved pattern: {} (saved permanently)",
                                             pattern_str
-                                        );
+                                        ));
                                     }
                                 }
                                 ConfirmationResult::Deny => {
@@ -772,7 +772,7 @@ impl Repl {
                                         "Tool execution denied by user".to_string(),
                                     );
                                     tool_results.push(error_result);
-                                    println!("    ✗ Denied by user");
+                                    self.output_tool(&tool_use.name, "    ✗ Denied by user");
                                     continue;
                                 }
                             }
@@ -783,17 +783,17 @@ impl Repl {
                     }
                     ApprovalSource::SessionPattern(ref id) => {
                         if self.is_interactive {
-                            println!("  ✓ Matched session pattern ({})", &id[..8]);
+                            self.output_tool(&tool_use.name, format!("  ✓ Matched session pattern ({})", &id[..8]));
                         }
                     }
                     ApprovalSource::PersistentExact => {
                         if self.is_interactive {
-                            println!("  ✓ Matched saved approval");
+                            self.output_tool(&tool_use.name, "  ✓ Matched saved approval");
                         }
                     }
                     ApprovalSource::PersistentPattern(ref id) => {
                         if self.is_interactive {
-                            println!("  ✓ Matched saved pattern ({})", &id[..8]);
+                            self.output_tool(&tool_use.name, format!("  ✓ Matched saved pattern ({})", &id[..8]));
                         }
                     }
                 }
@@ -826,9 +826,9 @@ impl Repl {
                 // Display tool result to user (Phase 1: Visibility)
                 if self.is_interactive {
                     if result.is_error {
-                        println!("    ✗ Error: {}", result.content);
+                        self.output_tool(&tool_use.name, format!("    ✗ Error: {}", result.content));
                     } else {
-                        println!("    ✓ Success");
+                        self.output_tool(&tool_use.name, "    ✓ Success");
 
                         // Show preview of result (first 500 chars)
                         let preview = if result.content.len() > 500 {
@@ -843,10 +843,10 @@ impl Repl {
 
                         // Indent output for readability
                         for line in preview.lines() {
-                            println!("      {}", line);
+                            self.output_tool(&tool_use.name, format!("      {}", line));
                         }
                     }
-                    println!(); // Blank line after each tool
+                    self.output_status(""); // Blank line after each tool
                 }
 
                 tool_results.push(result);
@@ -903,7 +903,7 @@ impl Repl {
                     .add_assistant_message("[Tool request]".to_string());
 
                 if self.is_interactive {
-                    println!("    (Claude requesting tool execution)");
+                    self.output_status("    (Claude requesting tool execution)");
                 }
             } else {
                 // Response has both text and tool_use blocks
@@ -911,7 +911,7 @@ impl Repl {
                     .add_assistant_message(assistant_text.clone());
 
                 if self.is_interactive && !assistant_text.trim().is_empty() {
-                    println!("    Claude: {}", assistant_text);
+                    self.output_claude(format!("    Claude: {}", assistant_text));
                 }
             }
 
@@ -932,7 +932,7 @@ impl Repl {
                     "⚠️  Warning: Max tool iterations reached ({})",
                     MAX_ITERATIONS
                 );
-                eprintln!("⚠️  Claude may be stuck in a loop. Returning last response.");
+                self.output_error("⚠️  Claude may be stuck in a loop. Returning last response.");
             }
 
             // IMPORTANT: Still add final response to conversation
@@ -946,14 +946,14 @@ impl Repl {
         // Validate conversation state (debug check)
         let messages = self.conversation.get_messages();
         if messages.is_empty() {
-            eprintln!("⚠️  ERROR: Conversation became empty after tool loop!");
-            eprintln!("⚠️  This is a bug - please report to developers");
+            self.output_error("⚠️  ERROR: Conversation became empty after tool loop!");
+            self.output_error("⚠️  This is a bug - please report to developers");
         }
 
         // Check for empty messages
         for (i, msg) in messages.iter().enumerate() {
             if msg.is_empty_text() {
-                eprintln!("⚠️  WARNING: Message {} has empty content", i);
+                self.output_error(format!("⚠️  WARNING: Message {} has empty content", i));
             }
         }
 
@@ -970,7 +970,7 @@ impl Repl {
 
         // Print newline to start response area
         if self.is_interactive {
-            println!();
+            self.output_status("");
         }
 
         while let Some(result) = rx.recv().await {
@@ -990,7 +990,7 @@ impl Repl {
 
         // Final newline after response
         if self.is_interactive {
-            println!();
+            self.output_status("");
         }
 
         Ok(full_response)
@@ -1006,12 +1006,12 @@ impl Repl {
         if let Some(prompt) = initial_prompt {
             // Process initial prompt before starting interactive loop
             if self.is_interactive {
-                println!("\nProcessing initial prompt: \"{}\"", prompt);
-                println!();
+                self.output_status(format!("\nProcessing initial prompt: \"{}\"", prompt));
+                self.output_status("");
             }
             let response = self.process_query(&prompt).await?;
             if self.is_interactive {
-                println!("{}", response);
+                self.output_claude(&response);
             }
         }
 
@@ -1064,7 +1064,7 @@ impl Repl {
 
                 if self.tui_renderer.is_none() {
                     // Standard mode: print separator
-                    println!();
+                    self.output_status("");
                     self.print_separator();
                 }
 
@@ -1109,7 +1109,7 @@ impl Repl {
             } else {
                 // Fallback: basic stdin reading (non-interactive or readline failed)
                 if self.is_interactive {
-                    println!();
+                    self.output_status("");
                     self.print_separator();
                     // Note: Can't use colored prompts in basic mode, so use plain text
                     let prompt = match &self.mode {
@@ -1136,7 +1136,7 @@ impl Repl {
 
             if self.is_interactive {
                 self.print_separator();
-                println!();
+                self.output_status("");
             }
 
             // Check for slash commands
@@ -1146,41 +1146,41 @@ impl Repl {
                         self.save_models().await?;
                         if let Some(ref mut handler) = self.input_handler {
                             if let Err(e) = handler.save_history() {
-                                eprintln!("Warning: Failed to save history: {}", e);
+                                self.output_status(format!("⚠️  Failed to save history: {}", e));
                             }
                         }
                         if self.is_interactive {
-                            println!("Models saved. Goodbye!");
+                            self.output_status("Models saved. Goodbye!");
                         }
                         break;
                     }
                     Command::Clear => {
                         self.conversation.clear();
-                        println!("Conversation history cleared. Starting fresh.");
+                        self.output_status("Conversation history cleared. Starting fresh.");
                         if self.is_interactive {
-                            println!();
+                            self.output_status("");
                             self.print_status_line();
                         }
                         continue;
                     }
                     Command::PatternsList => {
                         let output = self.list_patterns()?;
-                        println!("{}", output);
+                        self.output_status(output);
                         continue;
                     }
                     Command::PatternsRemove(ref id) => {
                         let output = self.remove_pattern(id)?;
-                        println!("{}", output);
+                        self.output_status(output);
                         continue;
                     }
                     Command::PatternsClear => {
                         let output = self.clear_patterns()?;
-                        println!("{}", output);
+                        self.output_status(output);
                         continue;
                     }
                     Command::PatternsAdd => {
                         let output = self.add_pattern_interactive()?;
-                        println!("{}", output);
+                        self.output_status(output);
                         continue;
                     }
                     Command::Plan(ref task) => {
@@ -1228,7 +1228,7 @@ impl Repl {
                             Some(&self.threshold_validator),
                             &mut self.debug_enabled,
                         )?;
-                        println!("{}", output);
+                        self.output_status(output);
                         continue;
                     }
                 }
@@ -1237,16 +1237,16 @@ impl Repl {
             // Process query
             match self.process_query(&input).await {
                 Ok(response) => {
-                    println!("{}", response);
+                    self.output_claude(&response);
                     if self.is_interactive {
-                        println!();
+                        self.output_status("");
                         self.print_status_line();
                     }
                 }
                 Err(e) => {
-                    eprintln!("Error: {}", e);
+                    self.output_error(format!("Error: {}", e));
                     if self.is_interactive {
-                        println!();
+                        self.output_status("");
                         self.print_status_line();
                     }
                 }
@@ -1255,7 +1255,7 @@ impl Repl {
 
         // Before exiting REPL, save any pending patterns
         if let Err(e) = self.save_models().await {
-            eprintln!("Warning: Failed to save on exit: {}", e);
+            self.output_status(format!("⚠️  Failed to save on exit: {}", e));
         }
 
         Ok(())
@@ -1264,7 +1264,7 @@ impl Repl {
     /// Print separator line that adapts to terminal width
     fn print_separator(&self) {
         let width = terminal_width();
-        println!("{}", "─".repeat(width));
+        self.output_status("─".repeat(width));
     }
 
     /// Prompt user to confirm tool execution
@@ -1274,15 +1274,15 @@ impl Repl {
         signature: &ToolSignature,
     ) -> Result<ConfirmationResult> {
         // Display tool information
-        println!();
-        println!("Tool Execution Request:");
-        println!("─────────────────────────");
-        println!("Tool: {}", tool_use.name);
+        self.output_status("");
+        self.output_status("Tool Execution Request:");
+        self.output_status("─────────────────────────");
+        self.output_status(format!("Tool: {}", tool_use.name));
 
         // Show relevant parameters
         self.display_tool_params(tool_use);
 
-        println!();
+        self.output_status("");
 
         // Build menu options
         let options = vec![
@@ -1364,7 +1364,7 @@ impl Repl {
         // Parse signature to extract components
         let (command_part, dir_part) = self.parse_signature_components(signature);
 
-        println!();
+        self.output_status("");
 
         // Generate options based on tool type
         let pattern_options = if let (Some(ref cmd), Some(ref dir)) = (&command_part, &dir_part) {
@@ -1496,49 +1496,49 @@ impl Repl {
         match tool_use.name.as_str() {
             "bash" => {
                 if let Some(command) = tool_use.input["command"].as_str() {
-                    println!("  Command: {}", command);
+                    self.output_status(format!("  Command: {}", command));
                 }
                 if let Some(desc) = tool_use.input.get("description").and_then(|v| v.as_str()) {
-                    println!("  Description: {}", desc);
+                    self.output_status(format!("  Description: {}", desc));
                 }
             }
             "read" => {
                 if let Some(path) = tool_use.input["file_path"].as_str() {
-                    println!("  File: {}", path);
+                    self.output_status(format!("  File: {}", path));
                 }
             }
             "web_fetch" => {
                 if let Some(url) = tool_use.input["url"].as_str() {
-                    println!("  URL: {}", url);
+                    self.output_status(format!("  URL: {}", url));
                 }
                 if let Some(prompt) = tool_use.input.get("prompt").and_then(|v| v.as_str()) {
-                    println!("  Prompt: {}", prompt);
+                    self.output_status(format!("  Prompt: {}", prompt));
                 }
             }
             "grep" => {
                 if let Some(pattern) = tool_use.input["pattern"].as_str() {
-                    println!("  Pattern: {}", pattern);
+                    self.output_status(format!("  Pattern: {}", pattern));
                 }
                 if let Some(path) = tool_use.input.get("path").and_then(|v| v.as_str()) {
-                    println!("  Path: {}", path);
+                    self.output_status(format!("  Path: {}", path));
                 }
             }
             "glob" => {
                 if let Some(pattern) = tool_use.input["pattern"].as_str() {
-                    println!("  Pattern: {}", pattern);
+                    self.output_status(format!("  Pattern: {}", pattern));
                 }
             }
             "save_and_exec" => {
                 if let Some(command) = tool_use.input["command"].as_str() {
-                    println!("  Command: {}", command);
+                    self.output_status(format!("  Command: {}", command));
                 }
                 if let Some(reason) = tool_use.input.get("reason").and_then(|v| v.as_str()) {
-                    println!("  Reason: {}", reason);
+                    self.output_status(format!("  Reason: {}", reason));
                 }
             }
             _ => {
                 // Generic display for unknown tools
-                println!("  Input: {}", tool_use.input);
+                self.output_status(format!("  Input: {}", tool_use.input));
             }
         }
     }
@@ -1659,12 +1659,12 @@ impl Repl {
 
         // Show what we're removing
         if let Some(ref pattern) = matching_pattern {
-            println!("Found pattern to remove:");
-            println!("  ID: {}", &pattern.id[..8]);
-            println!("  Tool: {}", pattern.tool_name);
-            println!("  Pattern: {}", pattern.pattern);
-            println!("  Match count: {}", pattern.match_count);
-            println!();
+            self.output_status("Found pattern to remove:");
+            self.output_status(format!("  ID: {}", &pattern.id[..8]));
+            self.output_status(format!("  Tool: {}", pattern.tool_name));
+            self.output_status(format!("  Pattern: {}", pattern.pattern));
+            self.output_status(format!("  Match count: {}", pattern.match_count));
+            self.output_status("");
 
             // Confirm if match count > 10
             if pattern.match_count > 10 {
@@ -1690,12 +1690,12 @@ impl Repl {
                 Ok(format!("Failed to remove pattern: {}", id))
             }
         } else if let Some(ref approval) = matching_exact {
-            println!("Found exact approval to remove:");
-            println!("  ID: {}", &approval.id[..8]);
-            println!("  Tool: {}", approval.tool_name);
-            println!("  Signature: {}", approval.signature);
-            println!("  Match count: {}", approval.match_count);
-            println!();
+            self.output_status("Found exact approval to remove:");
+            self.output_status(format!("  ID: {}", &approval.id[..8]));
+            self.output_status(format!("  Tool: {}", approval.tool_name));
+            self.output_status(format!("  Signature: {}", approval.signature));
+            self.output_status(format!("  Match count: {}", approval.match_count));
+            self.output_status("");
 
             // Confirm if match count > 10
             if approval.match_count > 10 {
@@ -1755,8 +1755,8 @@ impl Repl {
     pub fn add_pattern_interactive(&mut self) -> Result<String> {
         use crate::tools::patterns::PatternType;
 
-        println!("Add Confirmation Pattern");
-        println!("========================\n");
+        self.output_status("Add Confirmation Pattern");
+        self.output_status("========================\n");
 
         // 1. Pattern type
         let pattern_type_options = vec![
@@ -1790,20 +1790,20 @@ impl Repl {
         }
 
         // 3. Pattern string (with help)
-        println!("\nPattern syntax:");
+        self.output_status("\nPattern syntax:");
         match pattern_type {
             PatternType::Wildcard => {
-                println!("  * = match anything (single component)");
-                println!("  ** = match anything recursively (paths)");
-                println!("Examples:");
-                println!("  cargo * in /project");
-                println!("  reading /project/**");
-                println!("  cargo * in *");
+                self.output_status("  * = match anything (single component)");
+                self.output_status("  ** = match anything recursively (paths)");
+                self.output_status("Examples:");
+                self.output_status("  cargo * in /project");
+                self.output_status("  reading /project/**");
+                self.output_status("  cargo * in *");
             }
             PatternType::Regex => {
-                println!("  Standard regex syntax");
-                println!("Examples:");
-                println!("  ^cargo (test|build)$");
+                self.output_status("  Standard regex syntax");
+                self.output_status("Examples:");
+                self.output_status("  ^cargo (test|build)$");
                 println!("  reading /project/src/.*\\.rs$");
             }
         }
@@ -1834,9 +1834,9 @@ impl Repl {
         }
 
         // 6. Optional: Test pattern
-        println!("\nPattern created:");
-        println!("  Tool: {}", pattern.tool_name);
-        println!("  Pattern: {}", pattern.pattern);
+        self.output_status("\nPattern created:");
+        self.output_status(format!("  Tool: {}", pattern.tool_name));
+        self.output_status(format!("  Pattern: {}", pattern.pattern));
         println!("  Type: {:?}", pattern.pattern_type);
 
         if Menu::confirm("\nTest pattern?", false)? {
@@ -1852,11 +1852,11 @@ impl Repl {
             };
 
             if pattern.matches(&test_sig) {
-                println!("✓ Pattern matches!");
+                self.output_status("✓ Pattern matches!");
             } else {
-                println!("✗ Pattern does not match.");
+                self.output_status("✗ Pattern does not match.");
             }
-            println!();
+            self.output_status("");
         }
 
         // 7. Confirm and save
@@ -2170,7 +2170,7 @@ impl Repl {
 
         // Online learning: Update threshold models
         if self.is_interactive {
-            println!();
+            self.output_status("");
             print!("{}", "Learning... ".dark_grey());
             io::stdout().flush()?;
         }
@@ -2220,7 +2220,7 @@ impl Repl {
         }
 
         if self.is_interactive {
-            println!("✓");
+            self.output_status("✓");
         }
 
         // Log metric with comparison data
@@ -2288,8 +2288,8 @@ impl Repl {
         let query = match &self.last_query {
             Some(q) => q.clone(),
             None => {
-                println!("⚠️  No previous query to provide feedback on.");
-                println!("    Use feedback commands after receiving a response.");
+                self.output_status("⚠️  No previous query to provide feedback on.");
+                self.output_status("    Use feedback commands after receiving a response.");
                 return Ok(());
             }
         };
@@ -2297,7 +2297,7 @@ impl Repl {
         let response = match &self.last_response {
             Some(r) => r.clone(),
             None => {
-                println!("⚠️  No previous response to provide feedback on.");
+                self.output_status("⚠️  No previous response to provide feedback on.");
                 return Ok(());
             }
         };
@@ -2524,12 +2524,12 @@ impl Repl {
         println!("{}", "✓ Entered planning mode".blue().bold());
         println!("📋 Task: {}", task);
         println!("📁 Plan will be saved to: {}", plan_path.display());
-        println!();
+        self.output_status("");
         println!("{}", "Available tools:".green());
         println!("  read, glob, grep, web_fetch");
         println!("{}", "Blocked tools:".red());
         println!("  bash, save_and_exec");
-        println!();
+        self.output_status("");
         println!("Ask me to explore the codebase and generate a plan.");
         println!(
             "{}",
@@ -2546,7 +2546,7 @@ impl Repl {
         ));
 
         if self.is_interactive {
-            println!();
+            self.output_status("");
             self.print_status_line();
         }
 
@@ -2567,15 +2567,15 @@ impl Repl {
                 let plan_path_clone = plan_path.clone();
 
                 println!("{}", "✓ Plan approved!".green().bold());
-                println!();
+                self.output_status("");
 
                 // Show context clearing options
                 println!("The plan has been saved to: {}", plan_path_clone.display());
-                println!();
+                self.output_status("");
                 println!("Would you like to:");
                 println!("  1. Clear conversation and execute plan (recommended)");
                 println!("  2. Keep conversation history and execute");
-                println!();
+                self.output_status("");
 
                 let options = vec![
                     MenuOption::with_description(
@@ -2605,7 +2605,7 @@ impl Repl {
 
                 if clear_context {
                     // Clear conversation and add plan as context
-                    println!();
+                    self.output_status("");
                     println!("{}", "Clearing conversation context...".blue());
                     self.conversation.clear();
 
@@ -2634,7 +2634,7 @@ impl Repl {
                     }
                 } else {
                     // Keep history, just add approval message
-                    println!();
+                    self.output_status("");
                     println!("{}", "Keeping conversation context...".blue());
                     self.conversation.add_user_message(
                         "[System: Plan approved! All tools are now enabled. \
@@ -2643,14 +2643,14 @@ impl Repl {
                     );
                 }
 
-                println!();
+                self.output_status("");
                 println!(
                     "{}",
                     "All tools enabled. Please proceed with implementation.".green()
                 );
 
                 if self.is_interactive {
-                    println!();
+                    self.output_status("");
                     self.print_status_line();
                 }
             }
@@ -2674,7 +2674,7 @@ impl Repl {
                     .add_user_message("[System: Plan rejected by user.]".to_string());
 
                 if self.is_interactive {
-                    println!();
+                    self.output_status("");
                     self.print_status_line();
                 }
             }
