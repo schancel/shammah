@@ -276,7 +276,7 @@ When TUI was enabled for testing, output was completely broken because:
 
 ## Phase 3.5: Fix Output Routing (CRITICAL)
 
-**Status:** 🟡 In Progress (Part 1/6 Complete)
+**Status:** 🟡 In Progress (Part 1-2/6 Complete)
 
 **Goal:** Route ALL output through OutputManager so TUI works properly
 
@@ -349,22 +349,32 @@ When TUI was enabled for testing, output was completely broken because:
   - [x] Test SHAMMAH_LOG=1 behavior
   - [x] Committed: Phase 3.5 Part 1 (commit 7c0408a)
 
-- [ ] **Part 2: Tracing Integration**
-  - [ ] Create `src/cli/output_layer.rs`
-  - [ ] Add `tracing-log` dependency (bridge log→tracing)
-  - [ ] Implement `OutputManagerLayer` for tracing
-  - [ ] Add `MessageVisitor` to extract log messages
-  - [ ] Map log levels to output types:
-    - [ ] ERROR → `output_error!()`
-    - [ ] WARN → `output_status!("⚠️  {}")`
-    - [ ] INFO → `output_status!()`
-    - [ ] DEBUG/TRACE → Skip or optional
-  - [ ] Add formatting flexibility:
-    - [ ] Strip ugly module paths
-    - [ ] Clean up timestamp format
-    - [ ] Customize message format
-  - [ ] Initialize in `src/main.rs` before anything else
-  - [ ] Add `EnvFilter` for log level control
+- [x] **Part 2: Tracing Integration** ✅
+  - [x] Create `src/cli/output_layer.rs`
+  - [x] Add `tracing-log` dependency (bridge log→tracing)
+  - [x] Implement `OutputManagerLayer` for tracing
+  - [x] Implement `tracing::Layer` trait with `on_event()` method
+  - [x] Add `MessageVisitor` to extract log messages from events
+  - [x] Map log levels to output types:
+    - [x] ERROR → `output_error!()` with [ERROR] prefix
+    - [x] WARN → `output_status!("⚠️  {}")`
+    - [x] INFO → `output_status!()` or `output_progress!()` (for "Downloading"/"Loading")
+    - [x] DEBUG/TRACE → `output_status!("🔍 {}")` (optional with SHAMMAH_DEBUG=1)
+  - [x] Add formatting flexibility:
+    - [x] Strip ugly module paths (shammah::x::y → x::y, tokio::x::y → "message")
+    - [x] Clean module names (tokio/reqwest/hyper stripped)
+    - [x] Customize message format with crate name prefix
+  - [x] Add `init_tracing()` function in `src/main.rs`
+  - [x] Initialize OutputManagerLayer before anything else
+  - [x] Add `EnvFilter` for log level control (RUST_LOG support)
+  - [x] Support SHAMMAH_DEBUG=1 for debug/trace logs
+  - [x] Fix output_error! to print to stderr in non-interactive mode
+  - [x] Create demo: `examples/tracing_demo.rs`
+  - [x] Test different log levels (ERROR, WARN, INFO, DEBUG, TRACE)
+  - [x] Test module path formatting
+  - [x] Test SHAMMAH_DEBUG=1 and RUST_LOG env vars
+  - [x] Test SHAMMAH_LOG=1 to see captured logs
+  - [x] Committed: Phase 3.5 Part 2 (commit e6790a5)
 
 - [ ] **Part 3: Replace Direct Output in cli/**
   - [ ] Strategy: Use instance methods where possible (testable), macros where necessary
