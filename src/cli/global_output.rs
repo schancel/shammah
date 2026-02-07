@@ -10,16 +10,20 @@
 // - Other macros write to buffer (for potential logging)
 
 use once_cell::sync::Lazy;
-use std::io::{self, IsTerminal, Write};
-use std::sync::Arc;
+use std::io::{self, IsTerminal};
+use std::sync::{Arc, Mutex};
 
 use super::{OutputManager, StatusBar};
+use super::tui::TuiRenderer;
 
 /// Global singleton OutputManager
 pub static GLOBAL_OUTPUT: Lazy<Arc<OutputManager>> = Lazy::new(|| Arc::new(OutputManager::new()));
 
 /// Global singleton StatusBar
 pub static GLOBAL_STATUS: Lazy<Arc<StatusBar>> = Lazy::new(|| Arc::new(StatusBar::new()));
+
+/// Global singleton TUI renderer (optional, set when TUI mode is enabled)
+pub static GLOBAL_TUI_RENDERER: Lazy<Mutex<Option<TuiRenderer>>> = Lazy::new(|| Mutex::new(None));
 
 /// Get reference to global OutputManager
 pub fn global_output() -> &'static Arc<OutputManager> {
@@ -29,6 +33,77 @@ pub fn global_output() -> &'static Arc<OutputManager> {
 /// Get reference to global StatusBar
 pub fn global_status() -> &'static Arc<StatusBar> {
     &GLOBAL_STATUS
+}
+
+/// Set the global TUI renderer (called when TUI mode is enabled)
+pub fn set_global_tui_renderer(renderer: TuiRenderer) {
+    *GLOBAL_TUI_RENDERER.lock().unwrap() = Some(renderer);
+}
+
+/// Get a reference to the global TUI renderer
+pub fn get_global_tui_renderer() -> &'static Mutex<Option<TuiRenderer>> {
+    &GLOBAL_TUI_RENDERER
+}
+
+/// Shutdown the global TUI renderer and restore terminal state
+pub fn shutdown_global_tui() -> anyhow::Result<()> {
+    use std::time::Duration;
+
+    eprintln!("[DEBUG] shutdown_global_tui: Starting...");
+
+    // Try to acquire lock with timeout to prevent indefinite hang
+    // Use a loop with try_lock to implement timeout behavior
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_millis(500);
+
+    loop {
+        match GLOBAL_TUI_RENDERER.try_lock() {
+            Ok(mut tui_lock) => {
+                eprintln!("[DEBUG] shutdown_global_tui: Lock acquired");
+                if let Some(tui) = tui_lock.take() {
+                    eprintln!("[DEBUG] shutdown_global_tui: Calling tui.shutdown()...");
+                    tui.shutdown()?;
+                    eprintln!("[DEBUG] shutdown_global_tui: tui.shutdown() completed");
+                } else {
+                    eprintln!("[DEBUG] shutdown_global_tui: No TUI to shutdown");
+                }
+                return Ok(());
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if start.elapsed() > timeout {
+                    // Timeout - force cleanup without taking the lock
+                    eprintln!("[DEBUG] shutdown_global_tui: Lock timeout - forcing emergency cleanup");
+
+                    // Emergency terminal cleanup
+                    use crossterm::{cursor, execute, terminal};
+                    let _ = terminal::disable_raw_mode();
+                    let _ = execute!(
+                        std::io::stdout(),
+                        cursor::Show,
+                        terminal::Clear(terminal::ClearType::FromCursorDown)
+                    );
+
+                    return Ok(());
+                }
+                // Wait a bit and try again
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                // Mutex was poisoned - do emergency cleanup
+                eprintln!("[DEBUG] shutdown_global_tui: Mutex poisoned - forcing emergency cleanup");
+
+                use crossterm::{cursor, execute, terminal};
+                let _ = terminal::disable_raw_mode();
+                let _ = execute!(
+                    std::io::stdout(),
+                    cursor::Show,
+                    terminal::Clear(terminal::ClearType::FromCursorDown)
+                );
+
+                return Ok(());
+            }
+        }
+    }
 }
 
 /// Check if we're in non-interactive mode (stdout is not a TTY)

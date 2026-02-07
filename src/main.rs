@@ -31,6 +31,14 @@ struct Args {
     /// Path to session state file to restore (REPL mode)
     #[arg(long = "restore-session")]
     restore_session: Option<PathBuf>,
+
+    /// Use raw terminal mode instead of TUI (enables rustyline)
+    #[arg(long = "raw", conflicts_with = "no_tui")]
+    raw_mode: bool,
+
+    /// Alias for --raw (for backwards compatibility)
+    #[arg(long = "no-tui")]
+    no_tui: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -50,6 +58,9 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install panic handler to cleanup terminal on panic
+    install_panic_handler();
+
     // Parse command-line arguments
     let args = Args::parse();
 
@@ -111,7 +122,12 @@ async fn main() -> Result<()> {
     init_tracing();
 
     // Load configuration
-    let config = load_config()?;
+    let mut config = load_config()?;
+
+    // Override TUI setting if --raw or --no-tui flag is provided
+    if args.raw_mode || args.no_tui {
+        config.tui_enabled = false;
+    }
 
     // Load crisis detector
     let crisis_detector = CrisisDetector::load_from_file(&config.crisis_keywords_path)?;
@@ -172,9 +188,32 @@ async fn main() -> Result<()> {
     }
 
     // Run REPL (potentially with initial prompt)
+    eprintln!("[DEBUG] Starting REPL...");
     repl.run_with_initial_prompt(args.initial_prompt).await?;
 
+    eprintln!("[DEBUG] REPL exited, returning from main");
     Ok(())
+}
+
+/// Install panic handler to cleanup terminal state on panic
+///
+/// If the program panics while in raw mode (TUI active), the terminal
+/// can be left in a broken state. This handler ensures proper cleanup.
+fn install_panic_handler() {
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // Emergency terminal cleanup
+        use crossterm::{cursor, execute, terminal};
+        let _ = terminal::disable_raw_mode();
+        let _ = execute!(
+            std::io::stdout(),
+            cursor::Show,
+            terminal::Clear(terminal::ClearType::FromCursorDown)
+        );
+
+        // Call the default panic handler
+        default_panic(info);
+    }));
 }
 
 /// Initialize tracing with custom OutputManager layer

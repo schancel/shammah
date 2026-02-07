@@ -1,15 +1,26 @@
-// Output Manager - Buffers all output for eventual TUI rendering
+// Output Manager - Buffers output AND writes to stdout for scrollback
 //
 // This module provides an abstraction layer that captures all output
 // (user messages, Claude responses, tool output, status info, errors)
-// into a structured buffer. This allows us to later render it in a
-// scrollable TUI without changing the rest of the codebase.
+// into a structured buffer AND writes it to stdout immediately with ANSI colors.
+// This enables terminal scrollback while maintaining TUI compatibility.
 
 use std::collections::VecDeque;
+use std::io::{self, Write};
 use std::sync::{Arc, RwLock};
 
 /// Maximum number of messages to keep in the circular buffer
 const MAX_BUFFER_SIZE: usize = 1000;
+
+/// ANSI color codes for terminal output
+mod colors {
+    pub const CYAN: &str = "\x1b[36m";      // User prompts
+    pub const RED: &str = "\x1b[31m";       // Errors
+    pub const GREEN: &str = "\x1b[32m";     // Success messages
+    pub const YELLOW: &str = "\x1b[33m";    // Progress/status
+    pub const BLUE: &str = "\x1b[34m";      // Tool output
+    pub const RESET: &str = "\x1b[0m";      // Reset to default
+}
 
 /// Types of messages that can be displayed
 #[derive(Debug, Clone)]
@@ -58,6 +69,8 @@ impl OutputMessage {
 pub struct OutputManager {
     /// Circular buffer of messages (last 1000 lines)
     buffer: Arc<RwLock<VecDeque<OutputMessage>>>,
+    /// Whether to write output to stdout immediately (for scrollback)
+    write_to_stdout: Arc<RwLock<bool>>,
 }
 
 impl OutputManager {
@@ -65,11 +78,65 @@ impl OutputManager {
     pub fn new() -> Self {
         Self {
             buffer: Arc::new(RwLock::new(VecDeque::with_capacity(MAX_BUFFER_SIZE))),
+            write_to_stdout: Arc::new(RwLock::new(true)), // Enable by default for TUI mode
         }
+    }
+
+    /// Enable writing to stdout (for TUI mode with scrollback)
+    pub fn enable_stdout(&self) {
+        *self.write_to_stdout.write().unwrap() = true;
+    }
+
+    /// Disable writing to stdout (for testing or special modes)
+    pub fn disable_stdout(&self) {
+        *self.write_to_stdout.write().unwrap() = false;
+    }
+
+    /// Write a message to stdout with ANSI colors (internal)
+    fn write_to_terminal(&self, message: &OutputMessage) {
+        if !*self.write_to_stdout.read().unwrap() {
+            return; // Stdout writing disabled
+        }
+
+        let mut stdout = io::stdout();
+        let formatted = match message {
+            OutputMessage::UserMessage { content } => {
+                // Cyan prompt ">" with content on same line
+                format!("{}> {}{}", colors::CYAN, content, colors::RESET)
+            }
+            OutputMessage::ClaudeResponse { content } => {
+                // Default color for responses
+                format!("{}{}{}", colors::RESET, content, colors::RESET)
+            }
+            OutputMessage::ToolOutput { tool_name, content } => {
+                // Blue for tool output
+                format!("{}[{}] {}{}", colors::BLUE, tool_name, content, colors::RESET)
+            }
+            OutputMessage::StatusInfo { content } => {
+                // Yellow for status
+                format!("{}{}{}", colors::YELLOW, content, colors::RESET)
+            }
+            OutputMessage::Error { content } => {
+                // Red for errors
+                format!("{}❌ {}{}", colors::RED, content, colors::RESET)
+            }
+            OutputMessage::Progress { content } => {
+                // Yellow for progress
+                format!("{}{}{}", colors::YELLOW, content, colors::RESET)
+            }
+        };
+
+        // Write to stdout (ignore errors - terminal might not be available)
+        let _ = writeln!(stdout, "{}", formatted);
+        let _ = stdout.flush();
     }
 
     /// Add a message to the buffer (internal)
     fn add_message(&self, message: OutputMessage) {
+        // Write to terminal immediately (for scrollback)
+        self.write_to_terminal(&message);
+
+        // Also buffer for TUI rendering
         let mut buffer = self.buffer.write().unwrap();
 
         // If buffer is full, remove oldest message
@@ -178,6 +245,7 @@ impl Clone for OutputManager {
     fn clone(&self) -> Self {
         Self {
             buffer: Arc::clone(&self.buffer),
+            write_to_stdout: Arc::clone(&self.write_to_stdout),
         }
     }
 }

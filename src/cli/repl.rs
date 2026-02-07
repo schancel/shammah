@@ -44,7 +44,7 @@ use super::status_bar::StatusBar;
 use super::tui::TuiRenderer;
 
 // Phase 3.5: Import output macros for global output routing
-use crate::{output_claude, output_error, output_progress, output_status, output_tool, output_user};
+use crate::{output_error, output_progress, output_status};
 
 /// User's menu choice for tool confirmation
 #[derive(Debug, Clone)]
@@ -129,8 +129,7 @@ pub struct Repl {
     // Output management (Phase 1: Terminal UI refactor)
     output_manager: OutputManager,
     status_bar: StatusBar,
-    // TUI renderer (Phase 2: Optional Ratatui interface)
-    tui_renderer: Option<TuiRenderer>,
+    // TUI renderer moved to global (Phase 5: Native ratatui dialogs)
 }
 
 /// Background training statistics
@@ -329,21 +328,22 @@ impl Repl {
         let status_bar = StatusBar::new();
 
         // Initialize TUI renderer if enabled (Phase 2: Ratatui interface)
-        let tui_renderer = if config.tui_enabled && is_interactive {
+        // Moved to global for Phase 5 native ratatui dialogs
+        if config.tui_enabled && is_interactive {
             match TuiRenderer::new(output_manager.clone(), status_bar.clone()) {
                 Ok(renderer) => {
                     output_status!("✓ TUI mode enabled (Ratatui)");
-                    Some(renderer)
+
+                    // Set global TUI renderer for Menu dialogs (Phase 5)
+                    use crate::cli::global_output::set_global_tui_renderer;
+                    set_global_tui_renderer(renderer);
                 }
                 Err(e) => {
                     output_status!("⚠️  Failed to initialize TUI: {}", e);
                     output_status!("   Falling back to standard output mode");
-                    None
                 }
             }
-        } else {
-            None
-        };
+        }
 
         Self {
             _config: config,
@@ -373,8 +373,7 @@ impl Repl {
             // Output management (Phase 1: Terminal UI refactor)
             output_manager,
             status_bar,
-            // TUI renderer (Phase 2: Optional Ratatui interface)
-            tui_renderer,
+            // TUI renderer moved to global (Phase 5: Native ratatui dialogs)
         }
     }
 
@@ -466,7 +465,7 @@ impl Repl {
         let content_str = content.clone().into();
         self.output_manager.write_user(content_str.clone());
         // Only print to stdout if TUI is not active
-        if self.is_interactive && self.tui_renderer.is_none() {
+        if self.is_interactive && !self.is_tui_active() {
             println!("> {}", content_str);
         }
     }
@@ -476,7 +475,7 @@ impl Repl {
         let content_str = content.clone().into();
         self.output_manager.write_claude(content_str.clone());
         // Only print to stdout if TUI is not active
-        if self.is_interactive && self.tui_renderer.is_none() {
+        if self.is_interactive && !self.is_tui_active() {
             println!("{}", content_str);
         }
     }
@@ -486,7 +485,7 @@ impl Repl {
         let content_str = content.as_ref();
         self.output_manager.append_claude(content_str);
         // Only print to stdout if TUI is not active
-        if self.is_interactive && self.tui_renderer.is_none() {
+        if self.is_interactive && !self.is_tui_active() {
             print!("{}", content_str);
             let _ = io::stdout().flush();
         }
@@ -498,7 +497,7 @@ impl Repl {
         self.output_manager
             .write_tool(tool_name, content_str.clone());
         // Only print to stdout if TUI is not active
-        if self.is_interactive && self.tui_renderer.is_none() {
+        if self.is_interactive && !self.is_tui_active() {
             println!("{}", content_str);
         }
     }
@@ -508,7 +507,7 @@ impl Repl {
         let content_str = content.clone().into();
         self.output_manager.write_status(content_str.clone());
         // Only print to stdout if TUI is not active
-        if self.is_interactive && self.tui_renderer.is_none() {
+        if self.is_interactive && !self.is_tui_active() {
             eprintln!("{}", content_str);
         }
     }
@@ -518,7 +517,7 @@ impl Repl {
         let content_str = content.clone().into();
         self.output_manager.write_error(content_str.clone());
         // Only print to stdout if TUI is not active
-        if self.is_interactive && self.tui_renderer.is_none() {
+        if self.is_interactive && !self.is_tui_active() {
             eprintln!("{}", content_str);
         }
     }
@@ -551,11 +550,26 @@ impl Repl {
         self.status_bar.clear_operation();
     }
 
+    /// Check if TUI is active
+    fn is_tui_active(&self) -> bool {
+        use crate::cli::global_output::get_global_tui_renderer;
+        let tui_renderer = get_global_tui_renderer();
+        if let Ok(tui_lock) = tui_renderer.lock() {
+            tui_lock.is_some()
+        } else {
+            false
+        }
+    }
+
     /// Render the TUI (if enabled)
     fn render_tui(&mut self) {
-        if let Some(ref mut tui) = self.tui_renderer {
-            if let Err(e) = tui.render() {
-                self.output_error(format!("⚠️  TUI render error: {}", e));
+        use crate::cli::global_output::get_global_tui_renderer;
+        let tui_renderer = get_global_tui_renderer();
+        if let Ok(mut tui_lock) = tui_renderer.lock() {
+            if let Some(ref mut tui) = *tui_lock {
+                if let Err(e) = tui.render() {
+                    self.output_error(format!("⚠️  TUI render error: {}", e));
+                }
             }
         }
     }
@@ -966,21 +980,34 @@ impl Repl {
         mut rx: mpsc::Receiver<Result<String>>,
     ) -> Result<String> {
         let mut full_response = String::new();
-        let mut stdout = io::stdout();
 
         // Print newline to start response area
         if self.is_interactive {
             self.output_status("");
         }
 
+        // Start a new Claude response in the output buffer
+        if full_response.is_empty() {
+            self.output_manager.write_claude(String::new());
+        }
+
         while let Some(result) = rx.recv().await {
             match result {
                 Ok(text_chunk) => {
-                    // Print chunk immediately
-                    print!("{}", text_chunk);
-                    stdout.flush()?;
-
                     full_response.push_str(&text_chunk);
+
+                    // Update the output buffer with the chunk
+                    self.output_manager.append_claude(text_chunk.clone());
+
+                    // Render TUI to show the update (if active)
+                    if self.is_tui_active() {
+                        self.render_tui();
+                    } else {
+                        // Fallback: print chunk directly if no TUI
+                        use std::io::Write;
+                        print!("{}", text_chunk);
+                        let _ = std::io::stdout().flush();
+                    }
                 }
                 Err(e) => {
                     return Err(e);
@@ -1039,70 +1066,121 @@ impl Repl {
         let flag_clone = shutdown_flag.clone();
 
         ctrlc::set_handler(move || {
-            flag_clone.store(true, Ordering::SeqCst);
+            let already_requested = flag_clone.swap(true, Ordering::SeqCst);
+            if already_requested {
+                // Second Ctrl+C: Force exit immediately
+                eprintln!("\n⚠️  Force exit - cleaning up terminal...");
+
+                // Emergency terminal cleanup
+                let _ = crossterm::terminal::disable_raw_mode();
+                let _ = crossterm::execute!(
+                    std::io::stdout(),
+                    crossterm::cursor::Show,
+                    crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
+                );
+
+                std::process::exit(130); // Standard exit code for SIGINT
+            }
         })?;
 
         loop {
-            // Check for shutdown
+            // Check for shutdown (Ctrl+C)
             if shutdown_flag.load(Ordering::SeqCst) {
+                eprintln!("[DEBUG] Shutdown flag detected");
+
+                // CRITICAL: Disable raw mode FIRST so Ctrl+C can work if shutdown hangs
+                eprintln!("[DEBUG] Disabling raw mode...");
+                let _ = crossterm::terminal::disable_raw_mode();
+
                 if self.is_interactive {
-                    self.output_status("");
+                    eprintln!();
+                    eprintln!("^C interrupt - shutting down...");
+                    eprintln!("(Press Ctrl+C again to force quit)");
                 }
+
+                eprintln!("[DEBUG] Saving models...");
                 self.save_models().await?;
+
                 if self.is_interactive {
-                    self.output_status("Models saved. Goodbye!");
+                    eprintln!("Models saved. Goodbye!");
                 }
+
+                // Shutdown TUI before exiting (in case Ctrl+C was pressed during processing)
+                if self.is_tui_active() {
+                    eprintln!("[DEBUG] Shutting down TUI...");
+                    use crate::cli::global_output::shutdown_global_tui;
+                    let _ = shutdown_global_tui();
+                    eprintln!("[DEBUG] TUI shutdown returned");
+                }
+                eprintln!("[DEBUG] Breaking from main loop");
                 break;
             }
 
-            // Read input using readline or fallback
-            let input = if self.input_handler.is_some() {
-                // Interactive mode with readline support
+            // Read input using TUI integrated input, readline, or fallback
+            let input = if self.is_tui_active() {
+                // TUI MODE: use integrated tui-textarea input
+                use crate::cli::global_output::get_global_tui_renderer;
+                let tui_renderer = get_global_tui_renderer();
 
-                // Render TUI before showing prompt (if enabled)
-                self.render_tui();
+                let line = if let Ok(mut tui_lock) = tui_renderer.lock() {
+                    if let Some(ref mut tui) = *tui_lock {
+                        match tui.read_line()? {
+                            Some(text) => Some(text),
+                            None => {
+                                // Ctrl+C or Esc - exit gracefully
 
-                if self.tui_renderer.is_none() {
-                    // Standard mode: print separator
+                                // CRITICAL: Disable raw mode FIRST so Ctrl+C works if shutdown hangs
+                                drop(tui_lock); // Release lock BEFORE disabling raw mode
+                                let _ = crossterm::terminal::disable_raw_mode();
+
+                                eprintln!();
+                                eprintln!("Shutting down gracefully...");
+                                eprintln!("(Press Ctrl+C again to force quit if it hangs)");
+
+                                self.save_models().await?;
+                                eprintln!("Models saved.");
+
+                                // Shutdown TUI
+                                use crate::cli::global_output::shutdown_global_tui;
+                                let _ = shutdown_global_tui();
+                                eprintln!("Goodbye!");
+                                break;
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                match line {
+                    Some(text) => text,
+                    None => continue, // Fallback if TUI lock fails
+                }
+            } else if self.input_handler.is_some() {
+                // RAW MODE: use rustyline (traditional CLI)
+                if self.is_interactive {
                     self.output_status("");
                     self.print_separator();
                 }
 
-                let line = {
-                    let prompt = self.get_prompt();
-
-                    // Suspend TUI before readline (if enabled)
-                    if let Some(ref mut tui) = self.tui_renderer {
-                        let _ = tui.suspend();
-                    }
-
-                    let handler = self.input_handler.as_mut().unwrap();
-                    let result = handler.read_line(&prompt)?;
-
-                    // Resume TUI after readline (if enabled)
-                    if let Some(ref mut tui) = self.tui_renderer {
-                        let _ = tui.resume();
-                    }
-
-                    result
-                };
+                let prompt = self.get_prompt();
+                let handler = self.input_handler.as_mut().unwrap();
+                let line = handler.read_line(&prompt)?;
 
                 match line {
                     Some(text) => text,
                     None => {
                         // Ctrl+C or Ctrl+D - graceful exit
-                        if self.tui_renderer.is_none() {
-                            self.output_status("");
-                        }
+                        self.output_status("");
                         self.save_models().await?;
                         if let Some(ref mut handler) = self.input_handler {
                             if let Err(e) = handler.save_history() {
                                 self.output_status(format!("⚠️  Failed to save history: {}", e));
                             }
                         }
-                        if self.tui_renderer.is_none() {
-                            self.output_status("Models saved. Goodbye!");
-                        }
+                        self.output_status("Models saved. Goodbye!");
                         break;
                     }
                 }
@@ -1253,11 +1331,30 @@ impl Repl {
             }
         }
 
+        eprintln!("[DEBUG] After main loop - final cleanup");
+
         // Before exiting REPL, save any pending patterns
         if let Err(e) = self.save_models().await {
-            self.output_status(format!("⚠️  Failed to save on exit: {}", e));
+            eprintln!("⚠️  Failed to save on exit: {}", e);
         }
 
+        eprintln!("[DEBUG] Final save complete, disabling raw mode");
+        // Disable raw mode first so terminal is responsive
+        let _ = crossterm::terminal::disable_raw_mode();
+
+        // Shutdown TUI and restore terminal state (if not already done)
+        // This is a safety net - TUI should already be shut down in the break paths above
+        if self.is_tui_active() {
+            eprintln!("[DEBUG] Final TUI shutdown (safety net)");
+            use crate::cli::global_output::shutdown_global_tui;
+
+            // shutdown_global_tui now has its own timeout/retry logic
+            if let Err(e) = shutdown_global_tui() {
+                eprintln!("Warning: Failed to shutdown TUI: {}", e);
+            }
+        }
+
+        eprintln!("[DEBUG] Exiting run() function");
         Ok(())
     }
 

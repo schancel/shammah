@@ -1,6 +1,13 @@
-use anyhow::{Context, Result};
-use inquire::{Confirm, MultiSelect, Select, Text};
+// Menu - User interaction with native ratatui dialogs
+//
+// Provides select, multiselect, text input, and confirmation dialogs
+// that integrate seamlessly with the TUI without requiring suspend/resume.
+
+use anyhow::Result;
 use std::io::IsTerminal;
+
+use super::global_output::get_global_tui_renderer;
+use super::tui::{Dialog, DialogOption, DialogResult};
 
 /// Menu option with label, optional description, and associated value
 #[derive(Debug, Clone)]
@@ -68,46 +75,45 @@ impl Menu {
             return Ok(options[0].value.clone());
         }
 
-        // Build display labels (with descriptions if provided)
-        let labels: Vec<String> = options
-            .iter()
-            .enumerate()
-            .map(|(idx, opt)| {
-                let number = idx + 1;
-                match &opt.description {
-                    Some(desc) => format!("{}. {} - {}", number, opt.label, desc),
-                    None => format!("{}. {}", number, opt.label),
+        // Try to use TUI dialog if available
+        let tui_renderer = get_global_tui_renderer();
+        let mut tui_lock = tui_renderer.lock().unwrap();
+
+        if let Some(tui) = tui_lock.as_mut() {
+            // Convert MenuOptions to DialogOptions
+            let dialog_options: Vec<DialogOption> = options
+                .iter()
+                .map(|opt| {
+                    if let Some(desc) = &opt.description {
+                        DialogOption::with_description(&opt.label, desc)
+                    } else {
+                        DialogOption::new(&opt.label)
+                    }
+                })
+                .collect();
+
+            // Create dialog
+            let mut dialog = Dialog::select(prompt, dialog_options);
+            if let Some(help) = help_message {
+                dialog = dialog.with_help(help);
+            }
+
+            // Show dialog and get result
+            let result = tui.show_dialog(dialog)?;
+
+            match result {
+                DialogResult::Selected(index) => {
+                    Ok(options[index].value.clone())
                 }
-            })
-            .collect();
-
-        // Create select prompt
-        let mut select = Select::new(prompt, labels);
-        select.vim_mode = true; // Enable j/k keys
-        select.page_size = 10; // Show up to 10 options
-
-        if let Some(help) = help_message {
-            select.help_message = Some(help);
+                DialogResult::Cancelled => {
+                    anyhow::bail!("Menu selection cancelled")
+                }
+                _ => unreachable!("Select dialog should only return Selected or Cancelled"),
+            }
+        } else {
+            // No TUI available, use first option as default
+            Ok(options[0].value.clone())
         }
-
-        // Show menu and get selection
-        let selection = select
-            .prompt()
-            .context("Failed to display menu selection")?;
-
-        // Find selected option by matching the display label
-        // Extract number from selection (format: "N. Label..." or "N. Label - Desc...")
-        let selected_number = selection
-            .split('.')
-            .next()
-            .and_then(|n| n.trim().parse::<usize>().ok())
-            .context("Failed to parse selected option number")?;
-
-        options
-            .into_iter()
-            .nth(selected_number - 1)
-            .map(|opt| opt.value)
-            .context("Selected option not found")
     }
 
     /// Multi-choice menu with checkboxes
@@ -140,43 +146,49 @@ impl Menu {
             return Ok(vec![]);
         }
 
-        // Build display labels
-        let labels: Vec<String> = options
-            .iter()
-            .map(|opt| match &opt.description {
-                Some(desc) => format!("{} - {}", opt.label, desc),
-                None => opt.label.clone(),
-            })
-            .collect();
+        // Try to use TUI dialog if available
+        let tui_renderer = get_global_tui_renderer();
+        let mut tui_lock = tui_renderer.lock().unwrap();
 
-        // Create multiselect prompt
-        let mut multiselect = MultiSelect::new(prompt, labels.clone());
-        multiselect.vim_mode = true;
-        multiselect.page_size = 10;
+        if let Some(tui) = tui_lock.as_mut() {
+            // Convert MenuOptions to DialogOptions
+            let dialog_options: Vec<DialogOption> = options
+                .iter()
+                .map(|opt| {
+                    if let Some(desc) = &opt.description {
+                        DialogOption::with_description(&opt.label, desc)
+                    } else {
+                        DialogOption::new(&opt.label)
+                    }
+                })
+                .collect();
 
-        if let Some(help) = help_message {
-            multiselect.help_message = Some(help);
+            // Create dialog
+            let mut dialog = Dialog::multiselect(prompt, dialog_options);
+            if let Some(help) = help_message {
+                dialog = dialog.with_help(help);
+            }
+
+            // Show dialog and get result
+            let result = tui.show_dialog(dialog)?;
+
+            match result {
+                DialogResult::MultiSelected(indices) => {
+                    let selected_values: Vec<T> = indices
+                        .iter()
+                        .map(|&idx| options[idx].value.clone())
+                        .collect();
+                    Ok(selected_values)
+                }
+                DialogResult::Cancelled => {
+                    anyhow::bail!("Menu selection cancelled")
+                }
+                _ => unreachable!("MultiSelect dialog should only return MultiSelected or Cancelled"),
+            }
+        } else {
+            // No TUI available, return empty
+            Ok(vec![])
         }
-
-        // Show menu and get selections
-        let selections = multiselect
-            .prompt()
-            .context("Failed to display multiselect menu")?;
-
-        // Map selected labels back to values
-        let selected_values: Vec<T> = selections
-            .iter()
-            .filter_map(|selected_label| {
-                // Find the option with matching label
-                options
-                    .iter()
-                    .zip(&labels)
-                    .find(|(_, label)| label == &selected_label)
-                    .map(|(opt, _)| opt.value.clone())
-            })
-            .collect();
-
-        Ok(selected_values)
     }
 
     /// Text input option (for "Other" choice or custom input)
@@ -198,19 +210,31 @@ impl Menu {
             return Ok(default.unwrap_or_default());
         }
 
-        let mut text = Text::new(prompt);
+        // Try to use TUI dialog if available
+        let tui_renderer = get_global_tui_renderer();
+        let mut tui_lock = tui_renderer.lock().unwrap();
 
-        if let Some(help) = help_message {
-            text.help_message = Some(help);
-        }
+        if let Some(tui) = tui_lock.as_mut() {
+            // Create dialog
+            let mut dialog = Dialog::text_input(prompt, default.clone());
+            if let Some(help) = help_message {
+                dialog = dialog.with_help(help);
+            }
 
-        let result = if let Some(def) = default {
-            text.with_default(&def).prompt()
+            // Show dialog and get result
+            let result = tui.show_dialog(dialog)?;
+
+            match result {
+                DialogResult::TextEntered(text) => Ok(text),
+                DialogResult::Cancelled => {
+                    anyhow::bail!("Text input cancelled")
+                }
+                _ => unreachable!("TextInput dialog should only return TextEntered or Cancelled"),
+            }
         } else {
-            text.prompt()
-        };
-
-        result.context("Failed to get text input")
+            // No TUI available, use default or empty
+            Ok(default.unwrap_or_default())
+        }
     }
 
     /// Confirmation prompt (yes/no)
@@ -227,10 +251,28 @@ impl Menu {
             return Ok(default);
         }
 
-        Confirm::new(prompt)
-            .with_default(default)
-            .prompt()
-            .context("Failed to get confirmation")
+        // Try to use TUI dialog if available
+        let tui_renderer = get_global_tui_renderer();
+        let mut tui_lock = tui_renderer.lock().unwrap();
+
+        if let Some(tui) = tui_lock.as_mut() {
+            // Create dialog
+            let dialog = Dialog::confirm(prompt, default);
+
+            // Show dialog and get result
+            let result = tui.show_dialog(dialog)?;
+
+            match result {
+                DialogResult::Confirmed(answer) => Ok(answer),
+                DialogResult::Cancelled => {
+                    anyhow::bail!("Confirmation cancelled")
+                }
+                _ => unreachable!("Confirm dialog should only return Confirmed or Cancelled"),
+            }
+        } else {
+            // No TUI available, use default
+            Ok(default)
+        }
     }
 }
 
@@ -263,17 +305,12 @@ mod tests {
     }
 
     #[test]
-    fn test_single_option() {
-        // In non-TTY mode, should return first option
-        let options = vec![MenuOption::new("Only option", 42)];
-        // Note: This test will pass in non-TTY environments
-        // In TTY environments, it would require actual user interaction
-    }
-
-    #[test]
     fn test_multiselect_empty_options_fails() {
         let options: Vec<MenuOption<i32>> = vec![];
         let result = Menu::multiselect("Test", options, None);
         assert!(result.is_err());
     }
+
+    // Note: Interactive tests would require a real TUI environment
+    // These tests verify the non-interactive fallback behavior
 }

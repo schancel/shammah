@@ -4,7 +4,7 @@
 
 use ratatui::{
     buffer::Buffer,
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Widget},
@@ -41,8 +41,8 @@ impl<'a> StatusWidget<'a> {
                 Style::default().fg(Color::Yellow)
             }
             StatusLineType::Custom(_) => {
-                // Custom status lines: white
-                Style::default().fg(Color::White)
+                // Custom status lines: readable dark gray
+                Style::default().fg(Color::DarkGray)
             }
         }
     }
@@ -75,12 +75,13 @@ impl<'a> Widget for StatusWidget<'a> {
             lines
         };
 
-        // Create paragraph
+        // Create paragraph with top border and "Status" title
         let paragraph = Paragraph::new(lines).block(
             Block::default()
-                .borders(Borders::ALL)
+                .borders(Borders::TOP)
                 .title(" Status ")
-                .style(Style::default().fg(Color::Gray)),
+                .title_alignment(Alignment::Right)
+                .border_style(Style::default().fg(Color::Gray)),
         );
 
         paragraph.render(area, buf);

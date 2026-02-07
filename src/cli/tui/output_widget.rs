@@ -1,6 +1,17 @@
 // Output Widget - Renders the scrollable output area
 //
 // Displays messages from OutputManager in the top section of the TUI
+//
+// NOTE: This widget is currently UNUSED in the TUI implementation.
+// The current design uses Viewport::Inline(6) which renders only the bottom 6 lines
+// (3 for input + 3 for status). All conversation output (user queries, Claude responses,
+// tool output) is written directly to stdout above the TUI viewport and scrolls naturally
+// in the terminal's scrollback buffer.
+//
+// This widget is fully implemented and ready for future use if we expand the viewport
+// to include a TUI-native output area (e.g., Viewport::Inline(20) for split-screen mode).
+// For now, the flush-through pattern (OutputManager buffering + periodic flush) provides
+// better UX with full terminal scrollback and history persistence.
 
 use ratatui::{
     buffer::Buffer,

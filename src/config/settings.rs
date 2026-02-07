@@ -75,7 +75,7 @@ impl Config {
             crisis_keywords_path: project_dir.join("data/crisis_keywords.json"),
             metrics_dir: home.join(".shammah/metrics"),
             streaming_enabled: true, // Enable by default
-            tui_enabled: false,      // Disabled by default for Phase 2 (testing)
+            tui_enabled: true,       // TUI is the default for interactive terminals
             constitution_path,
             server: ServerConfig::default(),
         }
