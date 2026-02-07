@@ -6,6 +6,7 @@ mod conversation;
 pub mod global_output; // Phase 3.5: Global output system with macros
 mod input;
 pub mod menu;
+pub mod output_layer; // Phase 3.5: Tracing integration
 mod output_manager;
 mod repl;
 mod status_bar;

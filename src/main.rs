@@ -7,12 +7,14 @@ use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
 
 use shammah::claude::ClaudeClient;
+use shammah::cli::output_layer::OutputManagerLayer;
 use shammah::cli::{ConversationHistory, Repl};
 use shammah::config::load_config;
 use shammah::crisis::CrisisDetector;
 use shammah::metrics::MetricsLogger;
 use shammah::models::ThresholdRouter;
 use shammah::router::Router;
+use tracing_subscriber::prelude::*;
 
 #[derive(Parser, Debug)]
 #[command(name = "shammah")]
@@ -105,8 +107,8 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Initialize tracing
-    tracing_subscriber::fmt::init();
+    // Initialize tracing with custom OutputManager layer
+    init_tracing();
 
     // Load configuration
     let config = load_config()?;
@@ -175,12 +177,45 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Initialize tracing with custom OutputManager layer
+///
+/// This routes all tracing logs (from dependencies and our code) through
+/// the OutputManager so they appear in the TUI instead of printing directly.
+fn init_tracing() {
+    // Check if debug logging should be enabled
+    let show_debug = std::env::var("SHAMMAH_DEBUG")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+
+    // Create our custom output layer
+    let output_layer = if show_debug {
+        OutputManagerLayer::with_debug()
+    } else {
+        OutputManagerLayer::new()
+    };
+
+    // Create environment filter for log level control
+    // Default: INFO level, can be overridden with RUST_LOG env var
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    // Build the subscriber with our custom layer
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(output_layer)
+        .init();
+
+    // Bridge log crate → tracing (for dependencies using log crate)
+    // Do this after subscriber is set up
+    tracing_log::LogTracer::init().ok();
+}
+
 /// Run HTTP daemon server
 async fn run_daemon(bind_address: String) -> Result<()> {
     use shammah::server::{AgentServer, ServerConfig};
 
-    // Initialize tracing
-    tracing_subscriber::fmt::init();
+    // Initialize tracing with custom OutputManager layer
+    init_tracing();
 
     tracing::info!("Starting Shammah in daemon mode");
 

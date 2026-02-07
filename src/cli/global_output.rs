@@ -105,10 +105,21 @@ macro_rules! output_status {
 }
 
 /// Output error message
+/// In non-interactive mode, prints to stderr if SHAMMAH_LOG=1
+/// In interactive mode, writes to buffer for TUI
 #[macro_export]
 macro_rules! output_error {
     ($($arg:tt)*) => {{
-        $crate::cli::global_output::global_output().write_error(format!($($arg)*));
+        let content = format!($($arg)*);
+        if $crate::cli::global_output::is_non_interactive() {
+            // Non-interactive mode: print to stderr if logging enabled
+            if $crate::cli::global_output::logging_enabled() {
+                eprintln!("[ERROR] {}", content);
+            }
+        } else {
+            // Interactive mode: write to buffer for TUI
+            $crate::cli::global_output::global_output().write_error(content);
+        }
     }};
 }
 
