@@ -8,6 +8,18 @@
 
 ---
 
+## Current Status
+
+**Completed:** Phases 1, 2, 3 ✅
+**Current:** Phase 3.5 (Critical Fix) 🔴
+**Blocked:** Phase 4, 5 (waiting on 3.5)
+
+**Issue:** When TUI was enabled for testing, discovered output routing is completely broken. All background tasks and dependency logs print directly to terminal, bypassing OutputManager. TUI becomes unusable.
+
+**Solution:** Phase 3.5 implements global output system with macros + tracing integration to capture ALL output before proceeding to Phase 4.
+
+---
+
 ## Phase 1: Output Abstraction Layer (Foundation)
 
 **Status:** ✅ COMPLETE (2026-02-06)
@@ -249,6 +261,201 @@ $ cargo run --example phase1_demo
 Full async event loop refactoring (with tokio::select! for input/output/render)
 was deferred to Phase 4. Current implementation uses synchronous coordination
 which works well for CLI use case.
+
+**Critical Issue Discovered:**
+When TUI was enabled for testing, output was completely broken because:
+- Background tasks (model loading) print directly with eprintln!
+- Tracing logs from dependencies print directly
+- ~300+ println!/eprintln! calls bypass OutputManager
+- TUI enters alternate screen but output continues to regular terminal
+- Result: Complete chaos, unreadable menus, mixed output
+
+**Solution: Phase 3.5** (must complete before Phase 4)
+
+---
+
+## Phase 3.5: Fix Output Routing (CRITICAL)
+
+**Status:** 🟡 In Progress (Part 1/6 Complete)
+
+**Goal:** Route ALL output through OutputManager so TUI works properly
+
+### Problem Analysis:
+
+**Direct output locations found:**
+- ~266 `println!()` calls throughout codebase
+- ~48 `eprintln!()` calls throughout codebase
+- Tracing logs from dependencies (tokio, reqwest, hf-hub, candle)
+- Background task output (model loading, downloading)
+- Tool execution output
+- Startup messages during Repl::new()
+
+**Why TUI breaks:**
+1. TUI enters alternate screen in Repl::new()
+2. But startup messages print before/during construction
+3. Background tasks continue printing with eprintln!
+4. Tracing logs print directly to stderr
+5. Everything overlaps with TUI rendering
+
+### Design Decision: Hybrid Approach
+
+**Problem:** Global state makes testing hard (race conditions between tests)
+
+**Solution:** Hybrid dependency injection + globals
+
+- **For our code:** Pass OutputManager/StatusBar as parameters (testable)
+- **For external code:** Use global macros (background tasks, tracing layer)
+- **For tests:** Create local instances (no races, isolated)
+
+**Benefits:**
+- ✅ Tests are isolated (no global state)
+- ✅ External code can still access output (macros)
+- ✅ Flexible (can inject mocks if needed)
+- ✅ No need for `serial_test` crate
+
+### Tasks:
+
+- [x] **Part 1: Global Output System (Hybrid)** ✅
+  - [x] Create `src/cli/global_output.rs`
+  - [x] Add `once_cell` dependency for Lazy static
+  - [x] Create global `GLOBAL_OUTPUT: Lazy<Arc<OutputManager>>`
+  - [x] Create global `GLOBAL_STATUS: Lazy<Arc<StatusBar>>`
+  - [x] Add helper: `is_non_interactive()` - Check if stdout is TTY
+  - [x] Add helper: `logging_enabled()` - Check SHAMMAH_LOG env var
+  - [x] Implement macros (use globals):
+    - [x] `output_user!()` - User queries
+    - [x] `output_claude!()` - Claude responses
+      - [x] Print to stdout in non-interactive mode (for piping)
+    - [x] `output_claude_append!()` - Streaming append
+    - [x] `output_tool!()` - Tool execution
+    - [x] `output_status!()` - Status messages
+      - [x] Silent in non-interactive (unless SHAMMAH_LOG=1)
+    - [x] `output_error!()` - Errors
+    - [x] `output_progress!()` - Progress updates
+      - [x] Silent in non-interactive (unless SHAMMAH_LOG=1)
+    - [x] `status_training!()` - Training stats
+      - [x] Silent in non-interactive (unless SHAMMAH_LOG=1)
+    - [x] `status_download!()` - Download progress
+      - [x] Silent in non-interactive (unless SHAMMAH_LOG=1)
+    - [x] `status_operation!()` - Operation status
+      - [x] Silent in non-interactive (unless SHAMMAH_LOG=1)
+    - [x] `status_clear_operation!()` - Clear operation status
+  - [x] Keep OutputManager/StatusBar as instantiable structs
+  - [x] Add unit tests using local instances (tests in global_output.rs)
+  - [x] Export from `src/cli/mod.rs`
+  - [x] Create demo: `examples/global_output_demo.rs`
+  - [x] Test interactive mode behavior
+  - [x] Test non-interactive mode (piped output)
+  - [x] Test SHAMMAH_LOG=1 behavior
+  - [x] Committed: Phase 3.5 Part 1 (commit 7c0408a)
+
+- [ ] **Part 2: Tracing Integration**
+  - [ ] Create `src/cli/output_layer.rs`
+  - [ ] Add `tracing-log` dependency (bridge log→tracing)
+  - [ ] Implement `OutputManagerLayer` for tracing
+  - [ ] Add `MessageVisitor` to extract log messages
+  - [ ] Map log levels to output types:
+    - [ ] ERROR → `output_error!()`
+    - [ ] WARN → `output_status!("⚠️  {}")`
+    - [ ] INFO → `output_status!()`
+    - [ ] DEBUG/TRACE → Skip or optional
+  - [ ] Add formatting flexibility:
+    - [ ] Strip ugly module paths
+    - [ ] Clean up timestamp format
+    - [ ] Customize message format
+  - [ ] Initialize in `src/main.rs` before anything else
+  - [ ] Add `EnvFilter` for log level control
+
+- [ ] **Part 3: Replace Direct Output in cli/**
+  - [ ] Strategy: Use instance methods where possible (testable), macros where necessary
+  - [ ] Update `Repl` to keep using instance methods
+    - [ ] `self.output_manager.write_user()` (testable)
+    - [ ] Remove dual println! logic (TUI always active in interactive mode)
+  - [ ] Replace background/startup println!/eprintln! with macros
+  - [ ] Find all println!/eprintln! in `src/cli/repl.rs`
+  - [ ] Replace with appropriate macros or instance methods
+  - [ ] Fix startup messages in Repl::new() (use macros)
+  - [ ] Fix tool execution messages
+  - [ ] Fix menu output
+  - [ ] Fix status line printing
+  - [ ] Keep eprintln! only for pre-TUI initialization errors
+
+- [ ] **Part 4: Fix Background Tasks**
+  - [ ] Update `src/models/bootstrap.rs` (model loading)
+  - [ ] Update `src/models/download.rs` (downloads)
+  - [ ] Replace eprintln! with output_status!() or tracing
+  - [ ] Test model loading with TUI
+  - [ ] Test download progress with TUI
+
+- [ ] **Part 5: TUI Initialization Fix**
+  - [ ] Initialize TUI at VERY START of Repl::run() (before any output)
+  - [ ] TUI reads from Repl's output_manager/status_bar instances (not globals)
+  - [ ] Background tasks started in new() write to globals
+  - [ ] When TUI starts, it shows buffered messages from globals
+  - [ ] Consider: sync global buffer → instance buffer on TUI init
+  - [ ] Handle TUI initialization errors gracefully
+  - [ ] TUI is ALWAYS active in interactive mode (not optional)
+  - [ ] Non-interactive mode:
+    - [ ] No TUI
+    - [ ] Claude responses → stdout (for piping)
+    - [ ] Status/errors → buffer only (silent unless SHAMMAH_LOG=1)
+    - [ ] SHAMMAH_LOG=1 → print logs to stderr
+
+- [ ] **Part 6: Testing**
+  - [ ] Write unit tests using local OutputManager instances
+    - [ ] No global state in tests (no races)
+    - [ ] Each test creates its own instances
+    - [ ] Test OutputManager methods directly
+  - [ ] Write integration tests for macros
+    - [ ] Test that macros write to globals
+    - [ ] Clear global buffer between integration tests if needed
+  - [ ] Test non-interactive mode
+    - [ ] Pipe test: echo "query" | shammah | grep "response"
+    - [ ] Verify only Claude output on stdout
+    - [ ] Verify logs don't pollute stdout
+    - [ ] Test SHAMMAH_LOG=1 enables logging
+  - [ ] Test interactive mode (TUI)
+    - [ ] Verify startup messages appear in TUI
+    - [ ] Verify model download logs appear in TUI
+    - [ ] Verify streaming output works
+    - [ ] Verify menus are readable
+    - [ ] Test tool execution output
+    - [ ] Test error handling
+    - [ ] Test terminal resize
+
+- [ ] **Commit Phase 3.5**
+  - [ ] Review all changes
+  - [ ] Run `cargo fmt`
+  - [ ] Run `cargo clippy`
+  - [ ] Test extensively
+  - [ ] Commit with message: "Phase 3.5: Fix output routing with global system"
+
+**Files to Create:**
+- `src/cli/global_output.rs` (global OutputManager + macros)
+- `src/cli/output_layer.rs` (tracing integration)
+
+**Files to Modify:**
+- `Cargo.toml` (add once_cell, tracing-log)
+- `src/cli/mod.rs` (export global_output)
+- `src/cli/repl.rs` (fix TUI init timing, keep using instances)
+- `src/models/bootstrap.rs` (use macros for background logging)
+- `src/models/download.rs` (use macros for progress)
+- `src/main.rs` (initialize tracing layer)
+- Background tasks (use macros where can't inject)
+- Tests (use local instances, not globals)
+
+**Success Criteria:**
+- ✅ TUI enters alternate screen cleanly
+- ✅ TUI initializes before any output appears
+- ✅ All logs from dependencies captured (tracing layer)
+- ✅ Background task logs appear in TUI
+- ✅ Streaming output works correctly
+- ✅ Menus are readable in TUI
+- ✅ Status bar updates properly
+- ✅ Non-interactive mode: clean stdout (only Claude responses)
+- ✅ Non-interactive mode: logs silent (unless SHAMMAH_LOG=1)
+- ✅ Tests are isolated (no global state races)
+- ✅ Unit tests pass without interference
 
 ---
 
