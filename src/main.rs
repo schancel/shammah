@@ -40,10 +40,6 @@ struct Args {
     /// Alias for --raw (for backwards compatibility)
     #[arg(long = "no-tui")]
     no_tui: bool,
-
-    /// Use new event loop mode (concurrent query execution)
-    #[arg(long = "event-loop")]
-    event_loop: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -215,22 +211,15 @@ async fn main() -> Result<()> {
         eprintln!("[DEBUG] Starting REPL...");
     }
 
-    // Choose event loop mode or traditional mode
-    if args.event_loop {
-        if std::env::var("SHAMMAH_DEBUG").is_ok() {
-            eprintln!("[DEBUG] Using event loop mode");
-        }
-        // TODO: Process initial prompt before event loop
-        if args.initial_prompt.is_some() {
-            eprintln!("Warning: --initial-prompt not yet supported with --event-loop");
-        }
-        repl.run_event_loop().await?;
-    } else {
-        if std::env::var("SHAMMAH_DEBUG").is_ok() {
-            eprintln!("[DEBUG] Using traditional blocking mode");
-        }
-        repl.run_with_initial_prompt(args.initial_prompt).await?;
+    // Use event loop mode by default (automatic detection)
+    // Falls back to traditional mode if TUI is not available or --raw is used
+    if std::env::var("SHAMMAH_DEBUG").is_ok() {
+        eprintln!("[DEBUG] Starting REPL (event loop with fallback)...");
     }
+
+    // Try event loop first (requires TUI)
+    // If TUI is not available, run_event_loop() will automatically fall back
+    repl.run_event_loop(args.initial_prompt).await?;
 
     if std::env::var("SHAMMAH_DEBUG").is_ok() {
         eprintln!("[DEBUG] REPL exited, returning from main");

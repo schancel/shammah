@@ -68,7 +68,7 @@ impl EventLoop {
         conversation: Arc<RwLock<ConversationHistory>>,
         claude_client: Arc<ClaudeClient>,
         tool_definitions: Vec<ToolDefinition>,
-        tool_executor: Arc<ToolExecutor>,
+        tool_executor: Arc<Mutex<ToolExecutor>>,
         tui_renderer: TuiRenderer,
         output_manager: Arc<OutputManager>,
         status_bar: Arc<StatusBar>,
@@ -477,7 +477,7 @@ impl EventLoop {
         &mut self,
         _query_id: Uuid,
         tool_use: crate::tools::types::ToolUse,
-        response_tx: tokio::sync::oneshot::Sender<crate::cli::repl::ConfirmationResult>,
+        response_tx: tokio::sync::oneshot::Sender<super::events::ConfirmationResult>,
     ) -> Result<()> {
         use super::events::ConfirmationResult;
 
@@ -515,16 +515,11 @@ impl EventLoop {
                 }
                 2 => {
                     // Create pattern from tool use
-                    let pattern = ToolPattern {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        pattern: format!("{}:*", tool_use.name),
-                        tool_name: tool_use.name.clone(),
-                        description: format!("Auto-generated pattern for {}", tool_use.name),
-                        created_at: chrono::Utc::now(),
-                        match_count: 0,
-                        pattern_type: crate::tools::patterns::PatternType::Wildcard,
-                        last_used: None,
-                    };
+                    let pattern = ToolPattern::new(
+                        format!("{}:*", tool_use.name),
+                        tool_use.name.clone(),
+                        format!("Auto-generated pattern for {}", tool_use.name),
+                    );
                     ConfirmationResult::ApprovePatternSession(pattern)
                 }
                 3 => {
@@ -533,16 +528,11 @@ impl EventLoop {
                 }
                 4 => {
                     // Create pattern from tool use
-                    let pattern = ToolPattern {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        pattern: format!("{}:*", tool_use.name),
-                        tool_name: tool_use.name.clone(),
-                        description: format!("Auto-generated pattern for {}", tool_use.name),
-                        created_at: chrono::Utc::now(),
-                        match_count: 0,
-                        pattern_type: crate::tools::patterns::PatternType::Wildcard,
-                        last_used: None,
-                    };
+                    let pattern = ToolPattern::new(
+                        format!("{}:*", tool_use.name),
+                        tool_use.name.clone(),
+                        format!("Auto-generated pattern for {}", tool_use.name),
+                    );
                     ConfirmationResult::ApprovePatternPersistent(pattern)
                 }
                 _ => ConfirmationResult::Deny,

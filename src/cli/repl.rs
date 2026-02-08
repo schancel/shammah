@@ -57,15 +57,8 @@ enum ConfirmationChoice {
     Deny,
 }
 
-/// Result of a tool execution confirmation prompt
-pub enum ConfirmationResult {
-    ApproveOnce,
-    ApproveExactSession(ToolSignature),
-    ApprovePatternSession(ToolPattern),
-    ApproveExactPersistent(ToolSignature),
-    ApprovePatternPersistent(ToolPattern),
-    Deny,
-}
+// Use ConfirmationResult from event loop module
+use super::repl_event::ConfirmationResult;
 
 /// Get current terminal width, or default to 80 if not a TTY
 fn terminal_width() -> usize {
@@ -1051,11 +1044,43 @@ impl Repl {
     }
 
     /// Run REPL in event loop mode (concurrent queries and tools)
-    pub async fn run_event_loop(&mut self) -> Result<()> {
-        // TODO: Implement full EventLoop integration
-        // For now, fall back to regular run() method
-        self.output_status("Note: Event loop mode not fully implemented yet, using regular mode");
-        self.run().await
+    /// Falls back to traditional mode if TUI is not available
+    pub async fn run_event_loop(&mut self, initial_prompt: Option<String>) -> Result<()> {
+        use crate::cli::global_output::get_global_tui_renderer;
+        use crate::cli::repl_event::EventLoop;
+
+        // Check if TUI is available (required for event loop)
+        let tui_renderer = {
+            let mut tui_lock = get_global_tui_renderer().lock().unwrap();
+            match tui_lock.take() {
+                Some(renderer) => renderer,
+                None => {
+                    // TUI not available (raw mode), fall back to traditional REPL
+                    return self.run_with_initial_prompt(initial_prompt).await;
+                }
+            }
+        };
+
+        if self.is_interactive {
+            self.output_status("✓ Event loop mode enabled (concurrent execution)");
+        }
+
+        // Create EventLoop with all dependencies
+        let mut event_loop = EventLoop::new(
+            Arc::clone(&self.conversation),
+            Arc::new(self.claude_client.clone()),
+            self.tool_definitions.clone(),
+            Arc::clone(&self.tool_executor),
+            tui_renderer,
+            Arc::new(self.output_manager.clone()),
+            Arc::new(self.status_bar.clone()),
+            self.streaming_enabled,
+            Arc::clone(&self.local_generator),
+            Arc::clone(&self.tokenizer),
+        );
+
+        // Run the event loop
+        event_loop.run().await
     }
 
     pub async fn run(&mut self) -> Result<()> {

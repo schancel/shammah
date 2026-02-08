@@ -22,7 +22,7 @@ pub struct ToolExecutionCoordinator {
     event_tx: mpsc::UnboundedSender<ReplEvent>,
 
     /// Tool executor (shared, thread-safe)
-    tool_executor: Arc<ToolExecutor>,
+    tool_executor: Arc<tokio::sync::Mutex<ToolExecutor>>,
 
     /// Conversation history (for tools that need context)
     conversation: Arc<RwLock<ConversationHistory>>,
@@ -38,7 +38,7 @@ impl ToolExecutionCoordinator {
     /// Create a new tool execution coordinator
     pub fn new(
         event_tx: mpsc::UnboundedSender<ReplEvent>,
-        tool_executor: Arc<ToolExecutor>,
+        tool_executor: Arc<tokio::sync::Mutex<ToolExecutor>>,
         conversation: Arc<RwLock<ConversationHistory>>,
         local_generator: Arc<RwLock<LocalGenerator>>,
         tokenizer: Arc<TextTokenizer>,
@@ -176,7 +176,9 @@ impl ToolExecutionCoordinator {
             let conversation_snapshot = conversation.read().await.clone();
 
             let result = tool_executor
-                .execute_tool(
+                .lock()
+                .await
+                .execute_tool::<fn() -> anyhow::Result<()>>(
                     &tool_use,
                     Some(&conversation_snapshot),
                     None, // save_fn (not needed in event loop)

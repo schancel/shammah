@@ -9,6 +9,7 @@ pub mod menu;
 pub mod output_layer; // Phase 3.5: Tracing integration
 mod output_manager;
 mod repl;
+pub mod repl_event; // Phase 2-3: Event loop infrastructure
 mod status_bar;
 pub mod tui; // Phase 2: Terminal UI
 
