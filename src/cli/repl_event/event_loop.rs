@@ -118,7 +118,10 @@ impl EventLoop {
         // Cleanup interval (30 seconds)
         let mut cleanup_interval = tokio::time::interval(Duration::from_secs(30));
 
-        loop {
+        // Flag to control the loop
+        let mut should_exit = false;
+
+        while !should_exit {
             tokio::select! {
                 // User input event
                 Some(input) = self.input_rx.recv() => {
@@ -127,7 +130,11 @@ impl EventLoop {
 
                 // REPL event (query complete, tool result, etc.)
                 Some(event) = self.event_rx.recv() => {
-                    self.handle_event(event).await?;
+                    if matches!(event, ReplEvent::Shutdown) {
+                        should_exit = true;
+                    } else {
+                        self.handle_event(event).await?;
+                    }
                 }
 
                 // Periodic rendering
@@ -141,6 +148,8 @@ impl EventLoop {
                 }
             }
         }
+
+        Ok(())
     }
 
     /// Handle user input (query or command)
@@ -353,8 +362,8 @@ impl EventLoop {
             }
 
             ReplEvent::Shutdown => {
-                // TODO: Graceful shutdown
-                std::process::exit(0);
+                // Handled in run() method - this should not be reached
+                unreachable!("Shutdown event should be handled in run() method");
             }
         }
 
