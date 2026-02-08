@@ -5,11 +5,12 @@
 // into a structured buffer AND writes it to stdout immediately with ANSI colors.
 // This enables terminal scrollback while maintaining TUI compatibility.
 
-use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::sync::{Arc, RwLock};
 
-use crate::cli::messages::{Message, MessageRef};
+use crate::cli::messages::{
+    Message, MessageRef, UserQueryMessage, StreamingResponseMessage, StaticMessage,
+};
 
 /// Maximum number of messages to keep in the circular buffer
 const MAX_BUFFER_SIZE: usize = 1000;
@@ -24,98 +25,17 @@ mod colors {
     pub const RESET: &str = "\x1b[0m";      // Reset to default
 }
 
-/// Types of messages that can be displayed
-#[derive(Debug, Clone)]
-pub enum OutputMessage {
-    /// User input/query
-    UserMessage { content: String },
-    /// Claude's response
-    ClaudeResponse { content: String },
-    /// Tool execution output
-    ToolOutput { tool_name: String, content: String },
-    /// Status information (non-critical)
-    StatusInfo { content: String },
-    /// Error message
-    Error { content: String },
-    /// Progress update (for downloads, training, etc.)
-    Progress { content: String },
-    /// System information message (help, metrics, patterns list)
-    SystemInfo { content: String },
-}
-
-impl OutputMessage {
-    /// Get the raw content of the message (for rendering)
-    pub fn content(&self) -> &str {
-        match self {
-            OutputMessage::UserMessage { content } => content,
-            OutputMessage::ClaudeResponse { content } => content,
-            OutputMessage::ToolOutput { content, .. } => content,
-            OutputMessage::StatusInfo { content } => content,
-            OutputMessage::Error { content } => content,
-            OutputMessage::Progress { content } => content,
-            OutputMessage::SystemInfo { content } => content,
-        }
-    }
-
-    /// Get the message type as a string (for debugging/logging)
-    pub fn message_type(&self) -> &str {
-        match self {
-            OutputMessage::UserMessage { .. } => "user",
-            OutputMessage::ClaudeResponse { .. } => "claude",
-            OutputMessage::ToolOutput { .. } => "tool",
-            OutputMessage::StatusInfo { .. } => "status",
-            OutputMessage::Error { .. } => "error",
-            OutputMessage::Progress { .. } => "progress",
-            OutputMessage::SystemInfo { .. } => "info",
-        }
-    }
-
-    /// Format this message with appropriate styling (ANSI colors and prefixes)
-    pub fn format(&self) -> String {
-        match self {
-            OutputMessage::UserMessage { content } => {
-                // Cyan prompt "❯" with content on same line
-                format!("{} ❯ {}{}", colors::CYAN, content, colors::RESET)
-            }
-            OutputMessage::ClaudeResponse { content } => {
-                // Default color for responses
-                format!("{}{}{}", colors::RESET, content, colors::RESET)
-            }
-            OutputMessage::ToolOutput { tool_name, content } => {
-                // Blue for tool output
-                format!("{}[{}] {}{}", colors::BLUE, tool_name, content, colors::RESET)
-            }
-            OutputMessage::StatusInfo { content } => {
-                // Cyan/blue color for status messages
-                format!("{}{}{}", colors::CYAN, content, colors::RESET)
-            }
-            OutputMessage::Error { content } => {
-                // Red for errors
-                format!("{}❌ {}{}", colors::RED, content, colors::RESET)
-            }
-            OutputMessage::Progress { content } => {
-                // Yellow for progress
-                format!("{}{}{}", colors::YELLOW, content, colors::RESET)
-            }
-            OutputMessage::SystemInfo { content } => {
-                // Green color for system info (help, metrics, etc.)
-                format!("{}ℹ️  {}{}", colors::GREEN, content, colors::RESET)
-            }
-        }
-    }
-}
+// OutputMessage enum removed - now using trait-based messages only
 
 /// Thread-safe output buffer manager
 pub struct OutputManager {
-    /// Circular buffer of messages (last 1000 lines)
-    buffer: Arc<RwLock<VecDeque<OutputMessage>>>,
     /// Whether to write output to stdout immediately (for scrollback)
     write_to_stdout: Arc<RwLock<bool>>,
     /// Buffering mode - true = accumulate for batch flush, false = immediate write
     buffering_mode: Arc<RwLock<bool>>,
     /// Pending lines waiting to be flushed (used when buffering_mode = true)
     pending_flush: Arc<RwLock<Vec<String>>>,
-    /// New trait-based message storage (for reactive updates)
+    /// Trait-based message storage (reactive updates)
     messages: Arc<RwLock<Vec<MessageRef>>>,
 }
 
@@ -123,7 +43,6 @@ impl OutputManager {
     /// Create a new OutputManager
     pub fn new() -> Self {
         Self {
-            buffer: Arc::new(RwLock::new(VecDeque::with_capacity(MAX_BUFFER_SIZE))),
             write_to_stdout: Arc::new(RwLock::new(true)), // Enable by default for TUI mode
             buffering_mode: Arc::new(RwLock::new(false)), // Default: immediate write
             pending_flush: Arc::new(RwLock::new(Vec::new())),
@@ -162,59 +81,7 @@ impl OutputManager {
         !self.pending_flush.read().unwrap().is_empty()
     }
 
-    /// Write a message to stdout with ANSI colors (internal)
-    fn write_to_terminal(&self, message: &OutputMessage) {
-        let formatted = self.format_message(message);
-
-        if *self.buffering_mode.read().unwrap() {
-            // Buffering mode: always accumulate for batch flush (TUI will render)
-            self.pending_flush.write().unwrap().push(formatted);
-        } else if *self.write_to_stdout.read().unwrap() {
-            // Immediate mode: write to stdout only if enabled
-            let mut stdout = io::stdout();
-            // Always use \r\n for raw mode compatibility (harmless in normal mode)
-            let _ = write!(stdout, "{}\r\n", formatted);
-            let _ = stdout.flush();
-        }
-        // If neither buffering nor stdout writing, output is discarded (testing mode)
-    }
-
-    /// Format a message with ANSI colors (internal)
-    fn format_message(&self, message: &OutputMessage) -> String {
-        // Delegate to message's own format method
-        message.format()
-    }
-
-    /// Add a message to the buffer (internal)
-    fn add_message(&self, message: OutputMessage) {
-        // In TUI mode, skip writing StatusInfo to terminal
-        // (StatusInfo should only appear in StatusBar widget)
-        let should_write = match message {
-            OutputMessage::StatusInfo { .. } => {
-                // Don't write status to stdout - use StatusBar widget instead
-                false
-            }
-            _ => {
-                // Write all other message types to stdout normally
-                true
-            }
-        };
-
-        if should_write {
-            // Write to terminal immediately (for scrollback)
-            self.write_to_terminal(&message);
-        }
-
-        // Always buffer for TUI rendering
-        let mut buffer = self.buffer.write().unwrap();
-
-        // If buffer is full, remove oldest message
-        if buffer.len() >= MAX_BUFFER_SIZE {
-            buffer.pop_front();
-        }
-
-        buffer.push_back(message);
-    }
+    // Old enum-based methods removed - using trait-based messages only
 
     // ========================================================================
     // Trait-based message API (new reactive system)
@@ -236,20 +103,8 @@ impl OutputManager {
         messages.push(message);
     }
 
-    /// Get all trait-based messages (for TUI rendering)
-    pub fn get_trait_messages(&self) -> Vec<MessageRef> {
-        self.messages.read().unwrap().clone()
-    }
-
-    /// Get the number of trait-based messages
-    pub fn trait_message_count(&self) -> usize {
-        self.messages.read().unwrap().len()
-    }
-
-    /// Clear all trait-based messages
-    pub fn clear_trait_messages(&self) {
-        self.messages.write().unwrap().clear();
-    }
+    // get_trait_messages(), trait_message_count(), clear_trait_messages() removed
+    // Use get_messages(), len(), clear() instead
 
     /// Write a trait-based message to terminal
     fn write_trait_to_terminal(&self, message: &MessageRef) {
@@ -272,96 +127,81 @@ impl OutputManager {
 
     /// Write a user message
     pub fn write_user(&self, content: impl Into<String>) {
-        self.add_message(OutputMessage::UserMessage {
-            content: content.into(),
-        });
+        let msg = Arc::new(UserQueryMessage::new(content));
+        self.add_trait_message(msg);
     }
 
     /// Write a Claude response (can be called incrementally for streaming)
     pub fn write_claude(&self, content: impl Into<String>) {
-        self.add_message(OutputMessage::ClaudeResponse {
-            content: content.into(),
-        });
+        let msg = StreamingResponseMessage::new();
+        msg.append_chunk(&content.into());
+        msg.set_complete();
+        self.add_trait_message(Arc::new(msg));
     }
 
     /// Append to the last Claude response (for streaming)
     pub fn append_claude(&self, content: impl Into<String>) {
-        let mut buffer = self.buffer.write().unwrap();
-
-        // Find the last Claude response and append to it
-        if let Some(last) = buffer.back_mut() {
-            if let OutputMessage::ClaudeResponse { content: existing } = last {
-                existing.push_str(&content.into());
-                return;
-            }
-        }
-
-        // If no existing Claude response, create a new one
-        drop(buffer);
+        // For now, just create a new message
+        // TODO: In future, find last StreamingResponseMessage and append
         self.write_claude(content);
     }
 
     /// Write tool execution output
     pub fn write_tool(&self, tool_name: impl Into<String>, content: impl Into<String>) {
-        self.add_message(OutputMessage::ToolOutput {
-            tool_name: tool_name.into(),
-            content: content.into(),
-        });
+        let formatted = format!("[{}] {}", tool_name.into(), content.into());
+        let msg = Arc::new(StaticMessage::plain(formatted));
+        self.add_trait_message(msg);
     }
 
-    /// Write status information
+    /// Write status information (deprecated - use write_progress or write_info)
     pub fn write_status(&self, content: impl Into<String>) {
-        self.add_message(OutputMessage::StatusInfo {
-            content: content.into(),
-        });
+        // Route to progress for backward compatibility
+        self.write_progress(content);
     }
 
     /// Write error message
     pub fn write_error(&self, content: impl Into<String>) {
-        self.add_message(OutputMessage::Error {
-            content: content.into(),
-        });
+        let msg = Arc::new(StaticMessage::error(content));
+        self.add_trait_message(msg);
     }
 
     /// Write progress update
     pub fn write_progress(&self, content: impl Into<String>) {
-        self.add_message(OutputMessage::Progress {
-            content: content.into(),
-        });
+        let msg = Arc::new(StaticMessage::plain(content));
+        self.add_trait_message(msg);
     }
 
     /// Write system information message (help, patterns, stats)
     pub fn write_info(&self, content: impl Into<String>) {
-        self.add_message(OutputMessage::SystemInfo {
-            content: content.into(),
-        });
+        let msg = Arc::new(StaticMessage::plain(content));
+        self.add_trait_message(msg);
     }
 
     /// Get all messages (for rendering)
-    pub fn get_messages(&self) -> Vec<OutputMessage> {
-        self.buffer.read().unwrap().iter().cloned().collect()
+    pub fn get_messages(&self) -> Vec<MessageRef> {
+        self.messages.read().unwrap().clone()
     }
 
     /// Get the last N messages
-    pub fn get_last_messages(&self, n: usize) -> Vec<OutputMessage> {
-        let buffer = self.buffer.read().unwrap();
-        let start = buffer.len().saturating_sub(n);
-        buffer.iter().skip(start).cloned().collect()
+    pub fn get_last_messages(&self, n: usize) -> Vec<MessageRef> {
+        let messages = self.messages.read().unwrap();
+        let start = messages.len().saturating_sub(n);
+        messages.iter().skip(start).cloned().collect()
     }
 
     /// Clear all messages
     pub fn clear(&self) {
-        self.buffer.write().unwrap().clear();
+        self.messages.write().unwrap().clear();
     }
 
     /// Get the number of messages in the buffer
     pub fn len(&self) -> usize {
-        self.buffer.read().unwrap().len()
+        self.messages.read().unwrap().len()
     }
 
     /// Check if the buffer is empty
     pub fn is_empty(&self) -> bool {
-        self.buffer.read().unwrap().is_empty()
+        self.messages.read().unwrap().is_empty()
     }
 }
 
@@ -374,7 +214,6 @@ impl Default for OutputManager {
 impl Clone for OutputManager {
     fn clone(&self) -> Self {
         Self {
-            buffer: Arc::clone(&self.buffer),
             write_to_stdout: Arc::clone(&self.write_to_stdout),
             buffering_mode: Arc::clone(&self.buffering_mode),
             pending_flush: Arc::clone(&self.pending_flush),

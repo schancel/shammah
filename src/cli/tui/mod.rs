@@ -31,7 +31,6 @@ mod async_input;
 mod dialog;
 mod dialog_widget;
 mod input_widget;
-mod output_widget;
 mod scrollback;
 mod status_widget;
 
@@ -39,7 +38,6 @@ pub use async_input::spawn_input_task;
 pub use dialog::{Dialog, DialogOption, DialogResult, DialogType};
 pub use dialog_widget::DialogWidget;
 pub use input_widget::render_input_widget;
-pub use output_widget::OutputWidget;
 pub use scrollback::ScrollbackBuffer;
 pub use status_widget::StatusWidget;
 
@@ -95,8 +93,6 @@ pub struct TuiRenderer {
     prev_status_content: String,
     /// Track which messages have been permanently written to terminal scrollback
     written_message_ids: std::collections::HashSet<MessageId>,
-    /// Track how many enum messages from output_manager we've processed
-    last_enum_message_count: usize,
 }
 
 impl TuiRenderer {
@@ -261,7 +257,6 @@ impl TuiRenderer {
             prev_input_text: String::new(),
             prev_status_content: String::new(),
             written_message_ids: std::collections::HashSet::new(),
-            last_enum_message_count: 0,
         })
     }
 
@@ -421,72 +416,15 @@ impl TuiRenderer {
     /// Flush pending output to terminal scrollback via insert_before()
     /// Syncs OutputManager messages to ScrollbackBuffer, then renders new ones
     pub fn flush_output_safe(&mut self, output_manager: &OutputManager) -> Result<()> {
-        use crate::cli::output_manager::OutputMessage as OldMessage;
         use std::sync::Arc;
 
         // Track new messages to render
         let mut new_messages_to_render: Vec<MessageRef> = Vec::new();
 
-        // Handle old enum-based messages FIRST (so user input appears before streaming response)
+        // Get all trait-based messages from OutputManager
         let messages = output_manager.get_messages();
 
-        // Add only new messages (messages added since last flush)
-        for msg in messages.iter().skip(self.last_enum_message_count) {
-            // Skip status messages - they're shown in status bar
-            if matches!(msg, OldMessage::StatusInfo { .. }) {
-                continue;
-            }
-
-            // Create trait object from OutputMessage
-            let trait_msg: MessageRef = match msg {
-                OldMessage::UserMessage { content } => {
-                    Arc::new(UserQueryMessage::new(content.clone()))
-                }
-                OldMessage::ClaudeResponse { content } => {
-                    let msg = StreamingResponseMessage::new();
-                    msg.append_chunk(content);
-                    msg.set_complete();
-                    Arc::new(msg)
-                }
-                OldMessage::ToolOutput { tool_name, content } => {
-                    // Use StaticMessage for tool output (formatted)
-                    let formatted = format!("[{}] {}", tool_name, content);
-                    Arc::new(StaticMessage::info(formatted))
-                }
-                OldMessage::Error { content } => {
-                    Arc::new(StaticMessage::error(content.clone()))
-                }
-                OldMessage::Progress { content } => {
-                    // Use plain type - messages already have their own formatting/emojis
-                    Arc::new(StaticMessage::plain(content.clone()))
-                }
-                OldMessage::SystemInfo { content } => {
-                    // Use plain type - messages already have their own formatting/emojis
-                    Arc::new(StaticMessage::plain(content.clone()))
-                }
-                OldMessage::StatusInfo { .. } => unreachable!(), // Already handled above
-            };
-
-            // Skip if this exact content was just added (prevent duplicates)
-            if let Some(last_msg) = self.scrollback.get_last_message() {
-                if last_msg.content() == trait_msg.content() {
-                    // Duplicate detected, skip
-                    continue;
-                }
-            }
-
-            new_messages_to_render.push(trait_msg.clone());
-            self.scrollback.add_message(trait_msg);
-        }
-
-        // Update count of processed enum messages
-        self.last_enum_message_count = messages.len();
-
-        // Handle trait-based messages AFTER enum messages (so they appear after user input)
-        // Pure buffer comparison - add all messages to shadow buffer
-        let trait_messages = output_manager.get_trait_messages();
-
-        for msg in &trait_messages {
+        for msg in &messages {
             let msg_id = msg.id();
 
             // Add to shadow buffer if not already there
@@ -507,7 +445,7 @@ impl TuiRenderer {
 
         // If there are any messages, trigger refresh to keep visible area updated
         // (Messages update in place via Arc<RwLock<>>, so periodic blit keeps display current)
-        if !trait_messages.is_empty() {
+        if !messages.is_empty() {
             self.needs_full_refresh = true;
         }
 

@@ -19,6 +19,6 @@ pub use conversation::ConversationHistory;
 pub use input::InputHandler;
 pub use messages::{Message, MessageId, MessageRef, MessageStatus};
 pub use messages::{ProgressMessage, StaticMessage, StreamingResponseMessage, ToolExecutionMessage, UserQueryMessage};
-pub use output_manager::{OutputManager, OutputMessage};
+pub use output_manager::OutputManager;
 pub use repl::Repl;
 pub use status_bar::{StatusBar, StatusLine, StatusLineType};
