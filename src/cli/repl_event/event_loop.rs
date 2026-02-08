@@ -6,6 +6,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use uuid::Uuid;
 
+use crate::cli::commands::{Command, format_help};
 use crate::cli::conversation::ConversationHistory;
 use crate::cli::output_manager::OutputManager;
 use crate::cli::status_bar::StatusBar;
@@ -156,13 +157,55 @@ impl EventLoop {
     async fn handle_user_input(&mut self, input: String) -> Result<()> {
         // Check if it's a command
         if input.trim().starts_with('/') {
-            // TODO: Handle commands
-            self.output_manager
-                .write_status(format!("Command not implemented yet: {}", input));
-            return Ok(());
+            // Echo the command to output (like user queries)
+            self.output_manager.write_user(input.clone());
+
+            if let Some(command) = Command::parse(&input) {
+                match command {
+                    Command::Quit => {
+                        self.event_tx
+                            .send(ReplEvent::Shutdown)
+                            .context("Failed to send shutdown event")?;
+                    }
+                    Command::Help => {
+                        let help_text = format_help();
+                        self.output_manager.write_info(help_text);
+                        self.render_tui().await?;
+                    }
+                    Command::Metrics => {
+                        // TODO: Pass actual metrics logger when available
+                        self.output_manager.write_info(
+                            "Metrics command not yet fully integrated in event loop."
+                        );
+                        self.render_tui().await?;
+                    }
+                    Command::Training => {
+                        // TODO: Pass actual router/validator when available
+                        self.output_manager.write_info(
+                            "Training command not yet fully integrated in event loop."
+                        );
+                        self.render_tui().await?;
+                    }
+                    _ => {
+                        // All other commands output to scrollback via write_info
+                        self.output_manager.write_info(format!(
+                            "Command recognized but not yet implemented: {}",
+                            input
+                        ));
+                        self.render_tui().await?;
+                    }
+                }
+                return Ok(());
+            } else {
+                // Unknown commands also go to scrollback
+                self.output_manager
+                    .write_info(format!("Unknown command: {}", input));
+                self.render_tui().await?;
+                return Ok(());
+            }
         }
 
-        // Check if it's a quit command
+        // Check if it's a quit command (legacy support)
         if input.trim().eq_ignore_ascii_case("quit")
             || input.trim().eq_ignore_ascii_case("exit")
         {
@@ -171,6 +214,9 @@ impl EventLoop {
                 .context("Failed to send shutdown event")?;
             return Ok(());
         }
+
+        // Echo user input to output buffer
+        self.output_manager.write_user(input.clone());
 
         // Create a new query
         let conversation_snapshot = self.conversation.read().await.snapshot();
@@ -223,6 +269,11 @@ impl EventLoop {
         query_states: Arc<QueryStateManager>,
         tool_coordinator: ToolExecutionCoordinator,
     ) {
+        // Send status update
+        let _ = event_tx.send(ReplEvent::OutputReady {
+            message: "→ Processing query...".to_string(),
+        });
+
         const MAX_TOOL_ITERATIONS: usize = 10;
         let mut iteration = 0;
 

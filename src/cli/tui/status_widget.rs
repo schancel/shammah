@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn test_custom_style() {
         let style = StatusWidget::get_line_style(&StatusLineType::Custom("test".to_string()));
-        assert_eq!(style.fg, Some(Color::White));
+        assert_eq!(style.fg, Some(Color::DarkGray));
     }
 
     #[test]

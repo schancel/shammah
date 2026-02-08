@@ -190,7 +190,7 @@ pub fn handle_command(
     }
 }
 
-fn format_help() -> String {
+pub fn format_help() -> String {
     r#"Available commands:
   /help             - Show this help message
   /quit             - Exit the REPL

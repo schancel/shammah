@@ -37,6 +37,8 @@ pub enum OutputMessage {
     Error { content: String },
     /// Progress update (for downloads, training, etc.)
     Progress { content: String },
+    /// System information message (help, metrics, patterns list)
+    SystemInfo { content: String },
 }
 
 impl OutputMessage {
@@ -49,6 +51,7 @@ impl OutputMessage {
             OutputMessage::StatusInfo { content } => content,
             OutputMessage::Error { content } => content,
             OutputMessage::Progress { content } => content,
+            OutputMessage::SystemInfo { content } => content,
         }
     }
 
@@ -61,6 +64,7 @@ impl OutputMessage {
             OutputMessage::StatusInfo { .. } => "status",
             OutputMessage::Error { .. } => "error",
             OutputMessage::Progress { .. } => "progress",
+            OutputMessage::SystemInfo { .. } => "info",
         }
     }
 }
@@ -152,8 +156,8 @@ impl OutputManager {
                 format!("{}[{}] {}{}", colors::BLUE, tool_name, content, colors::RESET)
             }
             OutputMessage::StatusInfo { content } => {
-                // Default color for status (not yellow - too bright)
-                content.to_string()
+                // Cyan/blue color for status messages
+                format!("{}{}{}", colors::CYAN, content, colors::RESET)
             }
             OutputMessage::Error { content } => {
                 // Red for errors
@@ -162,6 +166,10 @@ impl OutputManager {
             OutputMessage::Progress { content } => {
                 // Yellow for progress
                 format!("{}{}{}", colors::YELLOW, content, colors::RESET)
+            }
+            OutputMessage::SystemInfo { content } => {
+                // Green color for system info (help, metrics, etc.)
+                format!("{}ℹ️  {}{}", colors::GREEN, content, colors::RESET)
             }
         }
     }
@@ -253,6 +261,13 @@ impl OutputManager {
     /// Write progress update
     pub fn write_progress(&self, content: impl Into<String>) {
         self.add_message(OutputMessage::Progress {
+            content: content.into(),
+        });
+    }
+
+    /// Write system information message (help, patterns, stats)
+    pub fn write_info(&self, content: impl Into<String>) {
+        self.add_message(OutputMessage::SystemInfo {
             content: content.into(),
         });
     }
@@ -378,5 +393,18 @@ mod tests {
         manager.clear();
         assert_eq!(manager.len(), 0);
         assert!(manager.is_empty());
+    }
+
+    #[test]
+    fn test_system_info_message() {
+        let manager = OutputManager::new();
+
+        manager.write_info("Help: Available commands...");
+
+        let messages = manager.get_messages();
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(messages[0], OutputMessage::SystemInfo { .. }));
+        assert_eq!(messages[0].content(), "Help: Available commands...");
+        assert_eq!(messages[0].message_type(), "info");
     }
 }

@@ -154,7 +154,7 @@ impl TuiRenderer {
         let backend = CrosstermBackend::new(stdout);
 
         // Use Inline viewport - creates a 6-line window at the bottom
-        // This matches the layout: 1 (input) + 1 (separator) + 4 (status with border) = 6
+        // This matches the layout: 1 (separator) + 1 (input) + 4 (status with border) = 6
         let terminal = Terminal::with_options(
             backend,
             TerminalOptions {
@@ -172,6 +172,30 @@ impl TuiRenderer {
             command_history: Vec::new(),
             history_index: None,
         })
+    }
+
+    /// Switch to fullscreen viewport (for dialogs)
+    fn switch_to_fullscreen(&mut self) -> Result<()> {
+        let backend = CrosstermBackend::new(io::stdout());
+        self.terminal = Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Fullscreen,
+            },
+        ).context("Failed to switch to fullscreen viewport")?;
+        Ok(())
+    }
+
+    /// Switch back to inline viewport (for normal REPL)
+    fn switch_to_inline(&mut self) -> Result<()> {
+        let backend = CrosstermBackend::new(io::stdout());
+        self.terminal = Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Inline(6),
+            },
+        ).context("Failed to switch to inline viewport")?;
+        Ok(())
     }
 
     /// Render the TUI with fixed layout
@@ -313,9 +337,31 @@ impl TuiRenderer {
             anyhow::bail!("Cannot show dialog when TUI is not active");
         }
 
+        // Validate terminal size
+        let (_width, height) = crossterm::terminal::size()
+            .context("Failed to get terminal size")?;
+
+        if height < 15 {
+            anyhow::bail!(
+                "Terminal too small for dialog (need 15+ lines, have {}). Please resize terminal.",
+                height
+            );
+        }
+
+        // Switch to fullscreen viewport for dialog
+        self.switch_to_fullscreen()
+            .context("Failed to switch to fullscreen mode")?;
+
+        // Clear screen for clean dialog display
+        execute!(
+            io::stdout(),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+            crossterm::cursor::MoveTo(0, 0)
+        )?;
+
         self.active_dialog = Some(dialog);
 
-        loop {
+        let result = loop {
             // Render with dialog overlay
             self.render()?;
 
@@ -328,18 +374,25 @@ impl TuiRenderer {
                         .as_mut()
                         .expect("dialog should exist in show_dialog loop");
 
-                    if let Some(result) = dialog.handle_key_event(key) {
-                        // Dialog returned a result, close it
-                        self.active_dialog = None;
-
-                        // Redraw to clear dialog
-                        self.render()?;
-
-                        return Ok(result);
+                    if let Some(dialog_result) = dialog.handle_key_event(key) {
+                        // Dialog returned a result, exit loop
+                        break dialog_result;
                     }
                 }
             }
-        }
+        };
+
+        // Clean up: remove dialog and switch back to inline viewport
+        self.active_dialog = None;
+
+        // Switch back to inline viewport
+        self.switch_to_inline()
+            .context("Failed to switch back to inline mode")?;
+
+        // Trigger a render to restore normal layout
+        self.render()?;
+
+        Ok(result)
     }
 
     /// Read a line of input from the integrated text area

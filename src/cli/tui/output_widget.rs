@@ -102,6 +102,18 @@ impl<'a> OutputWidget<'a> {
                     Style::default().fg(Color::Yellow),
                 ))
             }
+            OutputMessage::SystemInfo { content } => {
+                // System info: green with ℹ️ prefix
+                Line::from(vec![
+                    Span::styled(
+                        "ℹ️  ",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(content.clone(), Style::default().fg(Color::Green)),
+                ])
+            }
         }
     }
 }
