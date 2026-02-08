@@ -30,7 +30,8 @@ pub fn spawn_input_task(
                 if crossterm::event::poll(Duration::from_millis(100))
                     .unwrap_or(false)
                 {
-                    match crossterm::event::read() {
+                    // Process first event
+                    let first_event_result = match crossterm::event::read() {
                         Ok(Event::Key(key)) if key.code == KeyCode::Enter => {
                             // User pressed Enter - extract input and send
                             let input = tui.input_textarea.lines().join("\n");
@@ -49,7 +50,35 @@ pub fn spawn_input_task(
                         }
                         Ok(_) => Ok(None), // Ignore other events (mouse, resize, etc.)
                         Err(e) => Err(anyhow::anyhow!("Failed to read input: {}", e)),
+                    };
+
+                    // Fast path: Check if more events are immediately available (for paste operations)
+                    // Process all available events without delay to make pasting instant
+                    let mut had_input = false;
+                    while crossterm::event::poll(Duration::from_millis(0)).unwrap_or(false) {
+                        match crossterm::event::read() {
+                            Ok(Event::Key(key)) if key.code == KeyCode::Enter => {
+                                // Enter key during batch - will be processed next iteration
+                                break;
+                            }
+                            Ok(Event::Key(key)) => {
+                                // Pass key event to textarea
+                                tui.input_textarea.input(Event::Key(key));
+                                had_input = true;
+                            }
+                            Ok(_) => {} // Ignore other events
+                            Err(_) => break, // Error, stop batching
+                        }
                     }
+
+                    // Render immediately after input (event-driven, not polled)
+                    if had_input {
+                        if let Err(e) = tui.render() {
+                            eprintln!("Render error: {}", e);
+                        }
+                    }
+
+                    first_event_result
                 } else {
                     // No input available, just render
                     Ok(None)
@@ -73,14 +102,8 @@ pub fn spawn_input_task(
                 }
             }
 
-            // Render TUI periodically
-            {
-                let mut tui = tui_renderer.lock().await;
-                if let Err(e) = tui.render() {
-                    eprintln!("Render error: {}", e);
-                    // Don't break on render errors, just log them
-                }
-            }
+            // Only render when input actually changed (event-driven, not polled)
+            // The render will be triggered by event_loop when needed
 
             // Small delay to prevent CPU spinning
             tokio::time::sleep(Duration::from_millis(50)).await;

@@ -425,6 +425,8 @@ impl EventLoop {
     async fn render_tui(&self) -> Result<()> {
         let mut tui = self.tui_renderer.lock().await;
         tui.flush_output_safe(&self.output_manager)?;
+        // Actually render the TUI after flushing output
+        tui.render()?;
         Ok(())
     }
 

@@ -9,6 +9,8 @@ use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::sync::{Arc, RwLock};
 
+use crate::cli::messages::{Message, MessageRef};
+
 /// Maximum number of messages to keep in the circular buffer
 const MAX_BUFFER_SIZE: usize = 1000;
 
@@ -67,6 +69,40 @@ impl OutputMessage {
             OutputMessage::SystemInfo { .. } => "info",
         }
     }
+
+    /// Format this message with appropriate styling (ANSI colors and prefixes)
+    pub fn format(&self) -> String {
+        match self {
+            OutputMessage::UserMessage { content } => {
+                // Cyan prompt "❯" with content on same line
+                format!("{} ❯ {}{}", colors::CYAN, content, colors::RESET)
+            }
+            OutputMessage::ClaudeResponse { content } => {
+                // Default color for responses
+                format!("{}{}{}", colors::RESET, content, colors::RESET)
+            }
+            OutputMessage::ToolOutput { tool_name, content } => {
+                // Blue for tool output
+                format!("{}[{}] {}{}", colors::BLUE, tool_name, content, colors::RESET)
+            }
+            OutputMessage::StatusInfo { content } => {
+                // Cyan/blue color for status messages
+                format!("{}{}{}", colors::CYAN, content, colors::RESET)
+            }
+            OutputMessage::Error { content } => {
+                // Red for errors
+                format!("{}❌ {}{}", colors::RED, content, colors::RESET)
+            }
+            OutputMessage::Progress { content } => {
+                // Yellow for progress
+                format!("{}{}{}", colors::YELLOW, content, colors::RESET)
+            }
+            OutputMessage::SystemInfo { content } => {
+                // Green color for system info (help, metrics, etc.)
+                format!("{}ℹ️  {}{}", colors::GREEN, content, colors::RESET)
+            }
+        }
+    }
 }
 
 /// Thread-safe output buffer manager
@@ -79,6 +115,8 @@ pub struct OutputManager {
     buffering_mode: Arc<RwLock<bool>>,
     /// Pending lines waiting to be flushed (used when buffering_mode = true)
     pending_flush: Arc<RwLock<Vec<String>>>,
+    /// New trait-based message storage (for reactive updates)
+    messages: Arc<RwLock<Vec<MessageRef>>>,
 }
 
 impl OutputManager {
@@ -89,6 +127,7 @@ impl OutputManager {
             write_to_stdout: Arc::new(RwLock::new(true)), // Enable by default for TUI mode
             buffering_mode: Arc::new(RwLock::new(false)), // Default: immediate write
             pending_flush: Arc::new(RwLock::new(Vec::new())),
+            messages: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -142,36 +181,8 @@ impl OutputManager {
 
     /// Format a message with ANSI colors (internal)
     fn format_message(&self, message: &OutputMessage) -> String {
-        match message {
-            OutputMessage::UserMessage { content } => {
-                // Cyan prompt ">" with content on same line
-                format!("{}> {}{}", colors::CYAN, content, colors::RESET)
-            }
-            OutputMessage::ClaudeResponse { content } => {
-                // Default color for responses
-                format!("{}{}{}", colors::RESET, content, colors::RESET)
-            }
-            OutputMessage::ToolOutput { tool_name, content } => {
-                // Blue for tool output
-                format!("{}[{}] {}{}", colors::BLUE, tool_name, content, colors::RESET)
-            }
-            OutputMessage::StatusInfo { content } => {
-                // Cyan/blue color for status messages
-                format!("{}{}{}", colors::CYAN, content, colors::RESET)
-            }
-            OutputMessage::Error { content } => {
-                // Red for errors
-                format!("{}❌ {}{}", colors::RED, content, colors::RESET)
-            }
-            OutputMessage::Progress { content } => {
-                // Yellow for progress
-                format!("{}{}{}", colors::YELLOW, content, colors::RESET)
-            }
-            OutputMessage::SystemInfo { content } => {
-                // Green color for system info (help, metrics, etc.)
-                format!("{}ℹ️  {}{}", colors::GREEN, content, colors::RESET)
-            }
-        }
+        // Delegate to message's own format method
+        message.format()
     }
 
     /// Add a message to the buffer (internal)
@@ -204,6 +215,60 @@ impl OutputManager {
 
         buffer.push_back(message);
     }
+
+    // ========================================================================
+    // Trait-based message API (new reactive system)
+    // ========================================================================
+
+    /// Add a trait-based message to the buffer
+    pub fn add_trait_message(&self, message: MessageRef) {
+        // Write to terminal if not a status message
+        self.write_trait_to_terminal(&message);
+
+        // Add to messages vector
+        let mut messages = self.messages.write().unwrap();
+
+        // Simple circular buffer (no complex ring buffer needed here)
+        if messages.len() >= MAX_BUFFER_SIZE {
+            messages.remove(0); // Remove oldest
+        }
+
+        messages.push(message);
+    }
+
+    /// Get all trait-based messages (for TUI rendering)
+    pub fn get_trait_messages(&self) -> Vec<MessageRef> {
+        self.messages.read().unwrap().clone()
+    }
+
+    /// Get the number of trait-based messages
+    pub fn trait_message_count(&self) -> usize {
+        self.messages.read().unwrap().len()
+    }
+
+    /// Clear all trait-based messages
+    pub fn clear_trait_messages(&self) {
+        self.messages.write().unwrap().clear();
+    }
+
+    /// Write a trait-based message to terminal
+    fn write_trait_to_terminal(&self, message: &MessageRef) {
+        let formatted = message.format();
+
+        if *self.buffering_mode.read().unwrap() {
+            // Buffering mode: accumulate for batch flush
+            self.pending_flush.write().unwrap().push(formatted);
+        } else if *self.write_to_stdout.read().unwrap() {
+            // Immediate mode: write to stdout
+            let mut stdout = io::stdout();
+            let _ = write!(stdout, "{}\r\n", formatted);
+            let _ = stdout.flush();
+        }
+    }
+
+    // ========================================================================
+    // Legacy OutputMessage API (for backward compatibility)
+    // ========================================================================
 
     /// Write a user message
     pub fn write_user(&self, content: impl Into<String>) {
@@ -313,6 +378,7 @@ impl Clone for OutputManager {
             write_to_stdout: Arc::clone(&self.write_to_stdout),
             buffering_mode: Arc::clone(&self.buffering_mode),
             pending_flush: Arc::clone(&self.pending_flush),
+            messages: Arc::clone(&self.messages),
         }
     }
 }

@@ -126,6 +126,16 @@ impl StatusBar {
         self.lines.read().unwrap().is_empty()
     }
 
+    /// Get status content as a string (for change detection)
+    pub fn get_status(&self) -> String {
+        let lines = self.get_lines();
+        lines
+            .iter()
+            .map(|line| line.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Render the status bar as a multi-line string
     pub fn render(&self) -> String {
         let lines = self.get_lines();

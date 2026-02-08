@@ -2126,7 +2126,12 @@ impl Repl {
         }
 
         // Make routing decision (uses threshold router internally)
-        let decision = self.router.route(query);
+        // Check if local generator is ready before routing (progressive bootstrap support)
+        let generator_ready = matches!(
+            *self.bootstrap_loader.state().read().await,
+            GeneratorState::Ready { .. }
+        );
+        let decision = self.router.route_with_generator_check(query, generator_ready);
 
         if self.is_interactive {
             io::stdout()
@@ -2153,9 +2158,66 @@ impl Repl {
                     self.output_status("→ Routing: LOCAL GENERATION");
                 }
 
-                // Try local generation
-                let mut gen = self.local_generator.write().await;
-                match gen.try_generate(query) {
+                // Double-check generator state before attempting local generation
+                // (Belt-and-suspenders approach - router should have already checked)
+                let is_model_ready = {
+                    let state = self.bootstrap_loader.state().read().await;
+                    let ready = matches!(*state, GeneratorState::Ready { .. });
+                    if !ready && self.is_interactive {
+                        self.output_status(format!("⚠ Model not ready: {}", state.status_message()));
+                        self.output_status("→ Forwarding to Claude");
+                    }
+                    ready
+                }; // Drop the state guard here
+
+                if !is_model_ready {
+                    // Model not ready, forward to Claude
+                    let request =
+                        MessageRequest::with_context(self.conversation.read().await.get_messages())
+                            .with_tools(self.tool_definitions.clone());
+
+                    // Try streaming first, fallback to buffered if tools detected
+                    let use_streaming = self.streaming_enabled && self.is_interactive;
+
+                    if use_streaming {
+                        let rx = self.claude_client.send_message_stream(&request).await?;
+                        match self.display_streaming_response(rx).await {
+                            Ok(text) => {
+                                claude_response = text;
+                            }
+                            Err(e) if e.to_string().contains("TOOLS_DETECTED") => {
+                                if self.is_interactive {
+                                    self.output_status("\n🔧 Tools needed - switching to buffered mode...");
+                                }
+                                let response = self.claude_client.send_message(&request).await?;
+                                let elapsed = start_time.elapsed().as_millis();
+                                if self.is_interactive {
+                                    self.output_status(format!("✓ Received response ({}ms)", elapsed));
+                                }
+                                claude_response = self.execute_tool_loop(response).await?;
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    } else {
+                        let response = self.claude_client.send_message(&request).await?;
+                        let elapsed = start_time.elapsed().as_millis();
+                        if self.is_interactive {
+                            self.output_status(format!("✓ Received response ({}ms)", elapsed));
+                        }
+                        if response.has_tool_uses() {
+                            claude_response = self.execute_tool_loop(response).await?;
+                        } else {
+                            claude_response = response.text();
+                        }
+                    }
+
+                    routing_decision_str = "forward".to_string();
+                    forward_reason = Some("model_not_ready".to_string());
+                } else {
+                    // Model is ready, proceed with local generation
+                    // Try local generation
+                    let mut gen = self.local_generator.write().await;
+                    match gen.try_generate(query) {
                     Ok(Some(response_text)) => {
                         // Successfully generated locally
                         if self.is_interactive {
@@ -2223,6 +2285,7 @@ impl Repl {
                         routing_confidence = Some(confidence);
                         forward_reason = Some("insufficient_confidence".to_string());
                     }
+                    } // Close the else block for generator readiness check
                 }
             }
             RouteDecision::Forward { reason } => {
@@ -2230,6 +2293,15 @@ impl Repl {
                     match reason {
                         ForwardReason::Crisis => {
                             self.output_status("⚠️  CRISIS DETECTED");
+                            self.output_status("→ Routing: FORWARDING TO CLAUDE");
+                        }
+                        ForwardReason::ModelNotReady => {
+                            let status_msg = {
+                                let state = self.bootstrap_loader.state().read().await;
+                                state.status_message()
+                            }; // Drop the state guard here
+                            self.output_status("✓ Crisis check: PASS");
+                            self.output_status(format!("ℹ️  Model status: {}", status_msg));
                             self.output_status("→ Routing: FORWARDING TO CLAUDE");
                         }
                         _ => {

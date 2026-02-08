@@ -10,13 +10,13 @@ use crossterm::{
     cursor,
     event::{self, Event},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
+    terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     text::{Line, Text},
-    widgets::{Paragraph, Widget},
+    widgets::{Clear as ClearWidget, Paragraph, Widget},
     Terminal, TerminalOptions, Viewport,
 };
 use std::io::{self, Write};
@@ -25,12 +25,14 @@ use std::time::Duration;
 use tui_textarea::TextArea;
 
 use super::{OutputManager, StatusBar};
+use crate::cli::messages::{MessageId, MessageRef, MessageStatus, UserQueryMessage, StreamingResponseMessage, StaticMessage};
 
 mod async_input;
 mod dialog;
 mod dialog_widget;
 mod input_widget;
 mod output_widget;
+mod scrollback;
 mod status_widget;
 
 pub use async_input::spawn_input_task;
@@ -38,9 +40,27 @@ pub use dialog::{Dialog, DialogOption, DialogResult, DialogType};
 pub use dialog_widget::DialogWidget;
 pub use input_widget::render_input_widget;
 pub use output_widget::OutputWidget;
+pub use scrollback::ScrollbackBuffer;
 pub use status_widget::StatusWidget;
 
+// Import DialogType for internal use
+use dialog::DialogType as DType;
+
 // Note: input_handler (TuiInputHandler) removed - we now use integrated tui-textarea
+
+/// Calculate viewport height dynamically based on terminal size
+fn calculate_viewport_height(terminal_size: (u16, u16)) -> usize {
+    let (_, term_height) = terminal_size;
+
+    // Reserve space for TUI components:
+    // - Separator: 1 line
+    // - Input area: 1-3 lines (depends on content)
+    // - Status bar: 1 line
+    let tui_reserved = 3; // Minimum
+
+    let viewport_height = term_height.saturating_sub(tui_reserved) as usize;
+    viewport_height.max(5) // Minimum 5 lines
+}
 
 /// TUI renderer for Ratatui-based interface
 pub struct TuiRenderer {
@@ -57,6 +77,22 @@ pub struct TuiRenderer {
     command_history: Vec<String>,
     /// Current position in history (None = not navigating)
     history_index: Option<usize>,
+    /// Internal scrollback buffer with structured messages
+    scrollback: ScrollbackBuffer,
+    /// Dynamic viewport height (updated on resize)
+    viewport_height: usize,
+    /// Whether full refresh is needed
+    needs_full_refresh: bool,
+    /// Last refresh timestamp
+    last_refresh: std::time::Instant,
+    /// Refresh interval during streaming
+    refresh_interval: Duration,
+    /// Whether TUI needs to be redrawn (double buffering)
+    needs_tui_render: bool,
+    /// Previous input text (for change detection)
+    prev_input_text: String,
+    /// Previous status bar content (for change detection)
+    prev_status_content: String,
 }
 
 impl TuiRenderer {
@@ -94,6 +130,32 @@ impl TuiRenderer {
         textarea.set_placeholder_style(clean_style);
 
         textarea
+    }
+
+    /// Helper function to create a centered rect for dialog overlay
+    ///
+    /// # Arguments
+    /// * `percent_width` - Width as percentage of parent area (e.g., 60 = 60%)
+    /// * `percent_height` - Height as percentage of parent area (e.g., 80 = 80%)
+    /// * `area` - The parent area to center within
+    fn centered_rect(percent_width: u16, percent_height: u16, area: Rect) -> Rect {
+        let popup_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage((100 - percent_height) / 2),
+                Constraint::Percentage(percent_height),
+                Constraint::Percentage((100 - percent_height) / 2),
+            ])
+            .split(area);
+
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage((100 - percent_width) / 2),
+                Constraint::Percentage(percent_width),
+                Constraint::Percentage((100 - percent_width) / 2),
+            ])
+            .split(popup_layout[1])[1]
     }
 
     /// Calculate visible length of string (excluding ANSI escape codes)
@@ -142,9 +204,9 @@ impl TuiRenderer {
         len
     }
 
-    /// Create a new TUI renderer
+    /// Create a new TUI renderer with inline viewport
     pub fn new(output_manager: Arc<OutputManager>, status_bar: Arc<StatusBar>) -> Result<Self> {
-        // Setup terminal on main screen (no alternate screen = scrollback enabled)
+        // Setup terminal with inline viewport - preserves terminal scrollback
         enable_raw_mode().context("Failed to enable raw mode")?;
         let mut stdout = io::stdout();
 
@@ -153,14 +215,29 @@ impl TuiRenderer {
 
         let backend = CrosstermBackend::new(stdout);
 
-        // Use Inline viewport - creates a 6-line window at the bottom
-        // This matches the layout: 1 (separator) + 1 (input) + 4 (status with border) = 6
+        // Use Inline viewport - 6 lines at bottom (separator + input + status)
+        // Messages will be written above this using insert_before()
         let terminal = Terminal::with_options(
             backend,
             TerminalOptions {
                 viewport: Viewport::Inline(6),
             },
         ).context("Failed to create terminal with inline viewport")?;
+
+        // Get terminal size for scrollback buffer
+        let term_size = crossterm::terminal::size()
+            .context("Failed to get terminal size")?;
+        let (term_width, _term_height) = term_size;
+
+        // Calculate dynamic viewport height
+        let viewport_height = calculate_viewport_height(term_size);
+
+        // ScrollbackBuffer tracks all messages (not for rendering, for structure)
+        // We'll use insert_before() to write to terminal scrollback
+        let scrollback = ScrollbackBuffer::new(viewport_height, term_width as usize);
+
+        // Keep stdout disabled - we'll write via insert_before() instead
+        output_manager.disable_stdout();
 
         Ok(Self {
             terminal,
@@ -171,164 +248,316 @@ impl TuiRenderer {
             input_textarea: Self::create_clean_textarea(),
             command_history: Vec::new(),
             history_index: None,
+            scrollback,
+            viewport_height,
+            needs_full_refresh: false,
+            last_refresh: std::time::Instant::now(),
+            refresh_interval: Duration::from_millis(100), // 10 FPS during streaming
+            needs_tui_render: true, // Initial render needed
+            prev_input_text: String::new(),
+            prev_status_content: String::new(),
         })
     }
 
-    /// Switch to fullscreen viewport (for dialogs)
-    fn switch_to_fullscreen(&mut self) -> Result<()> {
-        let backend = CrosstermBackend::new(io::stdout());
-        self.terminal = Terminal::with_options(
-            backend,
-            TerminalOptions {
-                viewport: Viewport::Fullscreen,
-            },
-        ).context("Failed to switch to fullscreen viewport")?;
-        Ok(())
-    }
-
-    /// Switch back to inline viewport (for normal REPL)
-    fn switch_to_inline(&mut self) -> Result<()> {
-        let backend = CrosstermBackend::new(io::stdout());
-        self.terminal = Terminal::with_options(
-            backend,
-            TerminalOptions {
-                viewport: Viewport::Inline(6),
-            },
-        ).context("Failed to switch to inline viewport")?;
-        Ok(())
-    }
-
-    /// Render the TUI with fixed layout
+    /// Render the TUI inline viewport (6 lines: separator + input + status)
+    /// Messages are written to terminal scrollback via insert_before()
     pub fn render(&mut self) -> Result<()> {
         if !self.is_active {
             return Ok(());
         }
 
+        // Double buffering: Check if anything changed
+        let current_input_text = self.input_textarea.lines().join("\n");
+        let current_status_content = self.status_bar.get_status();
         let has_dialog = self.active_dialog.is_some();
+
+        let input_changed = current_input_text != self.prev_input_text;
+        let status_changed = current_status_content != self.prev_status_content;
+        let force_render = self.needs_tui_render;
+
+        // Skip render if nothing changed
+        if !input_changed && !status_changed && !force_render {
+            return Ok(());
+        }
+
+        // Update previous state for next comparison
+        self.prev_input_text = current_input_text;
+        self.prev_status_content = current_status_content.clone();
+        self.needs_tui_render = false;
+
         let active_dialog = self.active_dialog.clone();
         let status_bar = Arc::clone(&self.status_bar);
         let input_textarea = self.input_textarea.clone();
 
+        // Wrap in synchronized update to prevent tearing
+        use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+        execute!(io::stdout(), BeginSynchronizedUpdate)?;
+
         self.terminal
             .draw(|frame| {
                 if has_dialog {
-                    // Dialog mode: Use full viewport for dialog - hide status temporarily
-                    // Status isn't critical during brief dialog interactions
+                    // Dialog mode: Show scrollback context + dialog at bottom
                     if let Some(dialog) = &active_dialog {
+                        use ratatui::text::{Line, Span};
+                        use ratatui::style::{Color, Style};
+                        use ratatui::widgets::Paragraph;
+
+                        let total_area = frame.area();
+
+                        // Calculate dialog height (title + options + help + borders)
+                        let num_options = match &dialog.dialog_type {
+                            DType::Select { options, .. } => options.len(),
+                            DType::MultiSelect { options, .. } => options.len(),
+                            DType::Confirm { .. } => 2, // Yes/No
+                            DType::TextInput { .. } => 1, // Single input line
+                        };
+                        let dialog_height = num_options as u16 + 4; // +4 for title, help, borders
+                        let status_height = 4u16;
+                        let separator_height = 1u16;
+
+                        // Remaining space for scrollback
+                        let scrollback_height = total_area.height
+                            .saturating_sub(dialog_height)
+                            .saturating_sub(status_height)
+                            .saturating_sub(separator_height);
+
+                        // Layout: scrollback (top) + separator + dialog (bottom) + status
+                        let chunks = Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([
+                                Constraint::Length(scrollback_height), // Scrollback context
+                                Constraint::Length(separator_height),   // Separator
+                                Constraint::Length(dialog_height),      // Dialog
+                                Constraint::Length(status_height),      // Status
+                            ])
+                            .split(total_area);
+
+                        // Render recent scrollback messages for context
+                        let scrollback_messages = self.scrollback.get_visible_messages();
+                        let context_lines: Vec<Line> = scrollback_messages
+                            .iter()
+                            .rev()
+                            .take(scrollback_height as usize)
+                            .rev()
+                            .flat_map(|msg| {
+                                let formatted = msg.format();
+                                formatted.lines().map(|line| Line::raw(line.to_string())).collect::<Vec<_>>()
+                            })
+                            .collect();
+
+                        let scrollback_widget = Paragraph::new(context_lines);
+                        frame.render_widget(scrollback_widget, chunks[0]);
+
+                        // Render separator
+                        let separator_char = '─';
+                        let separator_line = separator_char.to_string().repeat(chunks[1].width as usize);
+                        let separator_widget = Paragraph::new(Line::from(Span::styled(
+                            separator_line,
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                        frame.render_widget(separator_widget, chunks[1]);
+
+                        // Render dialog
                         let dialog_widget = DialogWidget::new(dialog);
-                        frame.render_widget(dialog_widget, frame.area());
+                        frame.render_widget(dialog_widget, chunks[2]);
+
+                        // Render status
+                        let status_widget = StatusWidget::new(&status_bar);
+                        frame.render_widget(status_widget, chunks[3]);
                     }
                 } else {
-                    // Normal mode: Fixed 1+1+4 layout (1 for separator, 1 for input, 4 for status with border+title)
+                    // Normal mode: Render inline viewport (separator + input + status)
+                    // Layout: 1 separator + 1 input + 4 status = 6 lines
                     let chunks = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([
-                            Constraint::Length(1), // Separator line (top of viewport)
-                            Constraint::Length(1), // Input area (text only, no border)
-                            Constraint::Length(4), // Status area (1 border+title + 3 content)
+                            Constraint::Length(1),   // Separator line
+                            Constraint::Length(1),   // Input area
+                            Constraint::Length(4),   // Status area
                         ])
                         .split(frame.area());
 
-                    // Render separator line at top of viewport (above input)
-                    use ratatui::widgets::{Block, Borders};
+                    // Render separator line
+                    use ratatui::text::{Line, Span};
+                    use ratatui::widgets::Paragraph;
                     use ratatui::style::{Color, Style};
-                    let separator = Block::default()
-                        .borders(Borders::TOP)
-                        .border_style(Style::default().fg(Color::DarkGray));
-                    frame.render_widget(separator, chunks[0]);
 
-                    render_input_widget(frame, &input_textarea, chunks[1], ">");
+                    let separator_char = '─'; // Unicode box-drawing (U+2500)
+                    let separator_line = separator_char.to_string().repeat(chunks[0].width as usize);
+                    let separator_widget = Paragraph::new(Line::from(Span::styled(
+                        separator_line,
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                    frame.render_widget(separator_widget, chunks[0]);
 
+                    // Render input
+                    render_input_widget(frame, &input_textarea, chunks[1], "❯");
+
+                    // Render status
                     let status_widget = StatusWidget::new(&status_bar);
                     frame.render_widget(status_widget, chunks[2]);
                 }
             })
             .context("Failed to draw frame")?;
 
+        execute!(io::stdout(), EndSynchronizedUpdate)?;
+
         Ok(())
     }
 
-    // Note: suspend() and resume() removed - no longer needed without alternate screen
-    // TUI now stays on main screen continuously, enabling terminal scrollback
+    // Messages are rendered to terminal scrollback via insert_before() in flush_output_safe()
 
     /// Check if the TUI is currently active
     pub fn is_active(&self) -> bool {
         self.is_active
     }
 
-    /// Flush pending output using Ratatui's official insert_before() API
-    /// This properly inserts content above the inline viewport without manual cursor positioning
+    /// Flush pending output to terminal scrollback via insert_before()
+    /// Syncs OutputManager messages to ScrollbackBuffer, then renders new ones
     pub fn flush_output_safe(&mut self, output_manager: &OutputManager) -> Result<()> {
-        let pending_lines = output_manager.drain_pending();
-        if pending_lines.is_empty() {
-            return Ok(());
+        use crate::cli::output_manager::OutputMessage as OldMessage;
+        use std::sync::Arc;
+
+        let messages = output_manager.get_messages();
+        let current_count = self.scrollback.message_count();
+
+        // Track new messages to render
+        let mut new_messages_to_render: Vec<MessageRef> = Vec::new();
+
+        // Add only new messages (messages added since last flush)
+        for msg in messages.iter().skip(current_count) {
+            // Skip status messages - they're shown in status bar
+            if matches!(msg, OldMessage::StatusInfo { .. }) {
+                continue;
+            }
+
+            // Create trait object from OutputMessage
+            let trait_msg: MessageRef = match msg {
+                OldMessage::UserMessage { content } => {
+                    Arc::new(UserQueryMessage::new(content.clone()))
+                }
+                OldMessage::ClaudeResponse { content } => {
+                    let msg = StreamingResponseMessage::new();
+                    msg.append_chunk(content);
+                    msg.set_complete();
+                    Arc::new(msg)
+                }
+                OldMessage::ToolOutput { tool_name, content } => {
+                    // Use StaticMessage for tool output (formatted)
+                    let formatted = format!("[{}] {}", tool_name, content);
+                    Arc::new(StaticMessage::info(formatted))
+                }
+                OldMessage::Error { content } => {
+                    Arc::new(StaticMessage::error(content.clone()))
+                }
+                OldMessage::Progress { content } => {
+                    Arc::new(StaticMessage::info(content.clone()))
+                }
+                OldMessage::SystemInfo { content } => {
+                    Arc::new(StaticMessage::info(content.clone()))
+                }
+                OldMessage::StatusInfo { .. } => unreachable!(), // Already handled above
+            };
+
+            // Skip if this exact content was just added (prevent duplicates)
+            if let Some(last_msg) = self.scrollback.get_last_message() {
+                if last_msg.content() == trait_msg.content() {
+                    // Duplicate detected, skip
+                    continue;
+                }
+            }
+
+            new_messages_to_render.push(trait_msg.clone());
+            self.scrollback.add_message(trait_msg);
         }
 
-        // Get terminal width for wrapping calculations
-        let (term_width, _) = crossterm::terminal::size()?;
-        let width = term_width.saturating_sub(2) as usize; // Account for borders/margins
+        // Render new messages to terminal scrollback using insert_before()
+        if !new_messages_to_render.is_empty() {
+            // Get terminal width for wrapping
+            let (term_width, _) = crossterm::terminal::size()?;
+            let width = term_width.saturating_sub(2) as usize;
 
-        // Count total output lines INCLUDING terminal wrapping
-        let num_lines: usize = pending_lines.iter()
-            .map(|line| {
-                // Split by explicit newlines first
-                line.split('\n')
-                    .filter(|segment| !segment.trim().is_empty())  // Skip empty lines (match rendering)
-                    .map(|segment| {
-                        // For each segment, calculate how many lines it wraps to
-                        let visible_len = Self::visible_length(segment);
-                        // Ceiling division for terminal wrapping
-                        ((visible_len + width - 1) / width).max(1)
-                    })
-                    .sum::<usize>()
-            })
-            .sum();
-
-        // No padding needed after counting fix
-        let num_lines_with_padding = num_lines;
-
-        // Convert to u16 (insert_before expects u16)
-        let num_lines_u16 = num_lines_with_padding.min(u16::MAX as usize) as u16;
-
-        // Use Ratatui's official API to insert content above the inline viewport
-        // This handles all the positioning and scrolling automatically
-        self.terminal.insert_before(num_lines_u16, |buf| {
-            // Convert pending lines to Ratatui Text
-            let lines: Vec<Line> = pending_lines
+            // Calculate total lines needed
+            let num_lines: usize = new_messages_to_render
                 .iter()
-                .flat_map(|line| {
-                    line.split('\n')
-                        .filter(|part| !part.trim().is_empty())
-                        .map(|part| {
-                            // More aggressive cleaning to prevent cursor positioning issues
-                            let clean = part
-                                .trim_end_matches('\r')
-                                .trim_end_matches('\n')
-                                .trim_end_matches('\x00')  // Null bytes
-                                .replace('\r', "");         // Remove all \r
-                            Line::from(clean)
+                .map(|msg| {
+                    // Count lines in formatted message
+                    let formatted = msg.format();
+                    formatted
+                        .lines()
+                        .map(|line| {
+                            let visible_len = Self::visible_length(line);
+                            ((visible_len + width - 1) / width.max(1)).max(1)
                         })
+                        .sum::<usize>()
+                        + 1 // Extra line for spacing
                 })
-                .collect();
+                .sum();
 
-            let text = Text::from(lines);
-            let paragraph = Paragraph::new(text);
+            let num_lines_u16 = num_lines.min(u16::MAX as usize) as u16;
 
-            // Render the output into the buffer using Widget trait
-            // buf.area is automatically sized for num_lines
-            Widget::render(paragraph, buf.area, buf);
-        })?;
+            // Use synchronized update to prevent flickering
+            use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+            execute!(io::stdout(), BeginSynchronizedUpdate)?;
 
-        // Now render the TUI normally
-        // The inline viewport automatically repositions after insert_before()
-        self.render()?;
+            // Use insert_before() to write to terminal scrollback
+            self.terminal.insert_before(num_lines_u16, |buf| {
+                let mut lines: Vec<Line> = Vec::new();
+
+                for msg in &new_messages_to_render {
+                    // Add formatted message content
+                    let formatted = msg.format();
+                    for line in formatted.lines() {
+                        lines.push(Line::raw(line.to_string()));
+                    }
+                    // Add spacing
+                    lines.push(Line::raw(""));
+                }
+
+                let text = Text::from(lines);
+                let paragraph = Paragraph::new(text);
+                paragraph.render(buf.area, buf);
+            })?;
+
+            execute!(io::stdout(), EndSynchronizedUpdate)?;
+
+            // Update ring buffer to track rendered lines
+            for msg in &new_messages_to_render {
+                let formatted = msg.format();
+                let num_content_lines = formatted.lines().count();
+                for line_offset in 0..num_content_lines {
+                    self.scrollback.push_line(msg.id(), line_offset);
+                }
+                // Add spacing line
+                self.scrollback.push_line(msg.id(), num_content_lines);
+            }
+
+            // Mark TUI for render (separator might need to move up)
+            self.needs_tui_render = true;
+        }
 
         Ok(())
     }
 
+    /// Add a trait-based message directly to scrollback (for live updates)
+    pub fn add_trait_message(&mut self, message: MessageRef) -> MessageId {
+        self.scrollback.add_message(message)
+    }
+
+    /// Get a message by ID from scrollback
+    pub fn get_message(&self, id: MessageId) -> Option<MessageRef> {
+        self.scrollback.get_message(id)
+    }
+
+    // Scrolling is handled by terminal (mouse wheel, shift+pgup/pgdn, etc.)
+    // ScrollbackBuffer still tracks messages for structure, search, export
+
     /// Check if flush is needed
     pub fn should_flush(&self, output_manager: &OutputManager) -> bool {
-        output_manager.has_pending()
+        // Check if there are new messages to sync
+        let messages = output_manager.get_messages();
+        let current_count = self.scrollback.message_count();
+        messages.len() > current_count
     }
 
     /// Show a dialog and block until the user responds
@@ -348,17 +577,7 @@ impl TuiRenderer {
             );
         }
 
-        // Switch to fullscreen viewport for dialog
-        self.switch_to_fullscreen()
-            .context("Failed to switch to fullscreen mode")?;
-
-        // Clear screen for clean dialog display
-        execute!(
-            io::stdout(),
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
-            crossterm::cursor::MoveTo(0, 0)
-        )?;
-
+        // Set active dialog (will be rendered as overlay)
         self.active_dialog = Some(dialog);
 
         let result = loop {
@@ -382,12 +601,8 @@ impl TuiRenderer {
             }
         };
 
-        // Clean up: remove dialog and switch back to inline viewport
+        // Clean up: remove dialog
         self.active_dialog = None;
-
-        // Switch back to inline viewport
-        self.switch_to_inline()
-            .context("Failed to switch back to inline mode")?;
 
         // Trigger a render to restore normal layout
         self.render()?;
@@ -476,7 +691,9 @@ impl TuiRenderer {
                             }
                         }
                     }
-                    _ => {}
+                    _ => {
+                        // Mouse events handled by terminal (scrolls terminal buffer)
+                    }
                 }
             }
 
@@ -540,6 +757,176 @@ impl TuiRenderer {
         }
         Ok(())
     }
+
+    /// Full refresh of viewport from shadow buffer
+    fn full_refresh_viewport(&mut self) -> Result<()> {
+        use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+        use crossterm::style::Print;
+
+        let mut stdout = io::stdout();
+
+        // Get lines to render from ring buffer
+        let viewport_lines = self.scrollback.get_viewport_lines();
+
+        if viewport_lines.is_empty() {
+            return Ok(()); // Nothing to render
+        }
+
+        // Synchronized update for tear-free rendering
+        execute!(stdout, BeginSynchronizedUpdate)?;
+
+        // Render each line in viewport
+        for (line_idx, (message_id, line_offset)) in viewport_lines.iter().enumerate() {
+            let row = line_idx as u16;
+
+            // Get message from scrollback
+            if let Some(message) = self.scrollback.get_message(*message_id) {
+                // Extract specific line from formatted message
+                let formatted = message.format();
+                let line_content = formatted
+                    .lines()
+                    .nth(*line_offset)
+                    .unwrap_or("");
+
+                // Move cursor, clear line, write content
+                execute!(
+                    stdout,
+                    cursor::MoveTo(0, row),
+                    Clear(ClearType::UntilNewLine),
+                    Print(line_content)
+                )?;
+            } else {
+                // Message not found, clear line
+                execute!(
+                    stdout,
+                    cursor::MoveTo(0, row),
+                    Clear(ClearType::UntilNewLine)
+                )?;
+            }
+        }
+
+        execute!(stdout, EndSynchronizedUpdate)?;
+        stdout.flush()?;
+
+        Ok(())
+    }
+
+    /// Update a streaming message (mark for refresh)
+    // NOTE: With trait-based messages, updates happen directly through Arc<RwLock<>>
+    // Example:
+    //   let msg = Arc::new(StreamingResponseMessage::new());
+    //   self.add_trait_message(msg.clone());
+    //   msg.append_chunk("more text");  // Updates automatically
+    //   msg.set_complete();
+    //
+    // The TUI will see the changes on next render cycle.
+
+    /// Trigger a full refresh of the viewport (for reactive message updates)
+    pub fn trigger_refresh(&mut self) {
+        self.needs_full_refresh = true;
+    }
+
+    /// Check if full refresh is needed and perform it
+    pub fn check_and_refresh(&mut self) -> Result<()> {
+        // NOTE: Full refresh disabled for inline viewport mode
+        // Messages are written to terminal scrollback via insert_before()
+        // The TUI viewport (separator + input + status) is rendered by Ratatui
+        // No manual viewport refresh needed
+
+        self.needs_full_refresh = false;
+        Ok(())
+    }
+
+    /// Handle terminal resize event
+    pub fn handle_resize(&mut self, width: u16, height: u16) -> Result<()> {
+        // Update viewport dimensions
+        let new_viewport_height = calculate_viewport_height((width, height));
+        self.viewport_height = new_viewport_height;
+        self.scrollback.update_viewport(new_viewport_height, width as usize);
+
+        // Rebuild ring buffer with new line counts
+        self.scrollback.rebuild_ring_buffer();
+
+        // NOTE: No full refresh needed with inline viewport
+        // Terminal scrollback content is already there
+        // Just need to re-render TUI components (which happens on next render())
+        self.needs_tui_render = true;
+
+        Ok(())
+    }
+
+    /// Append a complete message to terminal scrollback
+    // NOTE: The following methods are commented out during trait migration.
+    // With the trait-based system, messages are added via add_trait_message()
+    // and updated directly through Arc<RwLock<>>.
+    //
+    // pub fn append_message_to_scrollback(&mut self, message: &MessageRef) -> Result<()> { ... }
+    // pub fn add_user_query(&mut self, query: String) -> Result<MessageId> { ... }
+    // pub fn add_claude_response(&mut self, initial_content: String) -> MessageId { ... }
+    // pub fn complete_claude_response(&mut self, message_id: MessageId) -> Result<()> { ... }
+
+    /// Show dialog at bottom with scrollback context above
+    pub fn show_centered_dialog(&mut self, dialog: Dialog) -> Result<()> {
+        // Calculate how many extra lines we need for scrollback context
+        let num_options = match &dialog.dialog_type {
+            DType::Select { options, .. } => options.len(),
+            DType::MultiSelect { options, .. } => options.len(),
+            DType::Confirm { .. } => 2, // Yes/No
+            DType::TextInput { .. } => 1, // Single input line
+        };
+        let dialog_height = num_options + 4; // title + options + help + borders
+        let status_height = 4;
+        let separator_height = 1;
+        let scrollback_context_lines = 10; // Show last 10 lines of scrollback
+
+        let total_needed = scrollback_context_lines + separator_height + dialog_height + status_height;
+        let current_viewport = 6; // Our inline viewport size
+
+        // If we need more space, insert blank lines to push viewport down
+        if total_needed > current_viewport {
+            let extra_lines = (total_needed - current_viewport) as u16;
+
+            // Insert blank lines using insert_before to expand visible area
+            self.terminal.insert_before(extra_lines, |buf| {
+                // Render recent scrollback in these blank lines
+                let scrollback_messages = self.scrollback.get_visible_messages();
+                let context_lines: Vec<Line> = scrollback_messages
+                    .iter()
+                    .rev()
+                    .take(extra_lines as usize)
+                    .rev()
+                    .flat_map(|msg| {
+                        let formatted = msg.format();
+                        formatted.lines().map(|line| Line::raw(line.to_string())).collect::<Vec<_>>()
+                    })
+                    .collect();
+
+                let scrollback_paragraph = Paragraph::new(context_lines);
+                scrollback_paragraph.render(buf.area, buf);
+            })?;
+        }
+
+        // Store dialog
+        self.active_dialog = Some(dialog);
+        self.needs_tui_render = true; // Force render for dialog
+
+        // Render dialog
+        self.render()?;
+
+        Ok(())
+    }
+
+    /// Hide dialog and return to normal mode
+    pub fn hide_dialog(&mut self) -> Result<()> {
+        // Clear dialog
+        self.active_dialog = None;
+        self.needs_tui_render = true; // Force render after dialog closes
+
+        // Re-render TUI (will show normal mode now)
+        self.render()?;
+
+        Ok(())
+    }
 }
 
 impl Drop for TuiRenderer {
@@ -548,13 +935,8 @@ impl Drop for TuiRenderer {
         if self.is_active {
             let mut stdout = io::stdout();
 
-            // Clear viewport and show cursor
-            let _ = execute!(
-                stdout,
-                cursor::MoveToColumn(0),
-                Clear(ClearType::FromCursorDown),
-                cursor::Show
-            );
+            // Show cursor
+            let _ = execute!(stdout, cursor::Show);
             let _ = stdout.flush();
 
             // Disable raw mode
