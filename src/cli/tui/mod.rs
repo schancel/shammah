@@ -488,8 +488,6 @@ impl TuiRenderer {
                     for line in formatted.lines() {
                         lines.push(Line::raw(line.to_string()));
                     }
-                    // Add spacing
-                    lines.push(Line::raw(""));
                 }
 
                 let text = Text::from(lines);
@@ -506,8 +504,6 @@ impl TuiRenderer {
                 for line_offset in 0..num_content_lines {
                     self.scrollback.push_line(msg.id(), line_offset);
                 }
-                // Add spacing line
-                self.scrollback.push_line(msg.id(), num_content_lines);
             }
 
             // Mark TUI for render (separator might need to move up)
@@ -769,7 +765,6 @@ impl TuiRenderer {
             for line in formatted.lines() {
                 all_lines.push(line.to_string());
             }
-            all_lines.push(String::new()); // Blank line between messages
         }
 
         if all_lines.is_empty() {
