@@ -20,17 +20,16 @@ pub fn load_config() -> Result<Config> {
         }
     }
 
-    // No API key found
+    // No API key found - prompt user to run setup
     bail!(
-        "Claude API key not found\n\n\
-        Checked locations:\n\
-        1. ~/.shammah/config.toml\n\
-        2. Environment variable: $ANTHROPIC_API_KEY\n\n\
-        Please set your API key in one of these locations.\n\n\
-        Quick setup:\n\
-        mkdir -p ~/.shammah\n\
-        echo 'api_key = \"sk-ant-...\"' > ~/.shammah/config.toml\n\n\
-        Or use environment variable:\n\
+        "No configuration found. Please run the setup wizard:\n\n\
+        \x1b[1;36mshammah setup\x1b[0m\n\n\
+        This will guide you through:\n\
+        • API key configuration (Claude, OpenAI, etc.)\n\
+        • Local model selection (Qwen, Gemma, Llama, Mistral)\n\
+        • Device selection (CoreML, Metal, CUDA, CPU)\n\
+        • Model size selection based on your RAM\n\n\
+        Alternatively, set environment variable:\n\
         export ANTHROPIC_API_KEY=\"sk-ant-...\""
     );
 }
