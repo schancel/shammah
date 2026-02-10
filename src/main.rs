@@ -145,8 +145,36 @@ async fn main() -> Result<()> {
     set_global_output(output_manager.clone());
     set_global_status(status_bar.clone());
 
-    // Load configuration
-    let mut config = load_config()?;
+    // Load configuration (or run setup if missing)
+    let mut config = match load_config() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("{}", e);
+            eprintln!("\n\x1b[1;33m⚠️  Running first-time setup wizard...\x1b[0m\n");
+
+            // Run setup wizard
+            use shammah::cli::show_setup_wizard;
+            let result = show_setup_wizard()?;
+
+            // Create and save config
+            let mut new_config = Config::new(result.claude_api_key);
+            new_config.backend = shammah::config::BackendConfig {
+                device: result.backend_device,
+                model_family: result.model_family.name().to_string(),
+                model_size: format!("{:?}", result.model_size),
+                ..Default::default()
+            };
+            new_config.teacher = shammah::config::TeacherConfig {
+                provider: Some(result.teachers[0].provider.clone()),
+                settings: std::collections::HashMap::new(),
+                teachers: result.teachers,
+            };
+            new_config.save()?;
+
+            eprintln!("\n\x1b[1;32m✓ Configuration saved!\x1b[0m\n");
+            new_config
+        }
+    };
 
     // Override TUI setting if --raw or --no-tui flag is provided
     if args.raw_mode || args.no_tui {
