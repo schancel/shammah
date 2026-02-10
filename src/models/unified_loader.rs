@@ -196,12 +196,61 @@ impl ModelCache {
         // Convert repo ID to cache directory name
         // e.g., "Qwen/Qwen2.5-1.5B-Instruct" -> "models--Qwen--Qwen2.5-1.5B-Instruct"
         let cache_name = format!("models--{}", repo_id.replace('/', "--"));
-        self.cache_root.join(cache_name)
+        let model_dir = self.cache_root.join(cache_name);
+
+        // Return the latest snapshot directory if it exists
+        let snapshots_dir = model_dir.join("snapshots");
+        if let Ok(entries) = std::fs::read_dir(&snapshots_dir) {
+            // Find the most recent snapshot (last modified)
+            let mut snapshots: Vec<_> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .collect();
+
+            snapshots.sort_by_key(|e| {
+                e.metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+            });
+
+            if let Some(latest) = snapshots.last() {
+                return latest.path();
+            }
+        }
+
+        // Fallback to model_dir if no snapshots found
+        model_dir
     }
 
     fn is_cached(&self, repo_id: &str) -> bool {
         let cache_path = self.get_cache_path(repo_id);
-        cache_path.exists()
+        if !cache_path.exists() {
+            return false;
+        }
+
+        // Check for snapshots directory (HF Hub structure)
+        let snapshots_dir = cache_path.join("snapshots");
+        if !snapshots_dir.exists() {
+            return false;
+        }
+
+        // Check if any snapshot has required files
+        if let Ok(entries) = std::fs::read_dir(&snapshots_dir) {
+            for entry in entries.flatten() {
+                let snapshot_path = entry.path();
+                if snapshot_path.is_dir() {
+                    // Check for required files
+                    let has_config = snapshot_path.join("config.json").exists();
+                    let has_tokenizer = snapshot_path.join("tokenizer.json").exists();
+
+                    if has_config && has_tokenizer {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
     }
 }
 
@@ -238,8 +287,22 @@ impl UnifiedModelLoader {
             self.cache.get_cache_path(&repo_id)
         } else {
             tracing::info!("Model not cached, downloading from HuggingFace...");
-            // TODO: Implement generic download (Phase 3)
-            anyhow::bail!("Model download not yet implemented - please use existing Qwen download")
+
+            // Estimate download size based on model size
+            let estimated_size_gb = match config.size {
+                ModelSize::Small => 3.0,   // ~1-3B models
+                ModelSize::Medium => 8.0,  // ~3-9B models
+                ModelSize::Large => 16.0,  // ~7-14B models
+                ModelSize::XLarge => 30.0, // ~14B+ models
+            };
+
+            // Download model (blocking)
+            let (cache_path, _rx) = self
+                .downloader
+                .download_model(&repo_id, estimated_size_gb)
+                .with_context(|| format!("Failed to download model from {}", repo_id))?;
+
+            cache_path
         };
 
         // 3. Load model based on family + backend combination

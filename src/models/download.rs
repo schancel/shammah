@@ -53,22 +53,26 @@ impl ModelDownloader {
         })
     }
 
-    /// Download Qwen model with progress tracking
+    /// Download model with progress tracking (generic for any model family)
     ///
     /// Returns path to cached model directory containing safetensors and tokenizer files.
     /// Progress updates sent via returned channel.
     /// This is a blocking operation - spawn in a thread if you need async.
-    pub fn download_qwen_model(
+    ///
+    /// # Arguments
+    /// * `repo_id` - HuggingFace repository ID (e.g., "Qwen/Qwen2.5-3B-Instruct", "google/gemma-2-2b-it")
+    /// * `estimated_size_gb` - Estimated download size in GB (for progress display)
+    pub fn download_model(
         &self,
-        model_size: QwenSize,
+        repo_id: &str,
+        estimated_size_gb: f64,
     ) -> Result<(PathBuf, mpsc::Receiver<DownloadProgress>)> {
-        let model_id = model_size.model_id();
         let (tx, rx) = mpsc::channel();
 
         // Send starting event
         tx.send(DownloadProgress::Starting {
-            model_id: model_id.to_string(),
-            size_gb: model_size.download_size_gb(),
+            model_id: repo_id.to_string(),
+            size_gb: estimated_size_gb,
         })
         .ok();
 
@@ -76,9 +80,9 @@ impl ModelDownloader {
         let api = Api::new()?;
 
         // Get repository reference
-        let repo = api.repo(Repo::new(model_id.to_string(), RepoType::Model));
+        let repo = api.repo(Repo::new(repo_id.to_string(), RepoType::Model));
 
-        tracing::info!("Downloading {} to cache...", model_id);
+        tracing::info!("Downloading {} to cache...", repo_id);
 
         let mut downloaded_files = Vec::new();
 
@@ -191,13 +195,28 @@ impl ModelDownloader {
         };
 
         tx.send(DownloadProgress::Complete {
-            model_id: model_id.to_string(),
+            model_id: repo_id.to_string(),
             cache_path: cache_path.clone(),
         })
         .ok();
 
         Ok((cache_path, rx))
     }
+
+    /// Download Qwen model with progress tracking (convenience wrapper)
+    ///
+    /// Returns path to cached model directory containing safetensors and tokenizer files.
+    /// Progress updates sent via returned channel.
+    /// This is a blocking operation - spawn in a thread if you need async.
+    pub fn download_qwen_model(
+        &self,
+        model_size: QwenSize,
+    ) -> Result<(PathBuf, mpsc::Receiver<DownloadProgress>)> {
+        let model_id = model_size.model_id();
+        let size_gb = model_size.download_size_gb();
+        self.download_model(model_id, size_gb)
+    }
+
 
     /// Check if model is already cached
     pub fn is_cached(&self, model_size: QwenSize) -> bool {
