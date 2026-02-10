@@ -9,6 +9,7 @@ pub mod ensemble;
 pub mod generator; // Legacy custom transformer
 pub mod generator_new; // New unified generator
 pub mod learning;
+pub mod loaders; // Family-specific model loaders (qwen, gemma, etc.)
 pub mod lora; // LoRA fine-tuning configuration
 pub mod lora_impl; // LoRA implementation (matrices, weighted examples)
 pub mod lora_trainer; // LoRA training loop

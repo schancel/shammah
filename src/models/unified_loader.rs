@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use super::common::DevicePreference;
 use super::download::ModelDownloader;
+use super::loaders;
 use super::model_selector::QwenSize;
 use super::TextGeneration;
 
@@ -312,24 +313,22 @@ impl UnifiedModelLoader {
             // Qwen on Metal (macOS only)
             #[cfg(target_os = "macos")]
             (ModelFamily::Qwen2, BackendDevice::Metal) => {
-                tracing::info!("Loading Qwen on Metal");
-                // TODO: Use refactored loader in Phase 2
-                anyhow::bail!("Unified Qwen Metal loader not yet implemented - use legacy GeneratorConfig::Qwen")
+                let device = Device::new_metal(0)
+                    .context("Failed to initialize Metal device")?;
+                loaders::qwen::load(model_path, config.size, device)
             }
 
             // Qwen on CUDA (Linux/Windows)
             #[cfg(feature = "cuda")]
             (ModelFamily::Qwen2, BackendDevice::Cuda) => {
-                tracing::info!("Loading Qwen on CUDA");
-                // TODO: Implement in Phase 2
-                anyhow::bail!("Qwen CUDA loading not yet implemented")
+                let device = Device::new_cuda(0)
+                    .context("Failed to initialize CUDA device")?;
+                loaders::qwen::load(model_path, config.size, device)
             }
 
             // Qwen on CPU (all platforms)
             (ModelFamily::Qwen2, BackendDevice::Cpu) => {
-                tracing::info!("Loading Qwen on CPU");
-                // TODO: Use refactored loader in Phase 2
-                anyhow::bail!("Unified Qwen CPU loader not yet implemented - use legacy GeneratorConfig::Qwen")
+                loaders::qwen::load(model_path, config.size, Device::Cpu)
             }
 
             // Gemma on Metal (macOS)
