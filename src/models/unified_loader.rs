@@ -413,14 +413,46 @@ impl UnifiedModelLoader {
                 loaders::gemma::load(model_path, config.size, Device::Cpu)
             }
 
-            // Llama variants (Phase 5 - optional)
-            (ModelFamily::Llama3, _) => {
-                anyhow::bail!("Llama 3 support not yet implemented")
+            // Llama on Metal (macOS)
+            #[cfg(target_os = "macos")]
+            (ModelFamily::Llama3, BackendDevice::Metal) => {
+                let device = Device::new_metal(0)
+                    .context("Failed to initialize Metal device")?;
+                loaders::llama::load(model_path, config.size, device)
             }
 
-            // Mistral variants (Phase 5 - optional)
-            (ModelFamily::Mistral, _) => {
-                anyhow::bail!("Mistral support not yet implemented")
+            // Llama on CUDA (Linux/Windows)
+            #[cfg(feature = "cuda")]
+            (ModelFamily::Llama3, BackendDevice::Cuda) => {
+                let device = Device::new_cuda(0)
+                    .context("Failed to initialize CUDA device")?;
+                loaders::llama::load(model_path, config.size, device)
+            }
+
+            // Llama on CPU (all platforms)
+            (ModelFamily::Llama3, BackendDevice::Cpu) => {
+                loaders::llama::load(model_path, config.size, Device::Cpu)
+            }
+
+            // Mistral on Metal (macOS)
+            #[cfg(target_os = "macos")]
+            (ModelFamily::Mistral, BackendDevice::Metal) => {
+                let device = Device::new_metal(0)
+                    .context("Failed to initialize Metal device")?;
+                loaders::mistral::load(model_path, config.size, device)
+            }
+
+            // Mistral on CUDA (Linux/Windows)
+            #[cfg(feature = "cuda")]
+            (ModelFamily::Mistral, BackendDevice::Cuda) => {
+                let device = Device::new_cuda(0)
+                    .context("Failed to initialize CUDA device")?;
+                loaders::mistral::load(model_path, config.size, device)
+            }
+
+            // Mistral on CPU (all platforms)
+            (ModelFamily::Mistral, BackendDevice::Cpu) => {
+                loaders::mistral::load(model_path, config.size, Device::Cpu)
             }
 
             // Unsupported combinations
