@@ -1,5 +1,6 @@
 // Configuration structs
 
+use super::backend::BackendConfig;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -22,6 +23,9 @@ pub struct Config {
     /// Path to constitutional guidelines for local LLM (optional)
     /// Only used for local inference, NOT sent to Claude API
     pub constitution_path: Option<PathBuf>,
+
+    /// Backend configuration (device selection, model paths)
+    pub backend: BackendConfig,
 
     /// Server configuration (daemon mode)
     pub server: ServerConfig,
@@ -77,7 +81,41 @@ impl Config {
             streaming_enabled: true, // Enable by default
             tui_enabled: true,       // TUI is the default for interactive terminals
             constitution_path,
+            backend: BackendConfig::default(),
             server: ServerConfig::default(),
         }
     }
+
+    /// Save configuration to TOML file at ~/.shammah/config.toml
+    pub fn save(&self) -> anyhow::Result<()> {
+        use std::fs;
+
+        let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+        let config_dir = home.join(".shammah");
+        let config_path = config_dir.join("config.toml");
+
+        // Create directory if it doesn't exist
+        fs::create_dir_all(&config_dir)?;
+
+        // Create serializable config
+        let toml_config = TomlConfig {
+            api_key: self.api_key.clone(),
+            streaming_enabled: self.streaming_enabled,
+            backend: self.backend.clone(),
+        };
+
+        let toml_string = toml::to_string_pretty(&toml_config)?;
+        fs::write(&config_path, toml_string)?;
+
+        tracing::info!("Configuration saved to {:?}", config_path);
+        Ok(())
+    }
+}
+
+/// TOML-serializable config (subset of Config)
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TomlConfig {
+    api_key: String,
+    streaming_enabled: bool,
+    backend: BackendConfig,
 }

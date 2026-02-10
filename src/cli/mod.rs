@@ -11,6 +11,7 @@ pub mod output_layer; // Phase 3.5: Tracing integration
 mod output_manager;
 mod repl;
 pub mod repl_event; // Phase 2-3: Event loop infrastructure
+pub mod setup_wizard; // First-run setup wizard (API keys + device selection)
 mod status_bar;
 pub mod tui; // Phase 2: Terminal UI
 
@@ -21,4 +22,5 @@ pub use messages::{Message, MessageId, MessageRef, MessageStatus};
 pub use messages::{ProgressMessage, StaticMessage, StreamingResponseMessage, ToolExecutionMessage, UserQueryMessage};
 pub use output_manager::OutputManager;
 pub use repl::Repl;
+pub use setup_wizard::show_setup_wizard;
 pub use status_bar::{StatusBar, StatusLine, StatusLineType};

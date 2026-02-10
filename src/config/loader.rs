@@ -36,6 +36,8 @@ pub fn load_config() -> Result<Config> {
 }
 
 fn try_load_from_shammah_config() -> Result<Option<Config>> {
+    use super::backend::BackendConfig;
+
     let home = dirs::home_dir().context("Could not determine home directory")?;
     let config_path = home.join(".shammah/config.toml");
 
@@ -62,6 +64,13 @@ fn try_load_from_shammah_config() -> Result<Option<Config>> {
         // Override tui_enabled if specified in config
         if let Some(tui_enabled) = toml_config.get("tui_enabled").and_then(|v| v.as_bool()) {
             config.tui_enabled = tui_enabled;
+        }
+
+        // Load backend config if present
+        if let Some(backend_value) = toml_config.get("backend") {
+            if let Ok(backend_config) = toml::from_str::<BackendConfig>(&backend_value.to_string()) {
+                config.backend = backend_config;
+            }
         }
 
         Ok(Some(config))
