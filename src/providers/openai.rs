@@ -76,14 +76,55 @@ impl OpenAIProvider {
         };
 
         // Convert messages to OpenAI format
-        let messages: Vec<OpenAIMessage> = request
-            .messages
-            .iter()
-            .map(|msg| OpenAIMessage {
-                role: msg.role.clone(),
-                content: msg.text(), // Extract text from content blocks
-            })
-            .collect();
+        // Need to handle mixed content (text + tool results) by creating separate messages
+        let mut messages: Vec<OpenAIMessage> = Vec::new();
+
+        for msg in &request.messages {
+            // Separate text content from tool results
+            let mut text_parts = Vec::new();
+            let mut tool_results = Vec::new();
+
+            for block in &msg.content {
+                match block {
+                    ContentBlock::Text { text } => {
+                        text_parts.push(text.as_str());
+                    }
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } => {
+                        tool_results.push((tool_use_id.clone(), content.clone()));
+                    }
+                    ContentBlock::ToolUse { .. } => {
+                        // Tool use blocks are in assistant messages, handled in response
+                        // OpenAI includes them in the assistant message via tool_calls field
+                    }
+                }
+            }
+
+            // Add regular message if there's text content
+            if !text_parts.is_empty() {
+                messages.push(OpenAIMessage::Regular {
+                    role: msg.role.clone(),
+                    content: text_parts.join("\n"),
+                });
+            }
+
+            // Add tool result messages (one per tool result)
+            for (tool_call_id, content) in tool_results {
+                // Extract function name from tool_call_id if possible
+                // Format is typically like "call_abc123" or could be our generated format
+                let name = tool_call_id.clone();
+
+                messages.push(OpenAIMessage::Tool {
+                    role: "tool".to_string(),
+                    content,
+                    tool_call_id,
+                    name,
+                });
+            }
+        }
 
         // Convert tools to OpenAI format if present
         let tools = request.tools.as_ref().map(|tool_defs| {
@@ -91,8 +132,17 @@ impl OpenAIProvider {
                 .iter()
                 .map(|tool| {
                     // Convert ToolInputSchema to Value
-                    let parameters = serde_json::to_value(&tool.input_schema)
-                        .unwrap_or(serde_json::json!({}));
+                    let parameters = match serde_json::to_value(&tool.input_schema) {
+                        Ok(value) => value,
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to convert tool schema for '{}': {}",
+                                tool.name,
+                                e
+                            );
+                            serde_json::json!({})
+                        }
+                    };
 
                     OpenAITool {
                         tool_type: "function".to_string(),
@@ -117,18 +167,12 @@ impl OpenAIProvider {
     }
 
     /// Convert OpenAI response to ProviderResponse
-    fn from_openai_response(&self, response: OpenAIResponse) -> ProviderResponse {
-        let choice = response.choices.into_iter().next().unwrap_or_else(|| {
-            OpenAIChoice {
-                index: 0,
-                message: OpenAIResponseMessage {
-                    role: "assistant".to_string(),
-                    content: Some(String::new()),
-                    tool_calls: None,
-                },
-                finish_reason: Some("error".to_string()),
-            }
-        });
+    fn from_openai_response(&self, response: OpenAIResponse) -> Result<ProviderResponse> {
+        let choice = response
+            .choices
+            .into_iter()
+            .next()
+            .context("OpenAI returned no choices in response")?;
 
         // Convert message content to ContentBlock
         let mut content = Vec::new();
@@ -154,14 +198,14 @@ impl OpenAIProvider {
             }
         }
 
-        ProviderResponse {
+        Ok(ProviderResponse {
             id: response.id,
             model: response.model,
             content,
             stop_reason: choice.finish_reason,
             role: choice.message.role,
             provider: self.provider_name.clone(),
-        }
+        })
     }
 
     /// Send a single message request (no retry)
@@ -199,7 +243,7 @@ impl OpenAIProvider {
 
         tracing::debug!("Received response: {:?}", openai_response);
 
-        Ok(self.from_openai_response(openai_response))
+        self.from_openai_response(openai_response)
     }
 
     /// Send a message with streaming response (no retry)
@@ -379,10 +423,22 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// OpenAI message format - supports both regular messages and tool messages
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct OpenAIMessage {
-    role: String,
-    content: String,
+#[serde(untagged)]
+enum OpenAIMessage {
+    /// Regular user/assistant/system message
+    Regular {
+        role: String,
+        content: String,
+    },
+    /// Tool result message (from function execution)
+    Tool {
+        role: String, // Always "tool"
+        content: String,
+        tool_call_id: String,
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
