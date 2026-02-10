@@ -332,24 +332,22 @@ impl UnifiedModelLoader {
             // Gemma on Metal (macOS)
             #[cfg(target_os = "macos")]
             (ModelFamily::Gemma2, BackendDevice::Metal) => {
-                tracing::info!("Loading Gemma on Metal");
-                // TODO: Implement in Phase 4
-                anyhow::bail!("Gemma Metal loading not yet implemented")
+                let device = Device::new_metal(0)
+                    .context("Failed to initialize Metal device")?;
+                loaders::gemma::load(model_path, config.size, device)
             }
 
             // Gemma on CUDA (Linux/Windows)
             #[cfg(feature = "cuda")]
             (ModelFamily::Gemma2, BackendDevice::Cuda) => {
-                tracing::info!("Loading Gemma on CUDA");
-                // TODO: Implement in Phase 4
-                anyhow::bail!("Gemma CUDA loading not yet implemented")
+                let device = Device::new_cuda(0)
+                    .context("Failed to initialize CUDA device")?;
+                loaders::gemma::load(model_path, config.size, device)
             }
 
             // Gemma on CPU (all platforms)
             (ModelFamily::Gemma2, BackendDevice::Cpu) => {
-                tracing::info!("Loading Gemma on CPU");
-                // TODO: Implement in Phase 4
-                anyhow::bail!("Gemma CPU loading not yet implemented")
+                loaders::gemma::load(model_path, config.size, Device::Cpu)
             }
 
             // Llama variants (Phase 5 - optional)
