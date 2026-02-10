@@ -3,16 +3,26 @@
 use anyhow::{Context, Result};
 use futures::stream::StreamExt;
 use reqwest::Client;
+use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
 use super::retry::with_retry;
 use super::streaming::StreamEvent;
-use super::types::{MessageRequest, MessageResponse};
+use super::types::{ContentBlock, MessageRequest, MessageResponse};
+use crate::generators::StreamChunk;
 
 const CLAUDE_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const REQUEST_TIMEOUT_SECS: u64 = 60;
+
+/// Helper struct for building blocks during streaming
+struct BlockBuilder {
+    block_type: String,
+    id: Option<String>,
+    name: Option<String>,
+    accumulated: String,
+}
 
 #[derive(Clone)]
 pub struct ClaudeClient {
@@ -72,20 +82,20 @@ impl ClaudeClient {
     }
 
     /// Send a message with streaming response (with retry logic)
-    /// Returns a channel that receives text chunks as they arrive
+    /// Returns a channel that receives StreamChunk items (text deltas or complete blocks)
     pub async fn send_message_stream(
         &self,
         request: &MessageRequest,
-    ) -> Result<mpsc::Receiver<Result<String>>> {
+    ) -> Result<mpsc::Receiver<Result<StreamChunk>>> {
         with_retry(|| self.send_message_stream_once(request)).await
     }
 
     /// Send a message with streaming response (no retry)
-    /// Returns a channel that receives text chunks as they arrive
+    /// Returns a channel that receives StreamChunk items (text deltas or complete blocks)
     async fn send_message_stream_once(
         &self,
         request: &MessageRequest,
-    ) -> Result<mpsc::Receiver<Result<String>>> {
+    ) -> Result<mpsc::Receiver<Result<StreamChunk>>> {
         let (tx, rx) = mpsc::channel(100);
 
         // Clone request and add stream: true
@@ -115,12 +125,24 @@ impl ClaudeClient {
             );
         }
 
-        // Spawn task to parse SSE stream
+        // Spawn task to parse SSE stream with block tracking
         tokio::spawn(async move {
+            tracing::debug!("[STREAM] Streaming task started");
+            tracing::debug!("Streaming task started");
             let mut stream = response.bytes_stream();
             let mut buffer = Vec::new();
 
+            // Track blocks being built (index -> BlockBuilder)
+            let mut blocks: HashMap<usize, BlockBuilder> = HashMap::new();
+            let mut done = false;
+
             while let Some(chunk) = stream.next().await {
+                if done {
+                    tracing::debug!("[STREAM] Done flag set, breaking from chunk loop");
+                    tracing::debug!("Stream marked as done, exiting");
+                    break;
+                }
+
                 match chunk {
                     Ok(bytes) => {
                         buffer.extend_from_slice(&bytes);
@@ -136,38 +158,127 @@ impl ClaudeClient {
 
                                 // Check for end marker
                                 if json_str == "[DONE]" {
+                                    tracing::debug!("[STREAM] Received [DONE], marking stream as complete");
                                     tracing::debug!("Stream completed");
+                                    done = true;
                                     break;
                                 }
 
-                                // Parse event and extract text
+                                // Parse event
                                 if let Ok(event) = serde_json::from_str::<StreamEvent>(json_str) {
-                                    // Check for tool_use blocks - signal error to abort streaming
-                                    if event.is_tool_use_start() {
-                                        tracing::debug!("Tool use detected in stream, aborting");
-                                        let _ =
-                                            tx.send(Err(anyhow::anyhow!("TOOLS_DETECTED"))).await;
-                                        break;
-                                    }
-
-                                    if event.is_text_delta() {
-                                        if let Some(text) = event.text() {
-                                            if tx.send(Ok(text.to_string())).await.is_err() {
-                                                // Receiver dropped, stop streaming
-                                                break;
+                                    tracing::debug!("Stream event: {}", event.event_type);
+                                    match event.event_type.as_str() {
+                                        "content_block_start" => {
+                                            if let Some(cb) = event.content_block {
+                                                let index = event.index.unwrap_or(0);
+                                                blocks.insert(
+                                                    index,
+                                                    BlockBuilder {
+                                                        block_type: cb.block_type,
+                                                        id: cb.id,
+                                                        name: cb.name,
+                                                        accumulated: String::new(),
+                                                    },
+                                                );
+                                                tracing::debug!(
+                                                    "Started block {} type {}",
+                                                    index,
+                                                    blocks[&index].block_type
+                                                );
                                             }
                                         }
+
+                                        "content_block_delta" => {
+                                            let index = event.index.unwrap_or(0);
+                                            if let Some(builder) = blocks.get_mut(&index) {
+                                                if let Some(delta) = event.delta {
+                                                    match delta.delta_type.as_str() {
+                                                        "text_delta" => {
+                                                            if let Some(text) = delta.text {
+                                                                builder.accumulated.push_str(&text);
+                                                                // Send delta immediately
+                                                                if tx
+                                                                    .send(Ok(StreamChunk::TextDelta(
+                                                                        text,
+                                                                    )))
+                                                                    .await
+                                                                    .is_err()
+                                                                {
+                                                                    // Receiver dropped, stop streaming
+                                                                    done = true;
+                                                                    break;
+                                                                }
+                                                            }
+                                                        }
+                                                        "input_json_delta" => {
+                                                            if let Some(json) = delta.partial_json {
+                                                                builder.accumulated.push_str(&json);
+                                                            }
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        "content_block_stop" => {
+                                            let index = event.index.unwrap_or(0);
+                                            if let Some(builder) = blocks.remove(&index) {
+                                                let block = match builder.block_type.as_str() {
+                                                    "text" => ContentBlock::Text {
+                                                        text: builder.accumulated,
+                                                    },
+                                                    "tool_use" => {
+                                                        let input = serde_json::from_str(
+                                                            &builder.accumulated,
+                                                        )
+                                                        .unwrap_or(serde_json::json!({}));
+                                                        ContentBlock::ToolUse {
+                                                            id: builder.id.unwrap_or_default(),
+                                                            name: builder.name.unwrap_or_default(),
+                                                            input,
+                                                        }
+                                                    }
+                                                    _ => continue,
+                                                };
+
+                                                tracing::debug!(
+                                                    "Completed block {} type {}",
+                                                    index,
+                                                    builder.block_type
+                                                );
+
+                                                if tx
+                                                    .send(Ok(StreamChunk::ContentBlockComplete(
+                                                        block,
+                                                    )))
+                                                    .await
+                                                    .is_err()
+                                                {
+                                                    // Receiver dropped, stop streaming
+                                                    done = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+
+                                        _ => {}
                                     }
                                 }
                             }
                         }
                     }
                     Err(e) => {
+                        tracing::error!("Stream error: {}", e);
                         let _ = tx.send(Err(e.into())).await;
+                        done = true;
                         break;
                     }
                 }
             }
+
+            tracing::debug!("[STREAM] Exited chunk loop, task finishing");
+            tracing::debug!("Streaming task finished, channel will close");
         });
 
         Ok(rx)

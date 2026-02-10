@@ -1,7 +1,7 @@
 // Progressive Bootstrap - Async model loading with instant startup
 // Enables REPL to start in <100ms while model loads in background
 
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -10,6 +10,7 @@ use super::download::{DownloadProgress, ModelDownloader};
 use super::generator_new::GeneratorModel;
 use super::model_selector::{ModelSelector, QwenSize};
 use super::{DevicePreference, GeneratorConfig};
+use crate::cli::OutputManager;
 
 /// Generator loading state for progressive bootstrap
 #[derive(Debug, Clone)]
@@ -86,17 +87,58 @@ impl GeneratorState {
 /// Background task that loads generator asynchronously
 pub struct BootstrapLoader {
     state: Arc<RwLock<GeneratorState>>,
+    output: Option<Arc<OutputManager>>,
 }
 
 impl BootstrapLoader {
     /// Create new bootstrap loader with shared state
-    pub fn new(state: Arc<RwLock<GeneratorState>>) -> Self {
-        Self { state }
+    pub fn new(state: Arc<RwLock<GeneratorState>>, output: Option<Arc<OutputManager>>) -> Self {
+        Self { state, output }
     }
 
     /// Get reference to the generator state
     pub fn state(&self) -> &Arc<RwLock<GeneratorState>> {
         &self.state
+    }
+
+    /// Check if HuggingFace token exists and is valid
+    fn check_hf_token() -> Result<()> {
+        let token_path = dirs::cache_dir()
+            .ok_or_else(|| anyhow!("Could not determine cache directory"))?
+            .join("huggingface")
+            .join("token");
+
+        if !token_path.exists() {
+            return Err(anyhow!(
+                "HuggingFace token not found at {:?}\n\
+                 \n\
+                 Shammah needs a HuggingFace token to download Qwen models.\n\
+                 \n\
+                 Please follow these steps:\n\
+                 1. Create a token at https://huggingface.co/settings/tokens\n\
+                 2. Save it: echo \"hf_YOUR_TOKEN\" > ~/.cache/huggingface/token\n\
+                 3. Restart Shammah\n\
+                 \n\
+                 See README.md for detailed instructions.",
+                token_path
+            ));
+        }
+
+        // Validate token format (should start with hf_)
+        let token = std::fs::read_to_string(&token_path)
+            .context("Failed to read HuggingFace token file")?;
+
+        let token = token.trim();
+        if !token.starts_with("hf_") {
+            return Err(anyhow!(
+                "Invalid HuggingFace token format in {:?}\n\
+                 Token should start with 'hf_'\n\
+                 Get a new token at https://huggingface.co/settings/tokens",
+                token_path
+            ));
+        }
+
+        Ok(())
     }
 
     /// Load generator in background (blocking operation, run in tokio::task::spawn_blocking)
@@ -130,6 +172,20 @@ impl BootstrapLoader {
             // Step 4: Download if not cached (this is the slow part)
             tracing::info!("Model not cached, downloading...");
 
+            // Output progress to user
+            if let Some(output) = &self.output {
+                output.write_progress(format!("⏳ Downloading {}...", model_size.description()));
+            }
+
+            // Check token before attempting download
+            if let Err(e) = Self::check_hf_token() {
+                tracing::error!("HuggingFace token check failed: {}", e);
+                *self.state.write().await = GeneratorState::Failed {
+                    error: format!("HuggingFace token required: {}", e),
+                };
+                return Err(e);
+            }
+
             // Update state to downloading
             *self.state.write().await = GeneratorState::Downloading {
                 model_size,
@@ -142,6 +198,7 @@ impl BootstrapLoader {
 
             // Spawn blocking task for download (hf-hub is synchronous)
             let state_clone = Arc::clone(&self.state);
+            let output_clone = self.output.clone();
             let model_size_clone = model_size;
 
             let result = tokio::task::spawn_blocking(move || {
@@ -157,6 +214,17 @@ impl BootstrapLoader {
                             total_files,
                             ..
                         } => {
+                            // Output progress to user
+                            if let Some(output) = &output_clone {
+                                output.write_progress(format!(
+                                    "  └─ Downloading {}: {}/{} - {}",
+                                    model_size_clone.description(),
+                                    current_file,
+                                    total_files,
+                                    file_name
+                                ));
+                            }
+
                             // Update state with progress
                             if let Ok(mut state) = state_clone.try_write() {
                                 *state = GeneratorState::Downloading {
@@ -171,9 +239,15 @@ impl BootstrapLoader {
                         }
                         DownloadProgress::Complete { .. } => {
                             tracing::info!("Download complete");
+                            if let Some(output) = &output_clone {
+                                output.write_progress(format!("✓ Download complete: {}", model_size_clone.description()));
+                            }
                         }
                         DownloadProgress::Error { error, .. } => {
                             tracing::error!("Download error: {}", error);
+                            if let Some(output) = &output_clone {
+                                output.write_error(format!("✗ Download failed: {}", error));
+                            }
                         }
                         _ => {}
                     }
@@ -187,14 +261,20 @@ impl BootstrapLoader {
         } else {
             // Model is cached, get cache path
             tracing::info!("Model cached, loading from disk...");
+            if let Some(output) = &self.output {
+                output.write_progress(format!("⏳ Loading {} from cache...", model_size.description()));
+            }
             downloader.cache_dir().join(format!(
-                "hub/models--Qwen--{}/snapshots",
+                "hub/models--{}/snapshots",
                 model_size.model_id().replace('/', "--")
             ))
         };
 
         // Step 5: Load model (this is also slow, ~2-5 seconds)
         *self.state.write().await = GeneratorState::Loading { model_size };
+        if let Some(output) = &self.output {
+            output.write_progress(format!("⏳ Loading {} into memory...", model_size.description()));
+        }
 
         // Find the snapshot directory
         let snapshot_dir = Self::find_snapshot_dir(&cache_path)?;
@@ -216,6 +296,9 @@ impl BootstrapLoader {
         };
 
         tracing::info!("✓ Generator ready: {}", model_size.description());
+        if let Some(output) = &self.output {
+            output.write_progress(format!("✓ {} ready", model_size.description()));
+        }
 
         Ok(())
     }
@@ -295,7 +378,7 @@ mod tests {
     #[tokio::test]
     async fn test_bootstrap_loader_creation() {
         let state = Arc::new(RwLock::new(GeneratorState::Initializing));
-        let loader = BootstrapLoader::new(state);
+        let loader = BootstrapLoader::new(state, None);
 
         // Just verify creation works
         assert!(true);
@@ -304,7 +387,7 @@ mod tests {
     #[tokio::test]
     async fn test_not_available_state() {
         let state = Arc::new(RwLock::new(GeneratorState::Initializing));
-        let loader = BootstrapLoader::new(Arc::clone(&state));
+        let loader = BootstrapLoader::new(Arc::clone(&state), None);
 
         loader.set_not_available().await;
 

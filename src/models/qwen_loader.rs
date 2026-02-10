@@ -29,6 +29,9 @@ pub struct LoadedQwenModel {
 impl LoadedQwenModel {
     /// Generate text from input prompt
     pub fn generate(&mut self, prompt: &str, max_tokens: usize) -> Result<String> {
+        // Clear KV cache from any previous generation
+        self.model.clear_kv_cache();
+
         // Tokenize input
         let tokens = self
             .tokenizer
@@ -36,20 +39,55 @@ impl LoadedQwenModel {
             .map_err(|e| anyhow::anyhow!("Tokenization failed: {}", e))?;
 
         let input_ids = tokens.get_ids();
-        let input_tensor = Tensor::new(input_ids, &self.device)?.unsqueeze(0)?; // Add batch dimension
-
-        // Generate tokens autoregressively
         let mut generated_ids = input_ids.to_vec();
 
-        for _ in 0..max_tokens {
-            // Forward pass
-            let logits = self.model.forward(&input_tensor, generated_ids.len() - 1)?;
+        for step in 0..max_tokens {
+            // Determine what to pass: full sequence on first iteration, only new token afterwards
+            let (input_for_forward, seqlen_offset) = if step == 0 {
+                // First iteration: pass full prompt
+                (&generated_ids[..], 0)
+            } else {
+                // Subsequent iterations: pass only the last token
+                (&generated_ids[generated_ids.len() - 1..], generated_ids.len() - 1)
+            };
 
-            // Get logits for last token
-            let last_logits = logits.i((0, generated_ids.len() - 1))?;
+            let input_tensor = Tensor::new(input_for_forward, &self.device)
+                .context("Failed to create input tensor")?
+                .unsqueeze(0)
+                .context("Failed to add batch dimension")?;
+
+            // Forward pass with appropriate seqlen_offset
+            let logits = self.model.forward(&input_tensor, seqlen_offset)
+                .with_context(|| {
+                    let device_info = match &self.device {
+                        Device::Metal(_) => "Metal (Apple Silicon GPU)",
+                        Device::Cpu => "CPU",
+                        Device::Cuda(_) => "CUDA GPU",
+                    };
+                    format!(
+                        "Forward pass failed at step {} on {} device (seqlen_offset={}). \
+                         Input shape: {:?}",
+                        step, device_info, seqlen_offset, input_tensor.dims()
+                    )
+                })?;
+
+            // Get logits for the last position in the returned logits
+            // Extract the sequence length from the actual logits tensor
+            let seq_len = logits.dim(1)
+                .context("Failed to get sequence length from logits")?;
+            let last_pos = seq_len - 1;
+
+            let last_logits = logits.i((0, last_pos))
+                .with_context(|| format!(
+                    "Failed to extract logits at position {} (logits shape: {:?}, input shape: {:?})",
+                    last_pos, logits.dims(), input_tensor.dims()
+                ))?;
 
             // Sample next token (greedy for now)
-            let next_token = last_logits.argmax(0)?.to_scalar::<u32>()?;
+            let next_token = last_logits.argmax(0)
+                .context("Failed to compute argmax")?
+                .to_scalar::<u32>()
+                .context("Failed to convert token to scalar")?;
 
             // Check for EOS token
             if next_token == self.tokenizer.token_to_id("</s>").unwrap_or(2) {
@@ -96,6 +134,28 @@ impl QwenLoader {
 
         // 1. Load model configuration
         let config_path = config.cache_dir.join("config.json");
+
+        if !config_path.exists() {
+            return Err(anyhow::anyhow!(
+                "config.json not found in {:?}\n\
+                 \n\
+                 This usually means the model download was incomplete.\n\
+                 The model weights downloaded but config files are missing.\n\
+                 \n\
+                 Possible causes:\n\
+                 1. Missing HuggingFace token (check ~/.cache/huggingface/token)\n\
+                 2. Network error during download\n\
+                 3. Model requires authentication you don't have\n\
+                 \n\
+                 Try:\n\
+                 1. Set up your HuggingFace token (see README.md)\n\
+                 2. Delete cache: rm -rf {:?}\n\
+                 3. Restart Shammah to re-download",
+                config_path,
+                config.cache_dir
+            ));
+        }
+
         let qwen_config: Qwen2Config = serde_json::from_reader(
             std::fs::File::open(&config_path)
                 .with_context(|| format!("Failed to open config at {:?}", config_path))?,
@@ -127,10 +187,22 @@ impl QwenLoader {
             tracing::debug!("  - {:?}", path.file_name().unwrap_or_default());
         }
 
+        // Use F16 for Metal (GPU optimized), F32 for CPU
+        let dtype = match &config.device {
+            Device::Metal(_) => {
+                tracing::info!("Using F16 precision for Metal GPU");
+                candle_core::DType::F16
+            }
+            _ => {
+                tracing::info!("Using F32 precision for CPU");
+                candle_core::DType::F32
+            }
+        };
+
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(
                 &weights_paths,
-                candle_core::DType::F32,
+                dtype,
                 &config.device,
             )?
         };

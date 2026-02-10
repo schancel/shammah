@@ -91,6 +91,25 @@ pub struct ThresholdRouter {
     loaded_from_disk: bool,
 }
 
+impl Clone for ThresholdRouter {
+    fn clone(&self) -> Self {
+        Self {
+            category_stats: self.category_stats.clone(),
+            total_queries: self.total_queries,
+            total_local_attempts: self.total_local_attempts,
+            total_successes: self.total_successes,
+            confidence_threshold: self.confidence_threshold,
+            min_samples: self.min_samples,
+            target_forward_rate: self.target_forward_rate,
+            session_id: self.session_id.clone(),
+            has_saved_this_session: AtomicBool::new(
+                self.has_saved_this_session.load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            loaded_from_disk: self.loaded_from_disk,
+        }
+    }
+}
+
 impl ThresholdRouter {
     /// Create new threshold router with balanced defaults
     pub fn new() -> Self {

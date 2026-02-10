@@ -1,7 +1,7 @@
 // Model Downloader - Model download with progress tracking
 // Uses HuggingFace Hub for download management and caching
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
@@ -82,18 +82,40 @@ impl ModelDownloader {
 
         let mut downloaded_files = Vec::new();
 
-        // Download config files first
-        let config_files = vec!["config.json", "tokenizer.json", "tokenizer_config.json"];
-        for file in &config_files {
+        // Download config files first (with required vs optional distinction)
+        let config_files = vec![
+            ("config.json", true),           // Required
+            ("tokenizer.json", true),         // Required
+            ("tokenizer_config.json", false), // Optional
+        ];
+
+        let mut required_failed = Vec::new();
+
+        for (file, required) in &config_files {
             match repo.get(file) {
                 Ok(path) => {
-                    tracing::debug!("Downloaded {} to {:?}", file, path);
+                    tracing::info!("Downloaded {} to {:?}", file, path);
                     downloaded_files.push(path);
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to download {}: {}", file, e);
+                    if *required {
+                        required_failed.push(file.to_string());
+                        tracing::error!("Failed to download required file {}: {}", file, e);
+                    } else {
+                        tracing::warn!("Failed to download optional file {}: {}", file, e);
+                    }
                 }
             }
+        }
+
+        // Fail if required files didn't download
+        if !required_failed.is_empty() {
+            return Err(anyhow!(
+                "Failed to download required config files: {}\n\
+                 This usually means authentication failed.\n\
+                 Check your HuggingFace token at ~/.cache/huggingface/token",
+                required_failed.join(", ")
+            ));
         }
 
         // Try to download model weights (single file or sharded)

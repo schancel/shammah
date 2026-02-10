@@ -341,7 +341,7 @@ async fn run_daemon(bind_address: String) -> Result<()> {
     // Initialize BootstrapLoader for progressive Qwen model loading
     output_progress!("⏳ Initializing Qwen model (background)...");
     let generator_state = Arc::new(RwLock::new(GeneratorState::Initializing));
-    let bootstrap_loader = Arc::new(BootstrapLoader::new(Arc::clone(&generator_state)));
+    let bootstrap_loader = Arc::new(BootstrapLoader::new(Arc::clone(&generator_state), None));
 
     // Start background model loading
     let loader_clone = Arc::clone(&bootstrap_loader);

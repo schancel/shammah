@@ -12,6 +12,7 @@ pub struct CrisisKeywords {
     pub abuse: Vec<String>,
 }
 
+#[derive(Clone)]
 pub struct CrisisDetector {
     keywords: CrisisKeywords,
 }

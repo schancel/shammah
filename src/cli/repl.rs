@@ -264,7 +264,26 @@ impl Repl {
 
         // Initialize BootstrapLoader for progressive Qwen model loading
         let generator_state = Arc::new(RwLock::new(GeneratorState::Initializing));
-        let bootstrap_loader = Arc::new(BootstrapLoader::new(Arc::clone(&generator_state)));
+        let bootstrap_loader = Arc::new(BootstrapLoader::new(
+            Arc::clone(&generator_state),
+            Some(Arc::new(output_manager.clone())),
+        ));
+
+        // Check HuggingFace token early (warn if missing)
+        let token_path = dirs::cache_dir()
+            .and_then(|p| Some(p.join("huggingface").join("token")));
+
+        if let Some(path) = token_path {
+            if !path.exists() && is_interactive {
+                output_progress!(
+                    "⚠️  HuggingFace token not found at {:?}\n\
+                     Local Qwen model downloads will fail.\n\
+                     See README.md for setup instructions.\n\
+                     Queries will forward to Claude API.",
+                    path
+                );
+            }
+        }
 
         if is_interactive {
             output_progress!("⏳ Initializing Qwen model (background)...");
@@ -984,10 +1003,10 @@ impl Repl {
         Ok(current_response.text())
     }
 
-    /// Display streaming response character-by-character
+    /// Display streaming response character-by-character (handles new StreamChunk format)
     async fn display_streaming_response(
         &mut self,
-        mut rx: mpsc::Receiver<Result<String>>,
+        mut rx: mpsc::Receiver<Result<crate::generators::StreamChunk>>,
     ) -> Result<String> {
         let mut full_response = String::new();
 
@@ -1003,7 +1022,7 @@ impl Repl {
 
         while let Some(result) = rx.recv().await {
             match result {
-                Ok(text_chunk) => {
+                Ok(crate::generators::StreamChunk::TextDelta(text_chunk)) => {
                     full_response.push_str(&text_chunk);
 
                     // Update the output buffer with the chunk
@@ -1018,6 +1037,9 @@ impl Repl {
                         print!("{}", text_chunk);
                         let _ = std::io::stdout().flush();
                     }
+                }
+                Ok(crate::generators::StreamChunk::ContentBlockComplete(_block)) => {
+                    // Tool block completed - ignore for now (event loop handles tools)
                 }
                 Err(e) => {
                     return Err(e);
@@ -1079,10 +1101,25 @@ impl Repl {
         //     self.output_status("✓ Event loop mode enabled (concurrent execution)");
         // }
 
+        // Create generators
+        use crate::generators::{claude::ClaudeGenerator, qwen::QwenGenerator};
+        let claude_gen: Arc<dyn crate::generators::Generator> =
+            Arc::new(ClaudeGenerator::new(Arc::new(self.claude_client.clone())));
+        let qwen_gen: Arc<dyn crate::generators::Generator> = Arc::new(QwenGenerator::new(
+            Arc::clone(&self.local_generator),
+            Arc::clone(&self.tokenizer),
+        ));
+
+        // Get generator state from bootstrap loader
+        let generator_state = Arc::clone(self.bootstrap_loader.state());
+
         // Create EventLoop with all dependencies
         let mut event_loop = EventLoop::new(
             Arc::clone(&self.conversation),
-            Arc::new(self.claude_client.clone()),
+            claude_gen,
+            qwen_gen,
+            Arc::new(self.router.clone()),
+            generator_state,
             self.tool_definitions.clone(),
             Arc::clone(&self.tool_executor),
             tui_renderer,

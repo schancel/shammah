@@ -141,6 +141,36 @@ cargo install --path .
 # Now using local Qwen model!
 ```
 
+### HuggingFace Token Setup
+
+**Important:** Qwen models require a HuggingFace authentication token to download. Follow these steps:
+
+1. **Create a HuggingFace account** at https://huggingface.co/join (free)
+
+2. **Generate an access token**:
+   - Go to https://huggingface.co/settings/tokens
+   - Click "New token"
+   - Name: "Shammah" (or any name you prefer)
+   - Type: "Read" (not "Write")
+   - Click "Generate token"
+   - Copy the token (starts with `hf_...`)
+
+3. **Save token to file**:
+   ```bash
+   mkdir -p ~/.cache/huggingface
+   echo "hf_YOUR_TOKEN_HERE" > ~/.cache/huggingface/token
+   chmod 600 ~/.cache/huggingface/token
+   ```
+
+4. **Verify setup**:
+   ```bash
+   cat ~/.cache/huggingface/token  # Should show your token
+   ```
+
+That's it! Shammah will now be able to download Qwen models automatically.
+
+**Note:** Without a token, Shammah will gracefully forward all queries to the Claude API instead.
+
 ### Configuration
 
 ```bash

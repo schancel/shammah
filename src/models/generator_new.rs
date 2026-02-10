@@ -1,7 +1,7 @@
 // Generator Model - Unified text generation interface
 // Supports both custom transformers (random init) and pre-trained Qwen models
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use candle_core::{Device, Tensor};
 use std::path::Path;
 
@@ -116,18 +116,82 @@ impl GeneratorModel {
                     model_size.description()
                 );
 
-                let device = get_device_with_preference(*device_preference)?;
+                // Try Metal first (10-100x faster), fall back to CPU if issues
+                tracing::info!("Attempting to load Qwen on preferred device...");
+
+                let device = match get_device_with_preference(*device_preference) {
+                    Ok(dev) => dev,
+                    Err(e) => {
+                        tracing::warn!("Failed to get preferred device: {}, using CPU", e);
+                        Device::Cpu
+                    }
+                };
 
                 let qwen_config = QwenConfig {
                     model_size: *model_size,
                     cache_dir: cache_dir.clone(),
-                    device,
+                    device: device.clone(),
                 };
 
-                let inner = QwenLoader::load(&qwen_config)?;
-                let name = format!("Qwen {}", model_size.description());
+                // Try loading and test a simple generation
+                match QwenLoader::load(&qwen_config) {
+                    Ok(mut model) => {
+                        // Test with simple prompt (with KV cache, should be fast)
+                        tracing::info!("Testing generation on {:?}...", device);
+                        // Try with just 1 token to minimize complexity
+                        match model.generate("Hi", 1) {
+                            Ok(output) => {
+                                let name = format!("Qwen {}", model_size.description());
+                                tracing::info!("✓ Test passed, generated: {:?}", output.chars().take(20).collect::<String>());
+                                tracing::info!("✓ Loaded Qwen on {:?}", device);
+                                Box::new(QwenGenerator { inner: model, name })
+                            }
+                            Err(e) if matches!(device, Device::Metal(_)) => {
+                                // Metal test failed, fall back to CPU
+                                tracing::warn!("Metal generation test failed: {}", e);
 
-                Box::new(QwenGenerator { inner, name })
+                                // Write full error to file for inspection
+                                if let Err(write_err) = std::fs::write("metal_error.txt", format!("{:#?}", e)) {
+                                    tracing::warn!("Failed to write metal_error.txt: {}", write_err);
+                                } else {
+                                    tracing::warn!("Full error details written to metal_error.txt");
+                                }
+
+                                tracing::info!("Retrying with CPU...");
+
+                                let cpu_config = QwenConfig {
+                                    model_size: *model_size,
+                                    cache_dir: cache_dir.clone(),
+                                    device: Device::Cpu,
+                                };
+
+                                let model = QwenLoader::load(&cpu_config)?;
+                                let name = format!("Qwen {}", model_size.description());
+                                tracing::info!("✓ Loaded Qwen on CPU (Metal fallback, skipping test)");
+                                // Skip test for CPU - we know it works, and test might be slow
+                                Box::new(QwenGenerator { inner: model, name })
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    Err(e) if matches!(device, Device::Metal(_)) => {
+                        // Metal loading failed, fall back to CPU
+                        tracing::warn!("Metal loading failed: {}", e);
+                        tracing::info!("Retrying with CPU...");
+
+                        let cpu_config = QwenConfig {
+                            model_size: *model_size,
+                            cache_dir: cache_dir.clone(),
+                            device: Device::Cpu,
+                        };
+
+                        let model = QwenLoader::load(&cpu_config)?;
+                        let name = format!("Qwen {}", model_size.description());
+                        tracing::info!("✓ Loaded Qwen on CPU (Metal fallback)");
+                        Box::new(QwenGenerator { inner: model, name })
+                    }
+                    Err(e) => return Err(e),
+                }
             }
         };
 

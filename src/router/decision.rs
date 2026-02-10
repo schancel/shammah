@@ -31,6 +31,7 @@ pub enum RouteDecision {
     Forward { reason: ForwardReason },
 }
 
+#[derive(Clone)]
 pub struct Router {
     crisis_detector: CrisisDetector,
     threshold_router: ThresholdRouter,
