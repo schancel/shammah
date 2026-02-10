@@ -1,287 +1,71 @@
 // HTTP client for Claude API
+//
+// This client now acts as a facade over the provider system, allowing
+// different LLM providers (Claude, OpenAI, Grok, etc.) to be used interchangeably.
 
 use anyhow::{Context, Result};
-use futures::stream::StreamExt;
-use reqwest::Client;
-use std::collections::HashMap;
-use std::time::Duration;
 use tokio::sync::mpsc;
 
-use super::retry::with_retry;
-use super::streaming::StreamEvent;
-use super::types::{ContentBlock, MessageRequest, MessageResponse};
+use super::types::{MessageRequest, MessageResponse};
 use crate::generators::StreamChunk;
-
-const CLAUDE_API_URL: &str = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_VERSION: &str = "2023-06-01";
-const REQUEST_TIMEOUT_SECS: u64 = 60;
-
-/// Helper struct for building blocks during streaming
-struct BlockBuilder {
-    block_type: String,
-    id: Option<String>,
-    name: Option<String>,
-    accumulated: String,
-}
+use crate::providers::{claude::ClaudeProvider, LlmProvider, ProviderRequest};
 
 #[derive(Clone)]
 pub struct ClaudeClient {
-    client: Client,
-    api_key: String,
+    provider: std::sync::Arc<dyn LlmProvider>,
 }
 
 impl ClaudeClient {
+    /// Create a new ClaudeClient with Claude as the provider (for backwards compatibility)
     pub fn new(api_key: String) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
-            .build()
-            .context("Failed to create HTTP client")?;
-
-        Ok(Self { client, api_key })
+        let provider = ClaudeProvider::new(api_key)?;
+        Ok(Self {
+            provider: std::sync::Arc::new(provider),
+        })
     }
 
-    /// Send a message to Claude API with retry logic
-    pub async fn send_message(&self, request: &MessageRequest) -> Result<MessageResponse> {
-        with_retry(|| self.send_message_once(request)).await
+    /// Create a ClaudeClient with a custom provider
+    pub fn with_provider(provider: Box<dyn LlmProvider>) -> Self {
+        Self {
+            provider: std::sync::Arc::from(provider),
+        }
     }
 
-    /// Send a single message request (no retry)
-    async fn send_message_once(&self, request: &MessageRequest) -> Result<MessageResponse> {
-        tracing::debug!("Sending request to Claude API: {:?}", request);
+    /// Get the provider name
+    pub fn provider_name(&self) -> &str {
+        self.provider.name()
+    }
 
-        let response = self
-            .client
-            .post(CLAUDE_API_URL)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json")
-            .json(request)
-            .send()
-            .await
-            .context("Failed to send request to Claude API")?;
+    /// Convert MessageRequest to ProviderRequest
+    fn to_provider_request(&self, request: &MessageRequest) -> ProviderRequest {
+        let mut provider_req = ProviderRequest::new(request.messages.clone())
+            .with_model(request.model.clone())
+            .with_max_tokens(request.max_tokens);
 
-        let status = response.status();
-
-        if !status.is_success() {
-            let error_body = response.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "Claude API request failed\n\nStatus: {}\nBody: {}",
-                status,
-                error_body
-            );
+        if let Some(tools) = &request.tools {
+            provider_req = provider_req.with_tools(tools.clone());
         }
 
-        let message_response: MessageResponse = response
-            .json()
-            .await
-            .context("Failed to parse Claude API response")?;
-
-        tracing::debug!("Received response: {:?}", message_response);
-
-        Ok(message_response)
+        provider_req
     }
 
-    /// Send a message with streaming response (with retry logic)
+    /// Send a message to the configured provider with retry logic
+    pub async fn send_message(&self, request: &MessageRequest) -> Result<MessageResponse> {
+        let provider_request = self.to_provider_request(request);
+        let provider_response = self.provider.send_message(&provider_request).await?;
+
+        // Convert ProviderResponse to MessageResponse
+        Ok(provider_response.into())
+    }
+
+    /// Send a message with streaming response
     /// Returns a channel that receives StreamChunk items (text deltas or complete blocks)
     pub async fn send_message_stream(
         &self,
         request: &MessageRequest,
     ) -> Result<mpsc::Receiver<Result<StreamChunk>>> {
-        with_retry(|| self.send_message_stream_once(request)).await
-    }
-
-    /// Send a message with streaming response (no retry)
-    /// Returns a channel that receives StreamChunk items (text deltas or complete blocks)
-    async fn send_message_stream_once(
-        &self,
-        request: &MessageRequest,
-    ) -> Result<mpsc::Receiver<Result<StreamChunk>>> {
-        let (tx, rx) = mpsc::channel(100);
-
-        // Clone request and add stream: true
-        let mut request_json = serde_json::to_value(request)?;
-        request_json["stream"] = serde_json::json!(true);
-
-        tracing::debug!("Sending streaming request to Claude API");
-
-        let response = self
-            .client
-            .post(CLAUDE_API_URL)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json")
-            .json(&request_json)
-            .send()
-            .await
-            .context("Failed to send streaming request to Claude API")?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let error_body = response.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "Claude API streaming request failed\n\nStatus: {}\nBody: {}",
-                status,
-                error_body
-            );
-        }
-
-        // Spawn task to parse SSE stream with block tracking
-        tokio::spawn(async move {
-            tracing::debug!("[STREAM] Streaming task started");
-            tracing::debug!("Streaming task started");
-            let mut stream = response.bytes_stream();
-            let mut buffer = Vec::new();
-
-            // Track blocks being built (index -> BlockBuilder)
-            let mut blocks: HashMap<usize, BlockBuilder> = HashMap::new();
-            let mut done = false;
-
-            while let Some(chunk) = stream.next().await {
-                if done {
-                    tracing::debug!("[STREAM] Done flag set, breaking from chunk loop");
-                    tracing::debug!("Stream marked as done, exiting");
-                    break;
-                }
-
-                match chunk {
-                    Ok(bytes) => {
-                        buffer.extend_from_slice(&bytes);
-
-                        // Parse line by line
-                        while let Some(newline_pos) = buffer.iter().position(|&b| b == b'\n') {
-                            let line_bytes: Vec<u8> = buffer.drain(..=newline_pos).collect();
-                            let line = String::from_utf8_lossy(&line_bytes);
-
-                            // SSE format: "data: {...}\n"
-                            if let Some(json_str) = line.strip_prefix("data: ") {
-                                let json_str = json_str.trim();
-
-                                // Check for end marker
-                                if json_str == "[DONE]" {
-                                    tracing::debug!("[STREAM] Received [DONE], marking stream as complete");
-                                    tracing::debug!("Stream completed");
-                                    done = true;
-                                    break;
-                                }
-
-                                // Parse event
-                                if let Ok(event) = serde_json::from_str::<StreamEvent>(json_str) {
-                                    tracing::debug!("Stream event: {}", event.event_type);
-                                    match event.event_type.as_str() {
-                                        "content_block_start" => {
-                                            if let Some(cb) = event.content_block {
-                                                let index = event.index.unwrap_or(0);
-                                                blocks.insert(
-                                                    index,
-                                                    BlockBuilder {
-                                                        block_type: cb.block_type,
-                                                        id: cb.id,
-                                                        name: cb.name,
-                                                        accumulated: String::new(),
-                                                    },
-                                                );
-                                                tracing::debug!(
-                                                    "Started block {} type {}",
-                                                    index,
-                                                    blocks[&index].block_type
-                                                );
-                                            }
-                                        }
-
-                                        "content_block_delta" => {
-                                            let index = event.index.unwrap_or(0);
-                                            if let Some(builder) = blocks.get_mut(&index) {
-                                                if let Some(delta) = event.delta {
-                                                    match delta.delta_type.as_str() {
-                                                        "text_delta" => {
-                                                            if let Some(text) = delta.text {
-                                                                builder.accumulated.push_str(&text);
-                                                                // Send delta immediately
-                                                                if tx
-                                                                    .send(Ok(StreamChunk::TextDelta(
-                                                                        text,
-                                                                    )))
-                                                                    .await
-                                                                    .is_err()
-                                                                {
-                                                                    // Receiver dropped, stop streaming
-                                                                    done = true;
-                                                                    break;
-                                                                }
-                                                            }
-                                                        }
-                                                        "input_json_delta" => {
-                                                            if let Some(json) = delta.partial_json {
-                                                                builder.accumulated.push_str(&json);
-                                                            }
-                                                        }
-                                                        _ => {}
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        "content_block_stop" => {
-                                            let index = event.index.unwrap_or(0);
-                                            if let Some(builder) = blocks.remove(&index) {
-                                                let block = match builder.block_type.as_str() {
-                                                    "text" => ContentBlock::Text {
-                                                        text: builder.accumulated,
-                                                    },
-                                                    "tool_use" => {
-                                                        let input = serde_json::from_str(
-                                                            &builder.accumulated,
-                                                        )
-                                                        .unwrap_or(serde_json::json!({}));
-                                                        ContentBlock::ToolUse {
-                                                            id: builder.id.unwrap_or_default(),
-                                                            name: builder.name.unwrap_or_default(),
-                                                            input,
-                                                        }
-                                                    }
-                                                    _ => continue,
-                                                };
-
-                                                tracing::debug!(
-                                                    "Completed block {} type {}",
-                                                    index,
-                                                    builder.block_type
-                                                );
-
-                                                if tx
-                                                    .send(Ok(StreamChunk::ContentBlockComplete(
-                                                        block,
-                                                    )))
-                                                    .await
-                                                    .is_err()
-                                                {
-                                                    // Receiver dropped, stop streaming
-                                                    done = true;
-                                                    break;
-                                                }
-                                            }
-                                        }
-
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Stream error: {}", e);
-                        let _ = tx.send(Err(e.into())).await;
-                        done = true;
-                        break;
-                    }
-                }
-            }
-
-            tracing::debug!("[STREAM] Exited chunk loop, task finishing");
-            tracing::debug!("Streaming task finished, channel will close");
-        });
-
-        Ok(rx)
+        let provider_request = self.to_provider_request(request).with_stream(true);
+        self.provider.send_message_stream(&provider_request).await
     }
 }
 

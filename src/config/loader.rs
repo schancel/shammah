@@ -37,6 +37,7 @@ pub fn load_config() -> Result<Config> {
 
 fn try_load_from_shammah_config() -> Result<Option<Config>> {
     use super::backend::BackendConfig;
+    use super::settings::FallbackConfig;
 
     let home = dirs::home_dir().context("Could not determine home directory")?;
     let config_path = home.join(".shammah/config.toml");
@@ -52,7 +53,7 @@ fn try_load_from_shammah_config() -> Result<Option<Config>> {
     let toml_config: toml::Value =
         toml::from_str(&contents).context("Failed to parse config.toml")?;
 
-    // Extract api_key (required)
+    // Extract api_key (for backwards compatibility)
     let api_key = toml_config
         .get("api_key")
         .and_then(|v| v.as_str())
@@ -70,6 +71,13 @@ fn try_load_from_shammah_config() -> Result<Option<Config>> {
         if let Some(backend_value) = toml_config.get("backend") {
             if let Ok(backend_config) = toml::from_str::<BackendConfig>(&backend_value.to_string()) {
                 config.backend = backend_config;
+            }
+        }
+
+        // Load fallback config if present
+        if let Some(fallback_value) = toml_config.get("fallback") {
+            if let Ok(fallback_config) = toml::from_str::<FallbackConfig>(&fallback_value.to_string()) {
+                config.fallback = fallback_config;
             }
         }
 

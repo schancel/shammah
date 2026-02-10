@@ -1,11 +1,13 @@
 // Configuration structs
 
 use super::backend::BackendConfig;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Claude API key
+    /// Claude API key (deprecated - use fallback config instead)
     pub api_key: String,
 
     /// Path to crisis_keywords.json
@@ -29,6 +31,9 @@ pub struct Config {
 
     /// Server configuration (daemon mode)
     pub server: ServerConfig,
+
+    /// Fallback LLM provider configuration
+    pub fallback: FallbackConfig,
 }
 
 /// Server configuration for daemon mode
@@ -61,6 +66,53 @@ impl Default for ServerConfig {
     }
 }
 
+/// Fallback LLM provider configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FallbackConfig {
+    /// Provider name: "claude", "openai", "grok", "gemini"
+    pub provider: String,
+
+    /// Provider-specific settings (API keys, models, etc.)
+    #[serde(flatten)]
+    pub settings: HashMap<String, ProviderSettings>,
+}
+
+/// Provider-specific settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderSettings {
+    /// API key for this provider
+    pub api_key: String,
+
+    /// Optional model override (uses provider default if not specified)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+
+    /// Optional base URL (for custom endpoints)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+}
+
+impl Default for FallbackConfig {
+    fn default() -> Self {
+        Self {
+            provider: "claude".to_string(),
+            settings: HashMap::new(),
+        }
+    }
+}
+
+impl FallbackConfig {
+    /// Get the settings for a specific provider
+    pub fn get_provider_settings(&self, provider: &str) -> Option<&ProviderSettings> {
+        self.settings.get(provider)
+    }
+
+    /// Get the settings for the currently selected provider
+    pub fn get_current_settings(&self) -> Option<&ProviderSettings> {
+        self.get_provider_settings(&self.provider)
+    }
+}
+
 impl Config {
     pub fn new(api_key: String) -> Self {
         let home = dirs::home_dir().expect("Could not determine home directory");
@@ -74,6 +126,17 @@ impl Config {
             None
         };
 
+        // Create default fallback config with Claude
+        let mut fallback = FallbackConfig::default();
+        fallback.settings.insert(
+            "claude".to_string(),
+            ProviderSettings {
+                api_key: api_key.clone(),
+                model: None,
+                base_url: None,
+            },
+        );
+
         Self {
             api_key,
             crisis_keywords_path: project_dir.join("data/crisis_keywords.json"),
@@ -83,6 +146,7 @@ impl Config {
             constitution_path,
             backend: BackendConfig::default(),
             server: ServerConfig::default(),
+            fallback,
         }
     }
 
@@ -102,6 +166,7 @@ impl Config {
             api_key: self.api_key.clone(),
             streaming_enabled: self.streaming_enabled,
             backend: self.backend.clone(),
+            fallback: self.fallback.clone(),
         };
 
         let toml_string = toml::to_string_pretty(&toml_config)?;
@@ -113,9 +178,10 @@ impl Config {
 }
 
 /// TOML-serializable config (subset of Config)
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct TomlConfig {
     api_key: String,
     streaming_enabled: bool,
     backend: BackendConfig,
+    fallback: FallbackConfig,
 }

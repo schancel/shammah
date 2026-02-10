@@ -7,4 +7,4 @@ mod settings;
 
 pub use backend::{BackendConfig, BackendDevice};
 pub use loader::load_config;
-pub use settings::{Config, ServerConfig};
+pub use settings::{Config, FallbackConfig, ProviderSettings, ServerConfig};

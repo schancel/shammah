@@ -10,6 +10,7 @@ pub mod generators; // Unified generator interface
 pub mod local; // Local generation system
 pub mod metrics;
 pub mod models; // Phase 2: Neural network models
+pub mod providers; // Multi-provider LLM support
 pub mod router;
 pub mod server; // HTTP daemon mode (Phase 1)
 pub mod tools; // Tool execution system

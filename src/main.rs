@@ -10,10 +10,11 @@ use std::sync::Arc;
 use shammah::claude::ClaudeClient;
 use shammah::cli::output_layer::OutputManagerLayer;
 use shammah::cli::{ConversationHistory, Repl};
-use shammah::config::load_config;
+use shammah::config::{load_config, Config};
 use shammah::crisis::CrisisDetector;
 use shammah::metrics::MetricsLogger;
 use shammah::models::ThresholdRouter;
+use shammah::providers::create_provider;
 use shammah::router::Router;
 use tracing_subscriber::prelude::*;
 
@@ -55,6 +56,15 @@ enum Command {
         /// Query text
         query: String,
     },
+}
+
+/// Create a ClaudeClient with the configured provider
+///
+/// This function creates a provider based on the fallback configuration
+/// and wraps it in a ClaudeClient for backwards compatibility.
+fn create_claude_client_with_provider(config: &Config) -> Result<ClaudeClient> {
+    let provider = create_provider(&config.fallback)?;
+    Ok(ClaudeClient::with_provider(provider))
 }
 
 #[tokio::main]
@@ -106,7 +116,7 @@ async fn main() -> Result<()> {
         };
 
         let router = Router::new(crisis_detector, threshold_router);
-        let claude_client = ClaudeClient::new(config.api_key.clone())?;
+        let claude_client = create_claude_client_with_provider(&config)?;
         let metrics_logger = MetricsLogger::new(config.metrics_dir.clone())?;
 
         // Create REPL (will detect non-interactive mode automatically)
@@ -178,7 +188,7 @@ async fn main() -> Result<()> {
     let router = Router::new(crisis_detector, threshold_router);
 
     // Create Claude client
-    let claude_client = ClaudeClient::new(config.api_key.clone())?;
+    let claude_client = create_claude_client_with_provider(&config)?;
 
     // Create metrics logger
     let metrics_logger = MetricsLogger::new(config.metrics_dir.clone())?;
@@ -333,7 +343,7 @@ async fn run_daemon(bind_address: String) -> Result<()> {
     let router = Router::new(crisis_detector, threshold_router);
 
     // Create Claude client
-    let claude_client = ClaudeClient::new(config.api_key.clone())?;
+    let claude_client = create_claude_client_with_provider(&config)?;
 
     // Create metrics logger
     let metrics_logger = MetricsLogger::new(config.metrics_dir.clone())?;
@@ -445,7 +455,7 @@ async fn run_query(query: &str) -> Result<()> {
     };
 
     let router = Router::new(crisis_detector, threshold_router);
-    let claude_client = ClaudeClient::new(config.api_key.clone())?;
+    let claude_client = create_claude_client_with_provider(&config)?;
     let metrics_logger = MetricsLogger::new(config.metrics_dir.clone())?;
 
     // Create REPL in non-interactive mode
