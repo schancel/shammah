@@ -175,33 +175,53 @@ impl ToolExecutionCoordinator {
             // Tool approved (or doesn't need approval), execute it
             let conversation_snapshot = conversation.read().await.clone();
 
-            let result = tool_executor
-                .lock()
-                .await
-                .execute_tool::<fn() -> anyhow::Result<()>>(
-                    &tool_use,
-                    Some(&conversation_snapshot),
-                    None, // save_fn (not needed in event loop)
-                    None, // router (for training)
-                    Some(Arc::clone(&local_generator)),
-                    Some(Arc::clone(&tokenizer)),
-                )
-                .await;
+            // Execute with timeout to prevent system freezing (especially for CPU-heavy operations)
+            let timeout_duration = std::time::Duration::from_secs(30);
+            let result = tokio::time::timeout(
+                timeout_duration,
+                tool_executor
+                    .lock()
+                    .await
+                    .execute_tool::<fn() -> anyhow::Result<()>>(
+                        &tool_use,
+                        Some(&conversation_snapshot),
+                        None, // save_fn (not needed in event loop)
+                        None, // router (for training)
+                        Some(Arc::clone(&local_generator)),
+                        Some(Arc::clone(&tokenizer)),
+                    )
+            )
+            .await;
 
             // Send result back to event loop
             match result {
-                Ok(tool_result) => {
+                Ok(Ok(tool_result)) => {
+                    // Tool executed successfully within timeout
                     let _ = event_tx.send(ReplEvent::ToolResult {
                         query_id,
                         tool_id: tool_use.id.clone(),
                         result: Ok(tool_result.content),
                     });
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
+                    // Tool executed but returned error
                     let _ = event_tx.send(ReplEvent::ToolResult {
                         query_id,
                         tool_id: tool_use.id.clone(),
                         result: Err(e),
+                    });
+                }
+                Err(_) => {
+                    // Timeout elapsed
+                    let _ = event_tx.send(ReplEvent::ToolResult {
+                        query_id,
+                        tool_id: tool_use.id.clone(),
+                        result: Err(anyhow::anyhow!(
+                            "Tool execution timed out after {} seconds. \
+                             This often happens when Qwen runs on CPU instead of Metal. \
+                             Try restarting or check Metal support.",
+                            timeout_duration.as_secs()
+                        )),
                     });
                 }
             }
