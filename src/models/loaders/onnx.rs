@@ -292,6 +292,7 @@ impl LoadedOnnxModel {
 
         // Initialize empty KV cache for first step
         let mut past_key_values: Vec<(DynValue, DynValue)> = Vec::new();
+        let mut past_seq_len = 0;
 
         // Generation loop
         for step in 0..max_new_tokens {
@@ -308,11 +309,14 @@ impl LoadedOnnxModel {
             let (logits, new_kv_cache) = self.run_with_kv_cache(
                 input_for_step,
                 &past_key_values,
-                step == 0,
+                past_seq_len,
                 NUM_LAYERS,
                 NUM_KV_HEADS,
                 HEAD_DIM,
             )?;
+
+            // Update sequence length for next iteration
+            past_seq_len += input_for_step.len();
 
             // Update KV cache for next iteration
             past_key_values = new_kv_cache;
@@ -340,7 +344,7 @@ impl LoadedOnnxModel {
         &mut self,
         input_tokens: &[u32],
         past_kv: &[(DynValue, DynValue)],
-        is_first_step: bool,
+        past_seq_len: usize,
         num_layers: usize,
         num_kv_heads: usize,
         head_dim: usize,
@@ -348,8 +352,14 @@ impl LoadedOnnxModel {
         // Prepare input_ids tensor
         let input_tensor = self.prepare_input(input_tokens)?;
 
+        // Prepare position_ids tensor
+        let position_ids = self.prepare_position_ids(input_tokens.len(), past_seq_len)?;
+
+        // Prepare attention_mask tensor
+        let attention_mask = self.prepare_attention_mask(input_tokens.len(), past_seq_len)?;
+
         // For first step, create empty KV cache tensors
-        let kv_cache = if is_first_step {
+        let kv_cache = if past_seq_len == 0 {
             // Empty cache: shape [1, num_kv_heads, 0, head_dim]
             let mut cache = Vec::new();
             for _ in 0..num_layers {
@@ -373,8 +383,14 @@ impl LoadedOnnxModel {
         // Bind input_ids
         binding.bind_input("input_ids", &input_tensor)?;
 
+        // Bind position_ids
+        binding.bind_input("position_ids", &position_ids)?;
+
+        // Bind attention_mask
+        binding.bind_input("attention_mask", &attention_mask)?;
+
         // Bind past_key_values for each layer
-        let cache_to_bind = if is_first_step { &kv_cache } else { past_kv };
+        let cache_to_bind = if past_seq_len == 0 { &kv_cache } else { past_kv };
         for (layer_idx, (key, value)) in cache_to_bind.iter().enumerate() {
             let key_name = format!("past_key_values.{}.key", layer_idx);
             let value_name = format!("past_key_values.{}.value", layer_idx);
@@ -435,6 +451,50 @@ impl LoadedOnnxModel {
         // Use into_dyn() to erase the specific type to DynValueTypeMarker
         let value = Value::from_array(array)
             .context("Failed to create ONNX Value from array")?;
+        Ok(value.into_dyn())
+    }
+
+    /// Prepare position_ids tensor for ONNX Runtime
+    fn prepare_position_ids(&self, seq_len: usize, past_seq_len: usize) -> Result<DynValue> {
+        debug!("Preparing position_ids: seq_len={}, past_seq_len={}", seq_len, past_seq_len);
+
+        // Position IDs start from past_seq_len and go to past_seq_len + seq_len
+        // For first step with seq_len=5: [0, 1, 2, 3, 4]
+        // For second step with seq_len=1, past_seq_len=5: [5]
+        let position_data: Vec<i64> = (past_seq_len..past_seq_len + seq_len)
+            .map(|i| i as i64)
+            .collect();
+
+        // Create tensor with shape [batch_size=1, seq_len]
+        let array = ndarray::Array2::from_shape_vec(
+            (1, seq_len),
+            position_data
+        ).context("Failed to create ndarray for position_ids")?;
+
+        // Convert to ort::Value
+        let value = Value::from_array(array)
+            .context("Failed to create ONNX Value from position_ids array")?;
+        Ok(value.into_dyn())
+    }
+
+    /// Prepare attention_mask tensor for ONNX Runtime
+    fn prepare_attention_mask(&self, seq_len: usize, past_seq_len: usize) -> Result<DynValue> {
+        debug!("Preparing attention_mask: seq_len={}, past_seq_len={}", seq_len, past_seq_len);
+
+        // Attention mask is all 1s for the total sequence length
+        // Shape: [batch_size=1, total_seq_len]
+        let total_seq_len = past_seq_len + seq_len;
+        let mask_data: Vec<i64> = vec![1; total_seq_len];
+
+        // Create tensor with shape [batch_size=1, total_seq_len]
+        let array = ndarray::Array2::from_shape_vec(
+            (1, total_seq_len),
+            mask_data
+        ).context("Failed to create ndarray for attention_mask")?;
+
+        // Convert to ort::Value
+        let value = Value::from_array(array)
+            .context("Failed to create ONNX Value from attention_mask array")?;
         Ok(value.into_dyn())
     }
 
