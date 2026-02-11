@@ -27,11 +27,12 @@ impl ModelRouter {
     }
 
     /// Make a routing decision using the neural network ensemble
-    pub fn route(&self, query: &str) -> Result<RouteDecision> {
+    pub async fn route(&self, query: &str) -> Result<RouteDecision> {
         // Get decision from model ensemble
         let decision = self
             .ensemble
             .route(query)
+            .await
             .context("Failed to get routing decision from models")?;
 
         // Convert to Phase 1 RouteDecision format
@@ -46,21 +47,26 @@ impl ModelRouter {
             ModelRouteDecision::Forward => Ok(RouteDecision::Forward {
                 reason: ForwardReason::NoMatch,
             }),
+            ModelRouteDecision::Remote => Ok(RouteDecision::Forward {
+                reason: ForwardReason::NoMatch,
+            }),
         }
     }
 
     /// Generate a response locally using the generator model
-    pub fn generate_local(&self, query: &str) -> Result<String> {
+    pub async fn generate_local(&self, query: &str) -> Result<String> {
         self.ensemble
             .generate_local(query)
+            .await
             .context("Failed to generate local response")
     }
 
     /// Validate a generated response
-    pub fn validate(&self, query: &str, response: &str) -> Result<bool> {
+    pub async fn validate(&self, query: &str, response: &str) -> Result<bool> {
         let quality = self
             .ensemble
             .validate(query, response)
+            .await
             .context("Failed to validate response")?;
 
         Ok(matches!(quality, Quality::Good))
@@ -103,8 +109,9 @@ impl ModelRouter {
 
     /// Save the models to disk
     pub fn save_models(&self, models_dir: &str) -> Result<()> {
+        let path = std::path::Path::new(models_dir);
         self.ensemble
-            .save(models_dir)
+            .save(path)
             .context("Failed to save models")
     }
 

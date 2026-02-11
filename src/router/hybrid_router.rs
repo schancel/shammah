@@ -98,7 +98,7 @@ impl HybridRouter {
     }
 
     /// Make routing decision using hybrid approach
-    pub fn route(&self, query: &str) -> Result<RouteDecision> {
+    pub async fn route(&self, query: &str) -> Result<RouteDecision> {
         let strategy = self.strategy();
 
         match strategy {
@@ -122,7 +122,7 @@ impl HybridRouter {
                 let threshold_decision = self.threshold_router.should_try_local(query);
 
                 if let Some(ref ensemble) = self.neural_ensemble {
-                    let neural_decision = ensemble.route(query)?;
+                    let neural_decision = ensemble.route(query).await?;
                     let neural_says_local = matches!(neural_decision, ModelRouteDecision::Local);
 
                     // Weighted combination
@@ -158,7 +158,7 @@ impl HybridRouter {
             HybridStrategy::NeuralPrimary { threshold_fallback } => {
                 // Primarily neural, with threshold fallback
                 if let Some(ref ensemble) = self.neural_ensemble {
-                    let neural_decision = ensemble.route(query)?;
+                    let neural_decision = ensemble.route(query).await?;
 
                     match neural_decision {
                         ModelRouteDecision::Local => {
@@ -187,6 +187,9 @@ impl HybridRouter {
                         ModelRouteDecision::Forward => Ok(RouteDecision::Forward {
                             reason: ForwardReason::NoMatch,
                         }),
+                        ModelRouteDecision::Remote => Ok(RouteDecision::Forward {
+                            reason: ForwardReason::NoMatch,
+                        }),
                     }
                 } else {
                     // No neural model, fall back to threshold
@@ -207,10 +210,11 @@ impl HybridRouter {
     }
 
     /// Generate response locally (tries neural first, falls back to template)
-    pub fn generate_local(&self, query: &str) -> Result<String> {
+    pub async fn generate_local(&self, query: &str) -> Result<String> {
         if let Some(ref ensemble) = self.neural_ensemble {
             ensemble
                 .generate_local(query)
+                .await
                 .context("Failed to generate local response")
         } else {
             // No neural model, return error
@@ -219,7 +223,7 @@ impl HybridRouter {
     }
 
     /// Validate response using hybrid approach
-    pub fn validate(&self, query: &str, response: &str) -> Result<bool> {
+    pub async fn validate(&self, query: &str, response: &str) -> Result<bool> {
         let strategy = self.strategy();
 
         match strategy {
@@ -233,7 +237,7 @@ impl HybridRouter {
                 let threshold_result = self.threshold_validator.validate(query, response);
 
                 if let Some(ref ensemble) = self.neural_ensemble {
-                    let neural_result = ensemble.validate(query, response)?;
+                    let neural_result = ensemble.validate(query, response).await?;
                     let neural_says_good = matches!(neural_result, Quality::Good);
 
                     // Weighted combination (require both to agree at high weight)
@@ -250,7 +254,7 @@ impl HybridRouter {
             HybridStrategy::NeuralPrimary { threshold_fallback } => {
                 // Primarily neural validation
                 if let Some(ref ensemble) = self.neural_ensemble {
-                    let neural_result = ensemble.validate(query, response)?;
+                    let neural_result = ensemble.validate(query, response).await?;
 
                     if threshold_fallback {
                         // Both must agree
@@ -306,7 +310,8 @@ impl HybridRouter {
 
         // Save neural models if present
         if let Some(ref ensemble) = self.neural_ensemble {
-            ensemble.save(format!("{}/neural", models_dir))?;
+            let path = std::path::PathBuf::from(format!("{}/neural", models_dir));
+            ensemble.save(&path)?;
         }
 
         Ok(())

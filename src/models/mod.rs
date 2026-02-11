@@ -159,11 +159,12 @@ impl ModelEnsemble {
         _query: &str,
         _response: &str,
         _quality: Quality,
+        _claude_response_if_bad: Option<&str>,
     ) -> anyhow::Result<()> {
         anyhow::bail!("ModelEnsemble removed in Phase 4 (Candle-based)")
     }
 
-    pub fn learn_from_claude(&mut self, _query: &str, _response: &str) -> anyhow::Result<()> {
+    pub fn learn_from_claude(&mut self, _query: &str, _response: &str, _was_forwarded: bool) -> anyhow::Result<()> {
         anyhow::bail!("ModelEnsemble removed in Phase 4 (Candle-based)")
     }
 }

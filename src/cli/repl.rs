@@ -2668,7 +2668,6 @@ impl Repl {
         let should_train = self
             .training_coordinator
             .add_example(example)
-            .await
             .context("Failed to add training example")?;
 
         // Display confirmation
@@ -2685,7 +2684,7 @@ impl Repl {
         }
 
         // Get buffer stats
-        let buffer = self.training_coordinator.buffer().await;
+        let buffer = self.training_coordinator.buffer()?;
         let example_count = buffer.examples().len();
         let total_weight = buffer.total_weight();
         drop(buffer); // Release lock
@@ -2736,7 +2735,7 @@ impl Repl {
 
         // Get training examples from buffer
         let examples = {
-            let buffer = coordinator.buffer().await;
+            let buffer = coordinator.buffer()?;
             buffer.examples().to_vec()
         };
 
@@ -2807,7 +2806,7 @@ impl Repl {
         let adapter_filename = format!("lora_adapter_{}.safetensors", timestamp);
         let adapter_path = adapters_dir.join(&adapter_filename);
 
-        trainer.adapter().save(&adapter_path)?;
+        trainer.adapter()?.save(&adapter_path)?;
 
         tracing::info!(
             "LoRA training completed. Adapter saved to: {}",

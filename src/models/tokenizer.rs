@@ -29,15 +29,17 @@ impl TextTokenizer {
         )
     }
 
-    pub fn default() -> Self {
-        Self
+    pub fn default() -> Result<Self> {
+        // Phase 4: Return dummy instance for compatibility
+        // The tokenizer is only used for training features which are stubbed
+        Ok(Self)
     }
 
-    pub fn encode(&self, _text: &str) -> Result<Vec<u32>> {
+    pub fn encode(&self, _text: &str, _add_special_tokens: bool) -> Result<Vec<u32>> {
         anyhow::bail!("TextTokenizer removed in Phase 4 (Candle-based)")
     }
 
-    pub fn decode(&self, _tokens: &[u32]) -> Result<String> {
+    pub fn decode(&self, _tokens: &[u32], _skip_special_tokens: bool) -> Result<String> {
         anyhow::bail!("TextTokenizer removed in Phase 4 (Candle-based)")
     }
 }

@@ -104,16 +104,16 @@ pub struct LoRAAdapter {
 impl LoRAAdapter {
     /// Create new LoRA adapter with given configuration
     /// Phase 4: device parameter removed (was Candle-based)
-    pub fn new(config: LoRAConfig, _device: ()) -> Self {
-        Self {
+    pub fn new(config: LoRAConfig, _device: ()) -> Result<Self> {
+        Ok(Self {
             config,
             enabled: false,
-        }
+        })
     }
 
     /// Create LoRA adapter with default configuration
-    pub fn default_config() -> Self {
-        Self::new(LoRAConfig::default())
+    pub fn default_config() -> Result<Self> {
+        Self::new(LoRAConfig::default(), ())
     }
 
     /// Train LoRA adapter on examples
@@ -269,38 +269,43 @@ pub struct WeightedExample {
     pub query: String,
     pub response: String,
     pub weight: f64,
+    pub feedback: Option<String>,
 }
 
 impl WeightedExample {
-    pub fn critical(query: String, response: String) -> Self {
+    pub fn critical(query: String, response: String, feedback: String) -> Self {
         Self {
             query,
             response,
             weight: 10.0,
+            feedback: Some(feedback),
         }
     }
 
-    pub fn improvement(query: String, response: String) -> Self {
+    pub fn improvement(query: String, response: String, feedback: String) -> Self {
         Self {
             query,
             response,
             weight: 3.0,
+            feedback: Some(feedback),
         }
     }
 
-    pub fn normal(query: String, response: String) -> Self {
+    pub fn normal(query: String, response: String, feedback: String) -> Self {
         Self {
             query,
             response,
             weight: 1.0,
+            feedback: Some(feedback),
         }
     }
 
-    pub fn with_weight(query: String, response: String, weight: f64) -> Self {
+    pub fn with_weight(query: String, response: String, feedback: String, weight: f64) -> Self {
         Self {
             query,
             response,
             weight,
+            feedback: Some(feedback),
         }
     }
 }
@@ -333,64 +338,80 @@ impl ExampleBuffer {
     pub fn as_slice(&self) -> &[WeightedExample] {
         &self.examples
     }
+
+    pub fn examples(&self) -> &[WeightedExample] {
+        &self.examples
+    }
+
+    pub fn total_weight(&self) -> f64 {
+        self.examples.iter().map(|e| e.weight).sum()
+    }
 }
 
 /// LoRA trainer (stub for Phase 5)
 #[derive(Debug)]
 pub struct LoRATrainer {
-    config: LoRAConfig,
+    _adapter: LoRAAdapter,
+    _learning_rate: f64,
+    _batch_size: usize,
+    _epochs: usize,
 }
 
 impl LoRATrainer {
-    pub fn new(config: LoRAConfig) -> Self {
-        Self { config }
+    pub fn new(
+        adapter: LoRAAdapter,
+        _tokenizer: std::sync::Arc<tokenizers::Tokenizer>,
+        learning_rate: f64,
+        batch_size: usize,
+        epochs: usize,
+    ) -> Self {
+        Self {
+            _adapter: adapter,
+            _learning_rate: learning_rate,
+            _batch_size: batch_size,
+            _epochs: epochs,
+        }
     }
 
-    pub fn train(&mut self, _examples: &[WeightedExample]) -> Result<()> {
+    pub fn train(&mut self, _examples: &ExampleBuffer) -> Result<Vec<TrainingStats>> {
         anyhow::bail!("LoRA training moved to Python (Phase 5)")
     }
 
-    pub fn adapter(&self) -> &LoRAAdapter {
-        // Return a placeholder adapter
-        static ADAPTER: LoRAAdapter = LoRAAdapter {
-            config: LoRAConfig {
-                rank: 16,
-                alpha: 32.0,
-                dropout: 0.0,
-                target_modules: vec![],
-            },
-            enabled: false,
-        };
-        &ADAPTER
+    pub fn adapter(&self) -> Result<&LoRAAdapter> {
+        // Phase 4: LoRATrainer removed
+        anyhow::bail!("LoRA training moved to Python (Phase 5)")
     }
 }
 
 /// Training coordinator (stub for Phase 5)
 #[derive(Debug)]
 pub struct TrainingCoordinator {
-    buffer: ExampleBuffer,
+    buffer: std::sync::RwLock<ExampleBuffer>,
 }
 
 impl TrainingCoordinator {
     pub fn new(_buffer_size: usize, _threshold: usize, _auto_train: bool) -> Self {
         Self {
-            buffer: ExampleBuffer::new(0),
+            buffer: std::sync::RwLock::new(ExampleBuffer::new(0)),
         }
     }
 
-    pub fn add_example(&mut self, example: WeightedExample) {
-        self.buffer.add(example);
+    pub fn add_example(&self, example: WeightedExample) -> Result<bool> {
+        if let Ok(mut buffer) = self.buffer.write() {
+            buffer.add(example);
+        }
+        Ok(false) // Never trigger training in stub
     }
 
-    pub fn buffer(&self) -> &ExampleBuffer {
-        &self.buffer
+    pub fn buffer(&self) -> Result<std::sync::RwLockReadGuard<'_, ExampleBuffer>> {
+        self.buffer.read().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))
     }
 
     pub fn should_train(&self) -> bool {
         false // Training will be external in Phase 5
     }
 
-    pub fn train(&mut self) -> Result<()> {
+    pub fn train(&self) -> Result<()> {
         anyhow::bail!("Training moved to external Python scripts (Phase 5)")
     }
 }
