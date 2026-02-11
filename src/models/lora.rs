@@ -103,7 +103,8 @@ pub struct LoRAAdapter {
 
 impl LoRAAdapter {
     /// Create new LoRA adapter with given configuration
-    pub fn new(config: LoRAConfig) -> Self {
+    /// Phase 4: device parameter removed (was Candle-based)
+    pub fn new(config: LoRAConfig, _device: ()) -> Self {
         Self {
             config,
             enabled: false,
@@ -294,6 +295,14 @@ impl WeightedExample {
             weight: 1.0,
         }
     }
+
+    pub fn with_weight(query: String, response: String, weight: f64) -> Self {
+        Self {
+            query,
+            response,
+            weight,
+        }
+    }
 }
 
 /// Example buffer for batching (stub for Phase 5)
@@ -320,6 +329,10 @@ impl ExampleBuffer {
     pub fn is_empty(&self) -> bool {
         self.examples.is_empty()
     }
+
+    pub fn as_slice(&self) -> &[WeightedExample] {
+        &self.examples
+    }
 }
 
 /// LoRA trainer (stub for Phase 5)
@@ -335,6 +348,20 @@ impl LoRATrainer {
 
     pub fn train(&mut self, _examples: &[WeightedExample]) -> Result<()> {
         anyhow::bail!("LoRA training moved to Python (Phase 5)")
+    }
+
+    pub fn adapter(&self) -> &LoRAAdapter {
+        // Return a placeholder adapter
+        static ADAPTER: LoRAAdapter = LoRAAdapter {
+            config: LoRAConfig {
+                rank: 16,
+                alpha: 32.0,
+                dropout: 0.0,
+                target_modules: vec![],
+            },
+            enabled: false,
+        };
+        &ADAPTER
     }
 }
 
@@ -353,6 +380,10 @@ impl TrainingCoordinator {
 
     pub fn add_example(&mut self, example: WeightedExample) {
         self.buffer.add(example);
+    }
+
+    pub fn buffer(&self) -> &ExampleBuffer {
+        &self.buffer
     }
 
     pub fn should_train(&self) -> bool {

@@ -55,7 +55,7 @@ pub use unified_loader::{ModelFamily, ModelLoadConfig, ModelSize, UnifiedModelLo
 pub struct RouterModel;
 
 impl RouterModel {
-    pub fn new(_config: ModelConfig) -> anyhow::Result<Self> {
+    pub fn new(_config: &ModelConfig) -> anyhow::Result<Self> {
         anyhow::bail!("RouterModel removed in Phase 4 (Candle-based)")
     }
 
@@ -73,7 +73,7 @@ impl RouterModel {
 pub struct ValidatorModel;
 
 impl ValidatorModel {
-    pub fn new(_config: ModelConfig) -> anyhow::Result<Self> {
+    pub fn new(_config: &ModelConfig) -> anyhow::Result<Self> {
         anyhow::bail!("ValidatorModel removed in Phase 4 (Candle-based)")
     }
 
@@ -88,14 +88,22 @@ impl ValidatorModel {
 
 /// Stub for removed EnsembleStats (Phase 4: Candle-based)
 #[derive(Debug, Clone)]
-pub struct EnsembleStats;
+pub struct EnsembleStats {
+    pub query_count: usize,
+    pub learning_rate: f64,
+}
 
 /// Stub for removed ModelEnsemble (Phase 4: Candle-based)
 #[derive(Debug)]
 pub struct ModelEnsemble;
 
 impl ModelEnsemble {
-    pub fn new(
+    // Phase 4: Multiple signatures for compatibility
+    pub fn new(_config: ModelConfig) -> anyhow::Result<Self> {
+        Ok(Self)
+    }
+
+    pub fn from_models(
         _router: std::sync::Arc<tokio::sync::RwLock<RouterModel>>,
         _generator: std::sync::Arc<tokio::sync::RwLock<GeneratorModel>>,
         _validator: std::sync::Arc<tokio::sync::RwLock<ValidatorModel>>,
@@ -107,8 +115,31 @@ impl ModelEnsemble {
         anyhow::bail!("ModelEnsemble removed in Phase 4 (Candle-based)")
     }
 
+    pub async fn route(&self, _query: &str) -> anyhow::Result<RouteDecision> {
+        anyhow::bail!("ModelEnsemble removed in Phase 4 (Candle-based)")
+    }
+
+    pub async fn generate_local(&self, _query: &str) -> anyhow::Result<String> {
+        anyhow::bail!("ModelEnsemble removed in Phase 4 (Candle-based)")
+    }
+
+    pub async fn validate(&self, _query: &str, _response: &str) -> anyhow::Result<Quality> {
+        anyhow::bail!("ModelEnsemble removed in Phase 4 (Candle-based)")
+    }
+
+    pub fn context(&self) -> Vec<String> {
+        vec![]
+    }
+
     pub fn stats(&self) -> EnsembleStats {
-        EnsembleStats
+        EnsembleStats {
+            query_count: 0,
+            learning_rate: 0.0,
+        }
+    }
+
+    pub fn save(&self, _path: &std::path::Path) -> anyhow::Result<()> {
+        anyhow::bail!("ModelEnsemble removed in Phase 4 (Candle-based)")
     }
 }
 
@@ -118,6 +149,8 @@ pub enum Quality {
     Low,
     Medium,
     High,
+    Good,
+    Bad,
 }
 
 /// Stub for removed RouteDecision (Phase 4: Candle-based)
@@ -125,4 +158,5 @@ pub enum Quality {
 pub enum RouteDecision {
     Local,
     Remote,
+    Forward,
 }
