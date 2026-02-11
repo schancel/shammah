@@ -468,12 +468,13 @@ impl TuiRenderer {
             // This ensures insert_before() reserves the EXACT space needed
             let (term_width, _) = crossterm::terminal::size()?;
 
-            // Create a test buffer with terminal width
+            // Use reasonable max height (messages rarely exceed 500 lines)
+            const MAX_TEST_HEIGHT: u16 = 500;
             let test_area = ratatui::layout::Rect {
                 x: 0,
                 y: 0,
                 width: term_width,
-                height: u16::MAX, // Large enough to hold any wrapped content
+                height: MAX_TEST_HEIGHT,
             };
             let mut test_buffer = ratatui::buffer::Buffer::empty(test_area);
 
@@ -483,8 +484,8 @@ impl TuiRenderer {
             paragraph.render(test_area, &mut test_buffer);
 
             // Find the last non-empty row to get actual height
-            let mut actual_height = 0;
-            for y in 0..test_area.height {
+            let mut actual_height: u16 = 0;
+            for y in 0..MAX_TEST_HEIGHT {
                 let row_start = (y as usize) * (term_width as usize);
                 let row_end = row_start + (term_width as usize);
                 if row_end <= test_buffer.content.len() {
@@ -495,7 +496,13 @@ impl TuiRenderer {
                 }
             }
 
-            let num_lines_u16 = actual_height.min(u16::MAX) as u16;
+            // Use actual height, or fall back to estimated if content is too large
+            let num_lines_u16 = if actual_height >= MAX_TEST_HEIGHT {
+                // Content exceeded test buffer, use conservative estimate
+                MAX_TEST_HEIGHT
+            } else {
+                actual_height
+            };
 
             // Use synchronized update to prevent flickering
             use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
