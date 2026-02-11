@@ -19,6 +19,8 @@ pub mod sampling; // Context-aware sampling system
 pub mod threshold_router;
 pub mod threshold_validator;
 pub mod tokenizer; // Phase 4: Stub for compatibility
+pub mod tool_parser;  // Phase 6: Parse tool calls from model output (XML)
+pub mod tool_prompt;  // Phase 6: Format tool definitions for model prompts
 pub mod unified_loader; // Generic loader for ONNX models
 // pub mod validator; // Phase 4: Commented out (Candle-based)
 
@@ -47,6 +49,8 @@ pub use threshold_router::{
 };
 pub use threshold_validator::{QualitySignal, ThresholdValidator, ValidatorStats};
 pub use tokenizer::TextTokenizer; // Phase 4: Stub for compatibility
+pub use tool_parser::ToolCallParser;  // Phase 6: Parse tool calls from model output
+pub use tool_prompt::ToolPromptFormatter;  // Phase 6: Format tool definitions for prompts
 pub use unified_loader::{ModelFamily, ModelLoadConfig, ModelSize, UnifiedModelLoader};
 // pub use validator::ValidatorModel; // Phase 4: Candle-based
 

@@ -29,6 +29,23 @@ impl LocalModelAdapter for QwenAdapter {
     }
 
     fn clean_output(&self, raw_output: &str) -> String {
+        // IMPORTANT: If output contains tool XML markers, use minimal cleaning
+        // to preserve the tool_use and tool_result blocks intact
+        if raw_output.contains("<tool_use>") || raw_output.contains("<tool_result>") {
+            // Minimal cleaning: only remove chat template markers
+            return raw_output
+                .split("<|im_end|>")
+                .next()
+                .unwrap_or(raw_output)
+                .split("<|endoftext|>")
+                .next()
+                .unwrap_or(raw_output)
+                .replace("<|im_start|>assistant\n", "")
+                .replace("<|im_start|>assistant", "")
+                .trim()
+                .to_string();
+        }
+
         // The model might echo the system prompt - we need to extract ONLY the actual answer
         let mut cleaned = raw_output;
 
@@ -253,5 +270,45 @@ mod tests {
         let raw2 = "Here is the code:\nfn main() {\n    println!(\"Hello\");\n}";
         let cleaned2 = adapter.clean_output(raw2);
         assert_eq!(cleaned2, raw2);
+    }
+
+    #[test]
+    fn test_clean_preserves_tool_xml() {
+        let adapter = QwenAdapter;
+
+        // Test that tool_use blocks are preserved
+        let raw = r#"I'll read the file for you.
+
+<tool_use>
+  <name>read</name>
+  <parameters>{"file_path": "/tmp/test.txt"}</parameters>
+</tool_use>"#;
+
+        let cleaned = adapter.clean_output(raw);
+        assert!(cleaned.contains("<tool_use>"));
+        assert!(cleaned.contains("<name>read</name>"));
+        assert!(cleaned.contains("<parameters>"));
+        assert!(cleaned.contains("</tool_use>"));
+        assert!(cleaned.contains("I'll read the file"));
+    }
+
+    #[test]
+    fn test_clean_preserves_tool_result_xml() {
+        let adapter = QwenAdapter;
+
+        // Test that tool_result blocks are preserved
+        let raw = r#"Here are the results:
+
+<tool_result id="toolu_123">
+File contents here
+</tool_result>
+
+Based on the file contents..."#;
+
+        let cleaned = adapter.clean_output(raw);
+        assert!(cleaned.contains("<tool_result"));
+        assert!(cleaned.contains("toolu_123"));
+        assert!(cleaned.contains("File contents here"));
+        assert!(cleaned.contains("</tool_result>"));
     }
 }

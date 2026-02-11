@@ -1185,6 +1185,7 @@ impl Repl {
         let qwen_gen: Arc<dyn crate::generators::Generator> = Arc::new(QwenGenerator::new(
             Arc::clone(&self.local_generator),
             Arc::clone(&self.tokenizer),
+            Some(Arc::clone(&self.tool_executor)), // Enable tool support
         ));
 
         // Get generator state from bootstrap loader
