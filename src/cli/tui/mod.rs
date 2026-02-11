@@ -208,6 +208,20 @@ impl TuiRenderer {
         // (Already disabled in main.rs, but double-check for safety)
         output_manager.disable_stdout();
 
+        // Clear the visible scrollback area to prevent ghosting from previous output
+        let mut stdout = io::stdout();
+        use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+        execute!(stdout, BeginSynchronizedUpdate)?;
+        for row in 0..visible_scrollback_rows {
+            execute!(
+                stdout,
+                cursor::MoveTo(0, row as u16),
+                Clear(ClearType::UntilNewLine)
+            )?;
+        }
+        execute!(stdout, EndSynchronizedUpdate)?;
+        stdout.flush()?;
+
         Ok(Self {
             terminal,
             output_manager,
@@ -426,23 +440,48 @@ impl TuiRenderer {
         }
 
         // Get terminal size
-        let (term_width, term_height) = crossterm::terminal::size()?;
+        let (_term_width, term_height) = crossterm::terminal::size()?;
         let visible_rows = term_height.saturating_sub(6); // -6 for inline viewport
 
-        // Apply changes to terminal
+        // Group changes by row for efficient line-based clearing
+        use std::collections::HashMap;
+        let mut changes_by_row: HashMap<usize, Vec<(usize, char)>> = HashMap::new();
+
+        for (x, y, cell) in changes {
+            if (y as u16) < visible_rows {
+                changes_by_row.entry(y).or_insert_with(Vec::new).push((x, cell.ch));
+            }
+        }
+
+        // Apply changes to terminal (clear line first, then write entire row)
         use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
         use crossterm::style::Print;
 
         let mut stdout = io::stdout();
         execute!(stdout, BeginSynchronizedUpdate)?;
 
-        for (x, y, cell) in changes {
-            // Only update cells within visible area
-            if (y as u16) < visible_rows {
+        for (row, _cells) in changes_by_row {
+            // Clear the entire line first to prevent ghosting
+            execute!(
+                stdout,
+                cursor::MoveTo(0, row as u16),
+                Clear(ClearType::UntilNewLine)
+            )?;
+
+            // Write the entire row from shadow buffer
+            let mut line_content = String::new();
+            for x in 0..self.shadow_buffer.width {
+                if let Some(cell) = self.shadow_buffer.get(x, row) {
+                    line_content.push(cell.ch);
+                }
+            }
+
+            // Write entire line at once (more efficient than per-char)
+            if !line_content.is_empty() {
                 execute!(
                     stdout,
-                    cursor::MoveTo(x as u16, y as u16),
-                    Print(cell.ch)
+                    cursor::MoveTo(0, row as u16),
+                    Print(line_content)
                 )?;
             }
         }
@@ -711,18 +750,22 @@ impl TuiRenderer {
             )?;
         }
 
-        // Render shadow buffer to terminal
+        // Render shadow buffer to terminal (row by row for efficiency)
         for y in 0..self.shadow_buffer.height {
+            let mut line_content = String::new();
             for x in 0..self.shadow_buffer.width {
                 if let Some(cell) = self.shadow_buffer.get(x, y) {
-                    if cell.ch != ' ' { // Skip empty cells for efficiency
-                        execute!(
-                            stdout,
-                            cursor::MoveTo(x as u16, y as u16),
-                            Print(cell.ch)
-                        )?;
-                    }
+                    line_content.push(cell.ch);
                 }
+            }
+
+            // Write entire line at once (already cleared above)
+            if !line_content.trim().is_empty() {
+                execute!(
+                    stdout,
+                    cursor::MoveTo(0, y as u16),
+                    Print(line_content)
+                )?;
             }
         }
 
