@@ -40,7 +40,7 @@ pub use dialog::{Dialog, DialogOption, DialogResult, DialogType};
 pub use dialog_widget::DialogWidget;
 pub use input_widget::render_input_widget;
 pub use scrollback::ScrollbackBuffer;
-pub use shadow_buffer::{ShadowBuffer, diff_buffers};
+pub use shadow_buffer::{ShadowBuffer, diff_buffers, visible_length, extract_visible_chars};
 pub use status_widget::StatusWidget;
 
 // Import DialogType for internal use
@@ -398,11 +398,11 @@ impl TuiRenderer {
         self.is_active
     }
 
-    /// Flush pending output to terminal scrollback using shadow buffer with diff-based updates
-    /// Syncs OutputManager messages to ScrollbackBuffer, then renders using shadow buffer
+    /// Flush pending output to terminal scrollback using insert_before() for complete messages
+    /// and shadow buffer for visible area updates
     pub fn flush_output_safe(&mut self, output_manager: &OutputManager) -> Result<()> {
-        // Track if any messages changed
-        let mut messages_changed = false;
+        // Track new messages to render permanently to scrollback
+        let mut new_complete_messages: Vec<MessageRef> = Vec::new();
 
         // Get all trait-based messages from OutputManager
         let messages = output_manager.get_messages();
@@ -410,90 +410,76 @@ impl TuiRenderer {
         for msg in &messages {
             let msg_id = msg.id();
 
-            // Add to scrollback if not already there
+            // Add to scrollback buffer if not already there
             if self.scrollback.get_message(msg_id).is_none() {
                 self.scrollback.add_message(msg.clone());
-                messages_changed = true;
+                self.needs_full_refresh = true;
+            }
+
+            // Only write Complete messages to terminal scrollback permanently (once)
+            if matches!(msg.status(), crate::cli::messages::MessageStatus::Complete) {
+                if !self.written_message_ids.contains(&msg_id) {
+                    new_complete_messages.push(msg.clone());
+                    self.written_message_ids.insert(msg_id);
+                }
             }
         }
 
         // If there are any messages, trigger refresh to keep visible area updated
-        // (Messages update in place via Arc<RwLock<>>, so we need to re-render)
         if !messages.is_empty() {
-            messages_changed = true;
+            self.needs_full_refresh = true;
         }
 
-        // Only update if messages changed
-        if !messages_changed {
-            return Ok(());
-        }
+        // Write complete messages to terminal scrollback using insert_before()
+        // This pushes content up above the inline viewport (permanent, scrollable)
+        if !new_complete_messages.is_empty() {
+            let (term_width, _) = crossterm::terminal::size()?;
 
-        // Render messages to shadow buffer (with proper wrapping)
-        let all_messages = self.scrollback.get_visible_messages();
-        self.shadow_buffer.render_messages(&all_messages);
+            // Format messages with proper wrapping using shadow buffer
+            let mut wrapped_lines = Vec::new();
+            for msg in &new_complete_messages {
+                let formatted = msg.format();
+                for line in formatted.lines() {
+                    // Use shadow buffer's wrapping logic
+                    let visible_len = visible_length(line);
+                    if visible_len <= term_width as usize {
+                        wrapped_lines.push(line.to_string());
+                    } else {
+                        // Wrap long lines
+                        let chars_per_row = term_width as usize;
+                        let (visible_chars, _) = extract_visible_chars(line);
+                        let num_rows = (visible_chars.len() + chars_per_row - 1) / chars_per_row.max(1);
 
-        // Diff with previous frame to get changes
-        let changes = diff_buffers(&self.shadow_buffer, &self.prev_frame_buffer);
-
-        if changes.is_empty() {
-            return Ok(()); // No visual changes
-        }
-
-        // Get terminal size
-        let (_term_width, term_height) = crossterm::terminal::size()?;
-        let visible_rows = term_height.saturating_sub(6); // -6 for inline viewport
-
-        // Group changes by row for efficient line-based clearing
-        use std::collections::HashMap;
-        let mut changes_by_row: HashMap<usize, Vec<(usize, char)>> = HashMap::new();
-
-        for (x, y, cell) in changes {
-            if (y as u16) < visible_rows {
-                changes_by_row.entry(y).or_insert_with(Vec::new).push((x, cell.ch));
-            }
-        }
-
-        // Apply changes to terminal (clear line first, then write entire row)
-        use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
-        use crossterm::style::Print;
-
-        let mut stdout = io::stdout();
-        execute!(stdout, BeginSynchronizedUpdate)?;
-
-        for (row, _cells) in changes_by_row {
-            // Clear the entire line first to prevent ghosting
-            execute!(
-                stdout,
-                cursor::MoveTo(0, row as u16),
-                Clear(ClearType::UntilNewLine)
-            )?;
-
-            // Write the entire row from shadow buffer
-            let mut line_content = String::new();
-            for x in 0..self.shadow_buffer.width {
-                if let Some(cell) = self.shadow_buffer.get(x, row) {
-                    line_content.push(cell.ch);
+                        for row_idx in 0..num_rows {
+                            let start = row_idx * chars_per_row;
+                            let end = (start + chars_per_row).min(visible_chars.len());
+                            let chunk: String = visible_chars[start..end].iter().collect();
+                            wrapped_lines.push(chunk);
+                        }
+                    }
                 }
+                wrapped_lines.push(String::new()); // Blank line between messages
             }
 
-            // Write entire line at once (more efficient than per-char)
-            if !line_content.is_empty() {
-                execute!(
-                    stdout,
-                    cursor::MoveTo(0, row as u16),
-                    Print(line_content)
-                )?;
-            }
+            let num_lines = wrapped_lines.len().min(u16::MAX as usize) as u16;
+
+            // Use insert_before to write to terminal scrollback (pushes content up)
+            use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+            execute!(io::stdout(), BeginSynchronizedUpdate)?;
+
+            self.terminal.insert_before(num_lines, |buf| {
+                for (i, line) in wrapped_lines.iter().enumerate() {
+                    if i < buf.area.height as usize {
+                        buf.set_string(0, i as u16, line, ratatui::style::Style::default());
+                    }
+                }
+            })?;
+
+            execute!(io::stdout(), EndSynchronizedUpdate)?;
+
+            // Mark TUI for render (separator might need to move)
+            self.needs_tui_render = true;
         }
-
-        execute!(stdout, EndSynchronizedUpdate)?;
-        stdout.flush()?;
-
-        // Update previous frame buffer
-        self.prev_frame_buffer = self.shadow_buffer.clone_buffer();
-
-        // Mark TUI for render (input/status area might need update)
-        self.needs_tui_render = true;
 
         Ok(())
     }

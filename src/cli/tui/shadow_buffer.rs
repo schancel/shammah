@@ -194,7 +194,7 @@ impl ShadowBuffer {
 }
 
 /// Calculate visible length of string (excluding ANSI escape codes)
-fn visible_length(s: &str) -> usize {
+pub fn visible_length(s: &str) -> usize {
     let mut len = 0;
     let mut chars = s.chars().peekable();
 
@@ -241,7 +241,7 @@ fn visible_length(s: &str) -> usize {
 
 /// Extract visible characters from string (strip ANSI codes)
 /// Returns (visible_chars, positions_of_ansi_codes)
-fn extract_visible_chars(s: &str) -> (Vec<char>, Vec<usize>) {
+pub fn extract_visible_chars(s: &str) -> (Vec<char>, Vec<usize>) {
     let mut visible_chars = Vec::new();
     let mut ansi_positions = Vec::new();
     let mut chars = s.chars().peekable();
