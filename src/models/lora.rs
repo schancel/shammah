@@ -312,7 +312,7 @@ pub struct ExampleBuffer {
 }
 
 impl ExampleBuffer {
-    pub fn new() -> Self {
+    pub fn new(_capacity: usize) -> Self {
         Self {
             examples: Vec::new(),
         }
@@ -372,9 +372,9 @@ pub struct TrainingCoordinator {
 }
 
 impl TrainingCoordinator {
-    pub fn new() -> Self {
+    pub fn new(_buffer_size: usize, _threshold: usize, _auto_train: bool) -> Self {
         Self {
-            buffer: ExampleBuffer::new(),
+            buffer: ExampleBuffer::new(0),
         }
     }
 

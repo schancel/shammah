@@ -63,6 +63,10 @@ impl RouterModel {
         anyhow::bail!("RouterModel removed in Phase 4 (Candle-based)")
     }
 
+    pub fn save(&self, _path: &std::path::Path) -> anyhow::Result<()> {
+        anyhow::bail!("RouterModel removed in Phase 4 (Candle-based)")
+    }
+
     pub fn predict(&self, _input: &str) -> anyhow::Result<f64> {
         anyhow::bail!("RouterModel removed in Phase 4 (Candle-based)")
     }
@@ -78,6 +82,10 @@ impl ValidatorModel {
     }
 
     pub fn load(_path: &std::path::Path) -> anyhow::Result<Self> {
+        anyhow::bail!("ValidatorModel removed in Phase 4 (Candle-based)")
+    }
+
+    pub fn save(&self, _path: &std::path::Path) -> anyhow::Result<()> {
         anyhow::bail!("ValidatorModel removed in Phase 4 (Candle-based)")
     }
 
@@ -139,6 +147,23 @@ impl ModelEnsemble {
     }
 
     pub fn save(&self, _path: &std::path::Path) -> anyhow::Result<()> {
+        anyhow::bail!("ModelEnsemble removed in Phase 4 (Candle-based)")
+    }
+
+    pub fn query_count(&self) -> usize {
+        0
+    }
+
+    pub fn learn_from_local_attempt(
+        &self,
+        _query: &str,
+        _response: &str,
+        _quality: Quality,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("ModelEnsemble removed in Phase 4 (Candle-based)")
+    }
+
+    pub fn learn_from_claude(&mut self, _query: &str, _response: &str) -> anyhow::Result<()> {
         anyhow::bail!("ModelEnsemble removed in Phase 4 (Candle-based)")
     }
 }
