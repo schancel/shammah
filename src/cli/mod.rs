@@ -12,6 +12,7 @@ mod output_manager;
 mod repl;
 pub mod repl_event; // Phase 2-3: Event loop infrastructure
 pub mod setup_wizard; // First-run setup wizard (API keys + device selection)
+mod simple_repl; // Phase 8: Simplified REPL for daemon-only mode
 mod status_bar;
 pub mod tui; // Phase 2: Terminal UI
 
@@ -23,4 +24,5 @@ pub use messages::{ProgressMessage, StaticMessage, StreamingResponseMessage, Too
 pub use output_manager::OutputManager;
 pub use repl::Repl;
 pub use setup_wizard::show_setup_wizard;
+pub use simple_repl::SimplifiedRepl;
 pub use status_bar::{StatusBar, StatusLine, StatusLineType};

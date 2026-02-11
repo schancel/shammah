@@ -82,7 +82,7 @@ impl Default for ServerConfig {
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
-            use_daemon: false, // Disabled by default (backwards compatibility)
+            use_daemon: true, // Enabled by default (daemon-only mode)
             daemon_address: "127.0.0.1:11434".to_string(),
             auto_spawn: true,
             timeout_seconds: 120,

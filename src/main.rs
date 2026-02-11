@@ -1,7 +1,7 @@
 // Shammah - Local-first Constitutional AI Proxy
 // Main entry point
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
@@ -41,6 +41,10 @@ struct Args {
     /// Alias for --raw (for backwards compatibility)
     #[arg(long = "no-tui")]
     no_tui: bool,
+
+    /// Force direct mode (bypass daemon, for debugging)
+    #[arg(long = "no-daemon")]
+    no_daemon: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -104,34 +108,8 @@ async fn main() -> Result<()> {
             return Ok(());
         }
 
-        // Initialize minimal components for piped mode
-        let config = load_config()?;
-        let crisis_detector = CrisisDetector::load_from_file(&config.crisis_keywords_path)?;
-
-        let models_dir = dirs::home_dir()
-            .map(|home| home.join(".shammah").join("models"))
-            .expect("Failed to determine home directory");
-        std::fs::create_dir_all(&models_dir)?;
-
-        let threshold_router_path = models_dir.join("threshold_router.json");
-        let threshold_router = if threshold_router_path.exists() {
-            ThresholdRouter::load(&threshold_router_path).unwrap_or_else(|_| ThresholdRouter::new())
-        } else {
-            ThresholdRouter::new()
-        };
-
-        let router = Router::new(crisis_detector, threshold_router);
-        let claude_client = create_claude_client_with_provider(&config)?;
-        let metrics_logger = MetricsLogger::new(config.metrics_dir.clone())?;
-
-        // Create REPL (will detect non-interactive mode automatically)
-        let mut repl = Repl::new(config, claude_client, router, metrics_logger).await;
-
-        // Process the piped query and exit
-        let response = repl.process_query(input.trim()).await?;
-        println!("{}", response);
-
-        return Ok(());
+        // Run query via daemon
+        return run_query(input.trim()).await;
     }
 
     // CRITICAL: Create and configure OutputManager BEFORE initializing tracing
@@ -186,93 +164,22 @@ async fn main() -> Result<()> {
         output_manager.enable_stdout();
     }
 
-    // Load crisis detector
-    let crisis_detector = CrisisDetector::load_from_file(&config.crisis_keywords_path)?;
+    // Check for --no-daemon debug flag
+    if args.no_daemon {
+        eprintln!("⚠️  Running in no-daemon mode (debug only)");
+        eprintln!("   Connecting directly to teacher API");
 
-    // Load or create threshold router
-    let models_dir = dirs::home_dir()
-        .map(|home| home.join(".shammah").join("models"))
-        .expect("Failed to determine home directory");
-    std::fs::create_dir_all(&models_dir)?;
-
-    let threshold_router_path = models_dir.join("threshold_router.json");
-    let threshold_router = if threshold_router_path.exists() {
-        match ThresholdRouter::load(&threshold_router_path) {
-            Ok(router) => {
-                if std::env::var("SHAMMAH_DEBUG").is_ok() {
-                    eprintln!(
-                        "✓ Loaded threshold router with {} queries",
-                        router.stats().total_queries
-                    );
-                }
-                router
-            }
-            Err(e) => {
-                if std::env::var("SHAMMAH_DEBUG").is_ok() {
-                    eprintln!("Warning: Failed to load threshold router: {}", e);
-                    eprintln!("  Creating new threshold router");
-                }
-                ThresholdRouter::new()
-            }
+        // Read query if provided
+        if let Some(query) = args.initial_prompt {
+            return run_query_teacher_only(&query, &config).await;
         }
-    } else {
-        if std::env::var("SHAMMAH_DEBUG").is_ok() {
-            eprintln!("Creating new threshold router");
-        }
-        ThresholdRouter::new()
-    };
 
-    // Create router with threshold router
-    let router = Router::new(crisis_detector, threshold_router);
-
-    // Create Claude client
-    let claude_client = create_claude_client_with_provider(&config)?;
-
-    // Create metrics logger
-    let metrics_logger = MetricsLogger::new(config.metrics_dir.clone())?;
-
-    // Create and run REPL
-    let mut repl = Repl::new(config, claude_client, router, metrics_logger).await;
-
-    // Restore session if requested
-    if let Some(session_path) = args.restore_session {
-        if session_path.exists() {
-            match ConversationHistory::load(&session_path) {
-                Ok(history) => {
-                    repl.restore_conversation(history);
-                    if std::env::var("SHAMMAH_DEBUG").is_ok() {
-                        eprintln!("✓ Restored conversation from session");
-                    }
-                    std::fs::remove_file(&session_path)?;
-                }
-                Err(e) => {
-                    if std::env::var("SHAMMAH_DEBUG").is_ok() {
-                        eprintln!("⚠️  Failed to restore session: {}", e);
-                    }
-                }
-            }
-        }
+        eprintln!("Error: --no-daemon requires --initial-prompt");
+        anyhow::bail!("--no-daemon mode requires --initial-prompt");
     }
 
-    // Run REPL (potentially with initial prompt)
-    if std::env::var("SHAMMAH_DEBUG").is_ok() {
-        eprintln!("[DEBUG] Starting REPL...");
-    }
-
-    // Use event loop mode by default (automatic detection)
-    // Falls back to traditional mode if TUI is not available or --raw is used
-    if std::env::var("SHAMMAH_DEBUG").is_ok() {
-        eprintln!("[DEBUG] Starting REPL (event loop with fallback)...");
-    }
-
-    // Try event loop first (requires TUI)
-    // If TUI is not available, run_event_loop() will automatically fall back
-    repl.run_event_loop(args.initial_prompt).await?;
-
-    if std::env::var("SHAMMAH_DEBUG").is_ok() {
-        eprintln!("[DEBUG] REPL exited, returning from main");
-    }
-    Ok(())
+    // Run REPL via daemon (daemon-only mode)
+    run_repl_via_daemon(args.initial_prompt, args.restore_session, config).await
 }
 
 /// Install panic handler to cleanup terminal state on panic
@@ -523,49 +430,142 @@ async fn run_daemon(bind_address: String) -> Result<()> {
 }
 
 /// Run a single query
+/// Run a single query (daemon-only mode)
 async fn run_query(query: &str) -> Result<()> {
+    use shammah::client::DaemonClient;
+    use shammah::daemon::ensure_daemon_running;
+
     // Load configuration
     let config = load_config()?;
 
-    // Check if daemon mode is enabled
-    if config.client.use_daemon {
-        // Use daemon client
-        use shammah::client::DaemonClient;
-
-        let daemon_config = shammah::client::DaemonClient::config_from_settings(&config.client);
-        let client = DaemonClient::connect(daemon_config).await?;
-
-        let response = client.query_text(query).await?;
-        println!("{}", response);
-
-        return Ok(());
+    // Ensure daemon is running (auto-spawn if needed)
+    if let Err(e) = ensure_daemon_running(Some(&config.client.daemon_address)).await {
+        eprintln!("⚠️  Daemon failed to start: {}", e);
+        eprintln!("   Using teacher API directly (no local model)");
+        return run_query_teacher_only(query, &config).await;
     }
 
-    // Traditional mode: use local REPL
-    let crisis_detector = CrisisDetector::load_from_file(&config.crisis_keywords_path)?;
+    // Create daemon client
+    let daemon_config = shammah::client::DaemonConfig::from_client_config(&config.client);
+    let client = DaemonClient::connect(daemon_config).await?;
 
-    let models_dir = dirs::home_dir()
-        .map(|home| home.join(".shammah").join("models"))
-        .expect("Failed to determine home directory");
-    std::fs::create_dir_all(&models_dir)?;
+    // Send query to daemon
+    let response = client.query_text(query).await?;
+    println!("{}", response);
 
-    let threshold_router_path = models_dir.join("threshold_router.json");
-    let threshold_router = if threshold_router_path.exists() {
-        ThresholdRouter::load(&threshold_router_path).unwrap_or_else(|_| ThresholdRouter::new())
-    } else {
-        ThresholdRouter::new()
+    Ok(())
+}
+
+/// Run REPL via daemon (daemon-only mode)
+async fn run_repl_via_daemon(
+    initial_prompt: Option<String>,
+    restore_session: Option<PathBuf>,
+    config: Config,
+) -> Result<()> {
+    use shammah::client::DaemonClient;
+    use shammah::daemon::ensure_daemon_running;
+    use shammah::cli::SimplifiedRepl;
+    use shammah::tools::{PermissionManager, PermissionRule, ToolExecutor, ToolRegistry};
+    use shammah::tools::implementations::{
+        BashTool, GlobTool, GrepTool, ReadTool, RestartTool, SaveAndExecTool, WebFetchTool,
     };
 
-    let router = Router::new(crisis_detector, threshold_router);
-    let claude_client = create_claude_client_with_provider(&config)?;
-    let metrics_logger = MetricsLogger::new(config.metrics_dir.clone())?;
+    // Ensure daemon is running (auto-spawn if needed)
+    if let Err(e) = ensure_daemon_running(Some(&config.client.daemon_address)).await {
+        eprintln!("⚠️  Daemon failed to start: {}", e);
+        eprintln!("   Falling back to teacher API (no local model)");
 
-    // Create REPL in non-interactive mode
-    let mut repl = Repl::new(config, claude_client, router, metrics_logger).await;
+        // Continue with teacher-only mode - we'll fall back in the query handler
+        // For now, just proceed and let the daemon client handle the failure
+    }
 
-    // Process query and print result
-    let response = repl.process_query(query).await?;
-    println!("{}", response);
+    // Create daemon client
+    let daemon_config = shammah::client::DaemonConfig::from_client_config(&config.client);
+    let daemon_client = DaemonClient::connect(daemon_config)
+        .await
+        .context("Failed to connect to daemon")?;
+
+    // Initialize tool execution system
+    let mut tool_registry = ToolRegistry::new();
+    tool_registry.register(Box::new(ReadTool));
+    tool_registry.register(Box::new(GlobTool));
+    tool_registry.register(Box::new(GrepTool));
+    tool_registry.register(Box::new(WebFetchTool::new()));
+    tool_registry.register(Box::new(BashTool));
+
+    // Self-improvement tools
+    let session_state_file = dirs::home_dir()
+        .map(|home| home.join(".shammah").join("restart_state.json"))
+        .unwrap_or_else(|| PathBuf::from(".shammah/restart_state.json"));
+
+    tool_registry.register(Box::new(RestartTool::new(session_state_file.clone())));
+    tool_registry.register(Box::new(SaveAndExecTool::new(session_state_file.clone())));
+
+    // Create permission manager
+    let permissions = PermissionManager::new().with_default_rule(PermissionRule::Allow);
+
+    // Determine patterns path
+    let patterns_path = dirs::home_dir()
+        .map(|home| home.join(".shammah").join("tool_patterns.json"))
+        .unwrap_or_else(|| PathBuf::from(".shammah/tool_patterns.json"));
+
+    // Create tool executor
+    let tool_executor = std::sync::Arc::new(tokio::sync::Mutex::new(
+        ToolExecutor::new(tool_registry, permissions, patterns_path)?
+    ));
+
+    // Create simplified REPL
+    let mut repl = SimplifiedRepl::new(config, daemon_client, tool_executor)?;
+
+    // Restore session if provided
+    if let Some(session_path) = restore_session {
+        repl.restore_session(&session_path)?;
+    }
+
+    // Run event loop
+    repl.run_interactive(initial_prompt).await?;
+
+    Ok(())
+}
+
+/// Run query using teacher API only (fallback when daemon fails)
+async fn run_query_teacher_only(query: &str, config: &Config) -> Result<()> {
+    use shammah::claude::{MessageRequest, ContentBlock};
+
+    eprintln!("⚠️  Running in teacher-only mode (no local model)");
+
+    // Create teacher client
+    let claude_client = create_claude_client_with_provider(config)?;
+
+    // Create simple request
+    let request = MessageRequest {
+        model: config.active_teacher()
+            .and_then(|t| t.model.clone())
+            .unwrap_or_else(|| "claude-sonnet-4-5-20250929".to_string()),
+        max_tokens: 8000,
+        messages: vec![shammah::claude::Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: query.to_string(),
+            }],
+        }],
+        tools: None,
+    };
+
+    // Send to teacher API
+    let response = claude_client.send_message(&request).await?;
+
+    // Extract text from response
+    let text = response.content
+        .into_iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    println!("{}", text);
 
     Ok(())
 }

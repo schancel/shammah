@@ -5,4 +5,4 @@
 
 mod daemon_client;
 
-pub use daemon_client::DaemonClient;
+pub use daemon_client::{DaemonClient, DaemonConfig};
