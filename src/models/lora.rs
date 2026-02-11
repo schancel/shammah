@@ -270,6 +270,32 @@ pub struct WeightedExample {
     pub weight: f64,
 }
 
+impl WeightedExample {
+    pub fn critical(query: String, response: String) -> Self {
+        Self {
+            query,
+            response,
+            weight: 10.0,
+        }
+    }
+
+    pub fn improvement(query: String, response: String) -> Self {
+        Self {
+            query,
+            response,
+            weight: 3.0,
+        }
+    }
+
+    pub fn normal(query: String, response: String) -> Self {
+        Self {
+            query,
+            response,
+            weight: 1.0,
+        }
+    }
+}
+
 /// Example buffer for batching (stub for Phase 5)
 #[derive(Debug)]
 pub struct ExampleBuffer {

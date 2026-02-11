@@ -5,8 +5,12 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::config::BackendDevice;
+use super::download::ModelDownloader;
+use super::generator_new::TextGeneration;
 use super::loaders::onnx::{OnnxLoader, LoadedOnnxModel};
 use super::loaders::onnx_config::{OnnxLoadConfig, ModelSize as OnnxModelSize};
+use super::model_selector::QwenSize;
 
 // Phase 4: Candle removed, ONNX only
 // Legacy types kept for compatibility (will be removed after migration complete)

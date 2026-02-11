@@ -1,7 +1,7 @@
 // Common model utilities and types
+// Phase 4: Candle removed, ONNX only
 
 use anyhow::Result;
-use candle_core::Device;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -69,10 +69,17 @@ impl ModelConfig {
     }
 }
 
-/// Device configuration options
+/// Device configuration options (DEPRECATED: Phase 4 - kept for compatibility)
+///
+/// With ONNX Runtime, device selection is handled by execution providers:
+/// - CoreML (Apple Neural Engine)
+/// - CPU (fallback)
+/// - CUDA/TensorRT (NVIDIA GPUs)
+/// - DirectML (Windows GPUs)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[deprecated(note = "Use ONNX Runtime execution providers instead")]
 pub enum DevicePreference {
-    /// Use best available device (Metal > CPU)
+    /// Use best available device
     Auto,
     /// Force CPU usage
     Cpu,
@@ -86,94 +93,29 @@ impl Default for DevicePreference {
     }
 }
 
-/// Device selection (CPU, CUDA, or Metal for Apple Silicon)
-pub fn get_device() -> Result<Device> {
-    get_device_with_preference(DevicePreference::Auto)
+// Phase 4: Device functions removed (Candle-based)
+// ONNX Runtime handles device selection via execution providers
+
+/// Stub: Device selection removed (Phase 4)
+#[deprecated(note = "Device selection removed - use ONNX Runtime execution providers")]
+pub fn get_device_with_preference(_preference: DevicePreference) -> Result<()> {
+    anyhow::bail!(
+        "get_device_with_preference removed in Phase 4.\n\
+         ONNX Runtime handles device selection automatically via execution providers."
+    )
 }
 
-/// Get device with explicit preference
-pub fn get_device_with_preference(preference: DevicePreference) -> Result<Device> {
-    match preference {
-        DevicePreference::Cpu => {
-            tracing::info!("Using CPU device (forced)");
-            Ok(Device::Cpu)
-        }
-        DevicePreference::Metal => {
-            #[cfg(target_os = "macos")]
-            {
-                match Device::new_metal(0) {
-                    Ok(device) => {
-                        tracing::info!("Using Metal device (Apple Silicon GPU)");
-                        Ok(device)
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to initialize Metal device: {}", e);
-                        anyhow::bail!("Metal device requested but not available: {}", e)
-                    }
-                }
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                anyhow::bail!("Metal device requested but not available on non-macOS platform")
-            }
-        }
-        DevicePreference::Auto => {
-            #[cfg(target_os = "macos")]
-            {
-                // Try Metal (Apple Silicon) first
-                match Device::new_metal(0) {
-                    Ok(device) => {
-                        tracing::info!(
-                            "Using Metal device (Apple Silicon GPU) - 10-100x faster than CPU"
-                        );
-                        return Ok(device);
-                    }
-                    Err(e) => {
-                        tracing::warn!("Metal device unavailable ({}), falling back to CPU", e);
-                    }
-                }
-            }
-
-            // Fall back to CPU
-            tracing::info!("Using CPU device");
-            Ok(Device::Cpu)
-        }
-    }
+/// Stub: Device info removed (Phase 4)
+#[deprecated(note = "Device info removed - ONNX Runtime manages devices")]
+pub fn device_info() -> String {
+    "ONNX Runtime (device managed automatically)".to_string()
 }
 
-/// Get information about the current device
-pub fn device_info(device: &Device) -> String {
-    match device {
-        Device::Cpu => "CPU".to_string(),
-        Device::Cuda(_) => "CUDA GPU".to_string(),
-        Device::Metal(_) => {
-            #[cfg(target_os = "macos")]
-            {
-                // Try to get more specific info about Apple Silicon
-                if let Ok(sysname) = std::process::Command::new("sysctl")
-                    .args(&["-n", "machdep.cpu.brand_string"])
-                    .output()
-                {
-                    if let Ok(name) = String::from_utf8(sysname.stdout) {
-                        return format!("Metal ({})", name.trim());
-                    }
-                }
-            }
-            "Metal (Apple Silicon GPU)".to_string()
-        }
-    }
-}
-
-/// Check if Metal is available on this system
+/// Stub: Metal availability check removed (Phase 4)
+#[deprecated(note = "Metal check removed - ONNX Runtime handles CoreML EP")]
 pub fn is_metal_available() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        Device::new_metal(0).is_ok()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        false
-    }
+    // Assume true on macOS for compatibility
+    cfg!(target_os = "macos")
 }
 
 /// Model persistence

@@ -57,23 +57,25 @@ impl BackendDevice {
     }
 
     /// Check if this device is available on the current system
+    ///
+    /// Phase 4: Simplified - assumes platform support = availability
+    /// ONNX Runtime will handle actual device detection
     pub fn is_available(&self) -> bool {
         match self {
             #[cfg(target_os = "macos")]
             BackendDevice::CoreML => {
-                // Check if we can access CoreML
-                // For now, assume available on all macOS
+                // Assume CoreML available on all macOS (ONNX RT will check)
                 true
             }
             #[cfg(target_os = "macos")]
             BackendDevice::Metal => {
-                use candle_core::Device;
-                Device::new_metal(0).is_ok()
+                // Assume Metal available on macOS (ONNX RT will check)
+                true
             }
             #[cfg(feature = "cuda")]
             BackendDevice::Cuda => {
-                use candle_core::Device;
-                Device::new_cuda(0).is_ok()
+                // Assume CUDA available if compiled with feature
+                true
             }
             BackendDevice::Cpu => true, // Always available
             BackendDevice::Auto => true, // Always available

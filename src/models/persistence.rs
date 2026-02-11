@@ -35,35 +35,20 @@ impl ModelMetadata {
     }
 }
 
-/// Save model with metadata
+/// Save model with metadata (DEPRECATED: Phase 4 - Candle-based)
 ///
-/// Creates two files:
-/// - {path}.safetensors - Model weights (Candle's VarMap format)
-/// - {path}.json - Model metadata (config, type, etc.)
+/// Phase 4: This function used Candle's VarMap which has been removed.
+/// For ONNX models, use ONNX Runtime's save functionality or Python scripts.
+#[deprecated(note = "Candle VarMap removed - use ONNX Runtime save")]
 pub fn save_model_with_metadata(
-    weights_path: &Path,
-    varmap: &candle_nn::VarMap,
-    metadata: &ModelMetadata,
+    _weights_path: &Path,
+    _varmap: &(), // Placeholder for removed VarMap type
+    _metadata: &ModelMetadata,
 ) -> Result<()> {
-    // Save weights
-    varmap
-        .save(weights_path)
-        .with_context(|| format!("Failed to save model weights to {:?}", weights_path))?;
-
-    // Save metadata
-    let metadata_path = weights_path.with_extension("json");
-    let metadata_json =
-        serde_json::to_string_pretty(metadata).context("Failed to serialize model metadata")?;
-    fs::write(&metadata_path, metadata_json)
-        .with_context(|| format!("Failed to write metadata to {:?}", metadata_path))?;
-
-    tracing::info!(
-        "Saved model: {} at step {}",
-        metadata.model_type,
-        metadata.training_step
-    );
-
-    Ok(())
+    anyhow::bail!(
+        "save_model_with_metadata removed in Phase 4 (Candle VarMap).\n\
+         For ONNX models, use Python scripts with ONNX Runtime."
+    )
 }
 
 /// Load model metadata

@@ -1,12 +1,10 @@
 // Generator Model - Unified text generation interface
-// Supports both custom transformers (random init) and pre-trained Qwen models
+// Phase 4: ONNX-based (Candle removed)
 
-use anyhow::{Context, Result};
-use candle_core::{Device, Tensor};
+use anyhow::Result;
 use std::path::Path;
 
 use super::common::{GeneratorConfig, Saveable};
-use super::generator as legacy_generator;
 use super::unified_loader::UnifiedModelLoader;
 
 /// Text generation trait - abstraction over different generator backends
@@ -14,36 +12,11 @@ pub trait TextGeneration: Send + Sync {
     /// Generate text from input tokens
     fn generate(&mut self, input_ids: &[u32], max_new_tokens: usize) -> Result<Vec<u32>>;
 
-    /// Get the device this model runs on
-    fn device(&self) -> &Device;
-
     /// Get model name/description
     fn name(&self) -> &str;
 }
 
-/// Legacy custom transformer implementation
-struct LegacyGenerator {
-    inner: legacy_generator::GeneratorModel,
-}
-
-impl TextGeneration for LegacyGenerator {
-    fn generate(&mut self, input_ids: &[u32], max_new_tokens: usize) -> Result<Vec<u32>> {
-        let input_tensor = Tensor::from_vec(
-            input_ids.to_vec(),
-            (1, input_ids.len()),
-            self.inner.device(),
-        )?;
-        self.inner.generate(&input_tensor, max_new_tokens)
-    }
-
-    fn device(&self) -> &Device {
-        self.inner.device()
-    }
-
-    fn name(&self) -> &str {
-        "Custom Transformer (Random Init)"
-    }
-}
+// Phase 4: LegacyGenerator removed (depends on Candle-based generator module)
 
 /// Unified generator model supporting multiple backends
 pub struct GeneratorModel {
@@ -62,12 +35,16 @@ impl std::fmt::Debug for GeneratorModel {
 
 impl GeneratorModel {
     /// Create new generator from configuration
+    ///
+    /// Phase 4: Only supports Pretrained (ONNX-based)
+    /// RandomInit removed with Candle
     pub fn new(config: GeneratorConfig) -> Result<Self> {
         let backend: Box<dyn TextGeneration> = match &config {
-            GeneratorConfig::RandomInit(model_config) => {
-                tracing::info!("Creating custom transformer with random initialization");
-                let inner = legacy_generator::GeneratorModel::new(model_config)?;
-                Box::new(LegacyGenerator { inner })
+            GeneratorConfig::RandomInit(_model_config) => {
+                anyhow::bail!(
+                    "RandomInit removed in Phase 4 (Candle-based).\n\
+                     Use GeneratorConfig::Pretrained with ONNX models."
+                )
             }
             GeneratorConfig::Pretrained(load_config) => {
                 tracing::info!(
@@ -95,10 +72,8 @@ impl GeneratorModel {
         self.backend.name()
     }
 
-    /// Get device
-    pub fn device(&self) -> &Device {
-        self.backend.device()
-    }
+    // Phase 4: device() removed (Candle-based)
+    // ONNX Runtime manages device selection via execution providers
 
     /// Get configuration
     pub fn config(&self) -> &GeneratorConfig {
