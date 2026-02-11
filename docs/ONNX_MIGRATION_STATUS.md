@@ -76,17 +76,39 @@ let model = loader.load_onnx(Some(16))?;  // 16GB RAM → Qwen2.5-1.5B
 
 ---
 
-### ⏳ Phase 4: Remove Candle Dependencies (IN PROGRESS)
+### ⚠️ Phase 4: Remove Candle Dependencies (PARTIAL)
 
-**Plan**:
-1. Remove Candle from Cargo.toml
-2. Delete old loaders: qwen.rs, gemma.rs, mistral.rs, llama.rs, coreml.rs
-3. Delete LoRA implementation: lora_impl.rs, lora_trainer.rs
-4. Simplify UnifiedModelLoader (ONNX only)
-5. Update bootstrap.rs to use ONNX
-6. Update generator_new.rs to wrap ONNX
+**Commit**: `ad62c0d`
 
-**Status**: Not started
+**Completed**:
+- ✅ Removed Candle dependencies from Cargo.toml
+- ✅ Deleted 5 Candle-based loaders (qwen, gemma, mistral, llama, coreml)
+- ✅ Deleted 2 LoRA implementation files (lora_impl, lora_trainer)
+- ✅ Created stub types in lora.rs for compatibility
+- ✅ Updated UnifiedModelLoader (load() deprecated, load_onnx() primary)
+- ✅ Commented out Candle-based models in mod.rs
+- ✅ Reduced codebase by ~2,500 lines
+
+**Remaining Work**:
+- ❌ Fix common.rs (remove Candle Device references)
+- ❌ Fix backend.rs (remove Candle device checking)
+- ❌ Fix generator_new.rs (adapt to ONNX-only)
+- ❌ Update ~30 files referencing removed modules
+- ❌ Resolve 38 compilation errors
+
+**Current Status**: Does not compile (breaking changes in progress)
+
+**Files Deleted**:
+```
+src/models/loaders/qwen.rs          (478 lines)
+src/models/loaders/gemma.rs         (410 lines)
+src/models/loaders/mistral.rs       (385 lines)
+src/models/loaders/llama.rs         (425 lines)
+src/models/loaders/coreml.rs        (385 lines)
+src/models/lora_impl.rs             (394 lines)
+src/models/lora_trainer.rs          (223 lines)
+Total: ~2,700 lines removed
+```
 
 ---
 
