@@ -1,13 +1,21 @@
 // Shammah - Agent Server Module
 // HTTP daemon mode for multi-tenant agent serving
 
+mod feedback_handler;
 mod handlers;
 mod middleware;
+mod openai_handlers;
+pub mod openai_types; // Public for client access
 mod session;
+mod training_worker;
 
+pub use feedback_handler::{handle_feedback, handle_training_status};
 pub use handlers::{create_router, health_check, metrics_endpoint};
 pub use middleware::auth_middleware;
+pub use openai_handlers::{handle_chat_completions, handle_list_models};
+pub use openai_types::*;
 pub use session::{SessionManager, SessionState};
+pub use training_worker::TrainingWorker;
 
 use anyhow::Result;
 use std::net::SocketAddr;
@@ -69,6 +77,8 @@ pub struct AgentServer {
     generator_state: Arc<RwLock<GeneratorState>>,
     /// Training coordinator for LoRA fine-tuning
     training_coordinator: Arc<TrainingCoordinator>,
+    /// Training examples sender (for feedback endpoint)
+    training_tx: Arc<tokio::sync::mpsc::UnboundedSender<crate::models::WeightedExample>>,
 }
 
 impl AgentServer {
@@ -89,6 +99,9 @@ impl AgentServer {
             server_config.session_timeout_minutes,
         );
 
+        // Create training channel (will be connected to worker in serve())
+        let (training_tx, _training_rx) = tokio::sync::mpsc::unbounded_channel();
+
         Ok(Self {
             claude_client: Arc::new(claude_client),
             router: Arc::new(RwLock::new(router)),
@@ -99,12 +112,31 @@ impl AgentServer {
             bootstrap_loader,
             generator_state,
             training_coordinator,
+            training_tx: Arc::new(training_tx),
         })
     }
 
     /// Start the HTTP server
-    pub async fn serve(self) -> Result<()> {
+    pub async fn serve(mut self) -> Result<()> {
         let addr: SocketAddr = self.config.bind_address.parse()?;
+
+        // Create training worker channel
+        let (training_tx, training_rx) = tokio::sync::mpsc::unbounded_channel();
+        self.training_tx = Arc::new(training_tx);
+
+        // Spawn training worker in background
+        let worker = TrainingWorker::new(
+            training_rx,
+            Arc::clone(&self.training_coordinator),
+            10,  // batch_threshold: trigger after 10 examples
+            5,   // batch_timeout_minutes: trigger after 5 minutes
+        );
+
+        tokio::spawn(async move {
+            worker.run().await;
+        });
+
+        tracing::info!("Training worker spawned");
 
         // Create application state
         let app_state = Arc::new(self);
@@ -139,6 +171,11 @@ impl AgentServer {
     /// Get reference to session manager
     pub fn session_manager(&self) -> &Arc<SessionManager> {
         &self.session_manager
+    }
+
+    /// Get reference to training examples sender
+    pub fn training_tx(&self) -> &Arc<tokio::sync::mpsc::UnboundedSender<crate::models::WeightedExample>> {
+        &self.training_tx
     }
 
     /// Get server configuration
