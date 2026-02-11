@@ -1,7 +1,7 @@
 // LoRA (Low-Rank Adaptation) - Fine-tuning adapter for Qwen models
-// PLACEHOLDER: Future fine-tuning capability, not yet implemented
+// Phase 6: Implemented JSONL queue writer and training coordinator
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// LoRA adapter configuration
@@ -263,8 +263,8 @@ mod tests {
 // Phase 4: Stub types for removed Candle-based LoRA implementation
 // These will be replaced with Python/ONNX-based implementation in Phase 5
 
-/// Weighted training example (stub for Phase 5)
-#[derive(Debug, Clone)]
+/// Weighted training example (Phase 6: Added serialization for JSONL export)
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeightedExample {
     pub query: String,
     pub response: String,
@@ -383,24 +383,42 @@ impl LoRATrainer {
     }
 }
 
-/// Training coordinator (stub for Phase 5)
+/// Training coordinator (Phase 6: Implemented JSONL queue writer)
 #[derive(Debug)]
 pub struct TrainingCoordinator {
     buffer: std::sync::RwLock<ExampleBuffer>,
+    threshold: usize,
+    auto_train: bool,
+    queue_path: std::path::PathBuf,
 }
 
 impl TrainingCoordinator {
-    pub fn new(_buffer_size: usize, _threshold: usize, _auto_train: bool) -> Self {
+    pub fn new(buffer_size: usize, threshold: usize, auto_train: bool) -> Self {
+        // Training queue: ~/.shammah/training_queue.jsonl
+        let queue_path = dirs::home_dir()
+            .expect("No home directory")
+            .join(".shammah")
+            .join("training_queue.jsonl");
+
         Self {
-            buffer: std::sync::RwLock::new(ExampleBuffer::new(0)),
+            buffer: std::sync::RwLock::new(ExampleBuffer::new(buffer_size)),
+            threshold,
+            auto_train,
+            queue_path,
         }
     }
 
+    /// Add example to buffer, returns true if training threshold reached
     pub fn add_example(&self, example: WeightedExample) -> Result<bool> {
-        if let Ok(mut buffer) = self.buffer.write() {
-            buffer.add(example);
-        }
-        Ok(false) // Never trigger training in stub
+        let mut buffer = self.buffer.write()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+
+        buffer.add(example);
+
+        // Check if threshold reached
+        let should_trigger = self.auto_train && buffer.len() >= self.threshold;
+
+        Ok(should_trigger)
     }
 
     pub fn buffer(&self) -> Result<std::sync::RwLockReadGuard<'_, ExampleBuffer>> {
@@ -408,11 +426,71 @@ impl TrainingCoordinator {
     }
 
     pub fn should_train(&self) -> bool {
-        false // Training will be external in Phase 5
+        if let Ok(buffer) = self.buffer.read() {
+            self.auto_train && buffer.len() >= self.threshold
+        } else {
+            false
+        }
     }
 
+    /// Write buffered examples to JSONL queue file
+    pub fn write_training_queue(&self) -> Result<usize> {
+        let buffer = self.buffer.read()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+
+        // Ensure directory exists
+        if let Some(parent) = self.queue_path.parent() {
+            std::fs::create_dir_all(parent)
+                .context("Failed to create training queue directory")?;
+        }
+
+        // Append examples to JSONL file
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.queue_path)
+            .context("Failed to open training queue file")?;
+
+        let count = buffer.len();
+
+        use std::io::Write;
+        for example in buffer.examples() {
+            let json = serde_json::to_string(example)
+                .context("Failed to serialize example")?;
+            writeln!(file, "{}", json)
+                .context("Failed to write example to queue")?;
+        }
+
+        tracing::info!("Wrote {} examples to training queue: {}", count, self.queue_path.display());
+
+        Ok(count)
+    }
+
+    /// Clear buffer after writing to queue
+    pub fn clear_buffer(&self) -> Result<()> {
+        let mut buffer = self.buffer.write()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+
+        let count = buffer.len();
+        *buffer = ExampleBuffer::new(0);
+
+        tracing::debug!("Cleared {} examples from buffer", count);
+
+        Ok(())
+    }
+
+    /// Get training queue path
+    pub fn queue_path(&self) -> &std::path::Path {
+        &self.queue_path
+    }
+
+    /// Placeholder for external training trigger
     pub fn train(&self) -> Result<()> {
-        anyhow::bail!("Training moved to external Python scripts (Phase 5)")
+        anyhow::bail!("Training moved to external Python scripts (Phase 6)")
     }
 }
 
