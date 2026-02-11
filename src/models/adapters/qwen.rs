@@ -29,23 +29,47 @@ impl LocalModelAdapter for QwenAdapter {
     }
 
     fn clean_output(&self, raw_output: &str) -> String {
-        // Remove ChatML end markers and trailing whitespace
-        let cleaned = raw_output
+        // The model might generate the full template including system/user/assistant markers
+        // We need to extract ONLY the assistant's actual response
+
+        let mut cleaned = raw_output;
+
+        // If the model echoed the template, find the last "assistant" section
+        if let Some(last_assistant_start) = cleaned.rfind("<|im_start|>assistant") {
+            // Start from after "<|im_start|>assistant\n"
+            cleaned = &cleaned[last_assistant_start + 22..]; // Length of "<|im_start|>assistant\n"
+        }
+
+        // Remove end markers
+        cleaned = cleaned
             .split("<|im_end|>")
             .next()
-            .unwrap_or(raw_output)
+            .unwrap_or(cleaned)
             .split("<|endoftext|>")
             .next()
-            .unwrap_or(raw_output)
-            .trim()
-            .to_string();
+            .unwrap_or(cleaned)
+            .trim();
 
-        // Remove any leading assistant markers that might have been generated
-        if cleaned.starts_with("assistant\n") {
-            cleaned.trim_start_matches("assistant\n").trim().to_string()
-        } else {
-            cleaned
+        // Remove ChatML role markers if they leaked through
+        cleaned = cleaned
+            .trim_start_matches("system")
+            .trim_start_matches("user")
+            .trim_start_matches("assistant");
+
+        // Remove any leading special tokens or newlines
+        cleaned = cleaned.trim_start_matches('\n').trim();
+
+        // Handle case where model repeats the system prompt
+        // If output starts with "# Shammah Constitution" or similar, skip to actual response
+        if cleaned.starts_with('#') || cleaned.starts_with("You are") {
+            // Find the first real response content (after system prompt block)
+            // Look for double newline which typically separates sections
+            if let Some(content_start) = cleaned.find("\n\n") {
+                cleaned = &cleaned[content_start + 2..];
+            }
         }
+
+        cleaned.trim().to_string()
     }
 
     fn family_name(&self) -> &str {
