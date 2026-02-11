@@ -80,6 +80,100 @@ impl TextGeneration for CoreMLGenerator {
     }
 }
 
+/// Parse meta.yaml file into candle-coreml ModelConfig
+///
+/// The meta.yaml file from HuggingFace contains model metadata in YAML format,
+/// but candle-coreml expects a structured ModelConfig. This function manually
+/// parses the YAML and constructs the expected config format.
+#[cfg(target_os = "macos")]
+fn parse_meta_yaml(meta_path: &Path) -> Result<candle_coreml::config::ModelConfig> {
+    use serde_yaml::Value;
+    use std::collections::HashMap;
+    use std::fs;
+
+    // Read and parse YAML
+    let yaml_content = fs::read_to_string(meta_path)
+        .with_context(|| format!("Failed to read meta.yaml from {:?}", meta_path))?;
+
+    let yaml: Value = serde_yaml::from_str(&yaml_content)
+        .with_context(|| format!("Failed to parse YAML from {:?}", meta_path))?;
+
+    // Extract model_info
+    let model_info_yaml = yaml
+        .get("model_info")
+        .ok_or_else(|| anyhow::anyhow!("meta.yaml missing model_info section"))?;
+
+    let params = model_info_yaml
+        .get("parameters")
+        .ok_or_else(|| anyhow::anyhow!("meta.yaml missing model_info.parameters section"))?;
+
+    // Extract parameters
+    let context_length = params
+        .get("context_length")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| anyhow::anyhow!("Missing context_length in meta.yaml"))?
+        as usize;
+
+    let batch_size = params
+        .get("batch_size")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1) as usize;
+
+    let architecture = model_info_yaml
+        .get("architecture")
+        .and_then(|v| v.as_str())
+        .unwrap_or("qwen")
+        .to_string();
+
+    // Create ModelInfo
+    let model_info = candle_coreml::config::ModelInfo {
+        model_id: model_info_yaml
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        path: Some(meta_path.parent().unwrap().to_string_lossy().to_string()),
+        model_type: architecture.clone(),
+        discovered_at: Some(chrono::Utc::now().to_rfc3339()),
+    };
+
+    // Create ShapeConfig - using reasonable defaults for Qwen
+    let shapes = candle_coreml::config::ShapeConfig {
+        batch_size,
+        context_length,
+        hidden_size: 1024, // Default for Qwen 0.6B
+        vocab_size: 151_936, // Standard Qwen vocab size
+    };
+
+    // Create components HashMap (empty for now - will be populated by auto-discovery)
+    let components: HashMap<String, candle_coreml::config::ComponentConfig> = HashMap::new();
+
+    // Create NamingConfig (using empty patterns - file paths are explicit)
+    let naming = candle_coreml::config::NamingConfig {
+        embeddings_pattern: None,
+        ffn_prefill_pattern: None,
+        ffn_infer_pattern: None,
+        lm_head_pattern: None,
+    };
+
+    // Create ModelConfig
+    let config = candle_coreml::config::ModelConfig {
+        model_info,
+        shapes,
+        components,
+        naming,
+        ffn_execution: Some("unified".to_string()),
+    };
+
+    tracing::debug!(
+        "Parsed ModelConfig: context_length={}, batch_size={}, model_type={}",
+        config.shapes.context_length,
+        config.shapes.batch_size,
+        config.model_info.model_type
+    );
+
+    Ok(config)
+}
+
 /// Load CoreML model from cache directory
 ///
 /// # Arguments
@@ -161,7 +255,8 @@ pub fn load(model_path: &Path, family: ModelFamily, size: ModelSize) -> Result<B
         ));
     }
 
-    let model_config = candle_coreml::config::ModelConfig::load_from_file(&meta_path)
+    // Parse YAML manually since candle-coreml expects JSON
+    let model_config = parse_meta_yaml(&meta_path)
         .map_err(|e| {
             tracing::error!("Failed to parse meta.yaml: {:?}", e);
             tracing::error!("File path: {:?}", meta_path);
