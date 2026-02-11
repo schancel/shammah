@@ -15,13 +15,33 @@ use crate::claude::{ContentBlock, Message};
 
 /// Create the main application router
 pub fn create_router(server: Arc<AgentServer>) -> Router {
+    use super::feedback_handler::{handle_feedback, handle_training_status};
+    use super::openai_handlers::{handle_chat_completions, handle_list_models};
+
+    // Get training sender for feedback endpoint
+    let training_tx = Arc::clone(server.training_tx());
+
+    // Create feedback router with training_tx state
+    let feedback_router = Router::new()
+        .route("/v1/feedback", post(handle_feedback))
+        .route("/v1/training/status", post(handle_training_status))
+        .with_state(training_tx);
+
+    // Create main router with server state
     Router::new()
+        // Claude-compatible endpoints
         .route("/v1/messages", post(handle_message))
         .route("/v1/session/:id", get(get_session).delete(delete_session))
         .route("/v1/status", get(get_status))
+        // OpenAI-compatible endpoints
+        .route("/v1/chat/completions", post(handle_chat_completions))
+        .route("/v1/models", get(handle_list_models))
+        // Health and metrics
         .route("/health", get(health_check))
         .route("/metrics", get(metrics_endpoint))
         .with_state(server)
+        // Merge feedback router
+        .merge(feedback_router)
 }
 
 /// Request body for /v1/messages endpoint (Claude-compatible)
