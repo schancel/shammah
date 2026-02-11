@@ -123,66 +123,41 @@ impl ModelDownloader {
         }
 
         // Try to download model weights
-        // First, check if this is a CoreML model (has .mlmodelc directories)
-        let coreml_dirs = vec![
+        // Check if this is a CoreML model (anemll repos have .mlmodelc directories)
+        // These are the specific .mlmodelc bundles used by Qwen CoreML models
+        let coreml_model_dirs = vec![
             "qwen_embeddings.mlmodelc",
             "qwen_FFN_PF_lut6_chunk_01of01.mlmodelc",
             "qwen_lm_head.mlmodelc",
             "qwen_lm_head_lut6.mlmodelc",
-            // Add more patterns as needed
         ];
 
         tracing::debug!("Checking for CoreML model format...");
         let mut found_coreml = false;
-        for dir_name in &coreml_dirs {
-            // Try to download a file from this directory to check if it exists
-            let test_file = format!("{}/metadata.json", dir_name);
-            tracing::debug!("Testing for CoreML component: {}", test_file);
-            match repo.get(&test_file) {
-                Ok(_) => {
+
+        // Try to download the .mlmodelc directories directly
+        // hf-hub should handle directory downloads via Git LFS
+        for dir_name in &coreml_model_dirs {
+            tracing::debug!("Attempting to download CoreML bundle: {}", dir_name);
+            match repo.get(dir_name) {
+                Ok(path) => {
+                    tracing::info!("✓ Downloaded CoreML bundle: {}", dir_name);
+                    downloaded_files.push(path);
                     found_coreml = true;
-                    tracing::info!("✓ Detected CoreML model format (found {})", dir_name);
-                    break;
                 }
                 Err(e) => {
-                    tracing::debug!("Not found: {} ({})", test_file, e);
+                    tracing::debug!("CoreML bundle {} not found: {}", dir_name, e);
                 }
             }
-        }
-
-        if !found_coreml {
-            tracing::debug!("No CoreML components detected, trying standard safetensors...");
         }
 
         if found_coreml {
-            // Download all .mlmodelc directories
-            tracing::info!("Downloading CoreML model components...");
-            for dir_name in &coreml_dirs {
-                // Download common files in each .mlmodelc directory
-                let coreml_files = vec![
-                    "metadata.json",
-                    "model.mil",
-                    "coremldata.bin",
-                    "weights/weight.bin",
-                    "analytics/coremldata.bin",
-                ];
-
-                for file in &coreml_files {
-                    let full_path = format!("{}/{}", dir_name, file);
-                    match repo.get(&full_path) {
-                        Ok(path) => {
-                            tracing::debug!("Downloaded {}", full_path);
-                            downloaded_files.push(path);
-                        }
-                        Err(_) => {
-                            // File might not exist in this component, that's ok
-                            tracing::debug!("Skipped {} (not found)", full_path);
-                        }
-                    }
-                }
-            }
-            tracing::info!("✓ Downloaded CoreML model components");
+            tracing::info!("✓ CoreML model components downloaded");
         } else {
+            tracing::debug!("No CoreML bundles detected, trying standard safetensors...");
+        }
+
+        if !found_coreml {
             // Not CoreML, try standard safetensors files
             match repo.get("model.safetensors") {
                 Ok(path) => {
