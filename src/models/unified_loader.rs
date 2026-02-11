@@ -10,6 +10,8 @@ use crate::config::BackendDevice;
 use super::common::DevicePreference;
 use super::download::ModelDownloader;
 use super::loaders;
+use super::loaders::onnx::{OnnxLoader, LoadedOnnxModel};
+use super::loaders::onnx_config::{OnnxLoadConfig, ModelSize as OnnxModelSize};
 use super::model_selector::QwenSize;
 use super::TextGeneration;
 
@@ -484,6 +486,41 @@ impl UnifiedModelLoader {
                 )
             }
         }
+    }
+
+    /// Load ONNX model (Phase 3: New unified inference path)
+    ///
+    /// This will replace the Candle-based loaders in Phase 4.
+    /// For now, it coexists with the old loaders for testing.
+    pub fn load_onnx(&self, ram_gb: Option<usize>) -> Result<LoadedOnnxModel> {
+        tracing::info!("Loading model via ONNX Runtime (Phase 3)");
+
+        // Create cache directory
+        let cache_dir = dirs::home_dir()
+            .context("Failed to determine home directory")?
+            .join(".cache/huggingface/hub");
+
+        std::fs::create_dir_all(&cache_dir)
+            .context("Failed to create cache directory")?;
+
+        // Create ONNX config with automatic size selection
+        let config = if let Some(ram) = ram_gb {
+            let size = OnnxModelSize::from_ram(ram);
+            OnnxLoadConfig::with_size(size, cache_dir)
+        } else {
+            OnnxLoadConfig::from_system_ram(cache_dir)
+        };
+
+        // Create ONNX loader
+        let loader = OnnxLoader::new(config.cache_dir.clone());
+
+        // Load model
+        let model = loader.load_model_sync(&config)
+            .context("Failed to load ONNX model")?;
+
+        tracing::info!("Successfully loaded ONNX model: {}", model.model_name());
+
+        Ok(model)
     }
 }
 
