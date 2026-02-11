@@ -134,21 +134,23 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Initialize tracing with custom OutputManager layer
-    init_tracing();
-
-    // Create global OutputManager and StatusBar (single instances for entire application)
+    // CRITICAL: Create and configure OutputManager BEFORE initializing tracing
+    // This prevents lazy initialization with stdout enabled
     use shammah::cli::{OutputManager, StatusBar};
     use shammah::cli::global_output::{set_global_output, set_global_status};
+
     let output_manager = Arc::new(OutputManager::new());
     let status_bar = Arc::new(StatusBar::new());
+
+    // Disable stdout immediately for TUI mode (will re-enable for --raw/--no-tui later)
+    output_manager.disable_stdout();
+
+    // Set as global BEFORE init_tracing() to prevent lazy initialization
     set_global_output(output_manager.clone());
     set_global_status(status_bar.clone());
 
-    // CRITICAL: Disable stdout immediately before any logs can be emitted
-    // TUI will render all output via insert_before() instead
-    // This prevents tracing logs from appearing on stdout and overlapping
-    output_manager.disable_stdout();
+    // NOW initialize tracing (will use the global OutputManager we just configured)
+    init_tracing();
 
     // Load configuration (or run setup if missing)
     let mut config = match load_config() {
