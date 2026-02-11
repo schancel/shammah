@@ -124,7 +124,6 @@ impl ModelDownloader {
 
         // Try to download model weights
         // Check if this is a CoreML model (anemll repos have .mlmodelc directories)
-        // These are the specific .mlmodelc bundles used by Qwen CoreML models
         let coreml_model_dirs = vec![
             "qwen_embeddings.mlmodelc",
             "qwen_FFN_PF_lut6_chunk_01of01.mlmodelc",
@@ -135,18 +134,41 @@ impl ModelDownloader {
         tracing::debug!("Checking for CoreML model format...");
         let mut found_coreml = false;
 
-        // Try to download the .mlmodelc directories directly
-        // hf-hub should handle directory downloads via Git LFS
+        // Each .mlmodelc bundle contains these files
+        let mlmodelc_files = vec![
+            "coremldata.bin",
+            "metadata.json",
+            "model.mil",
+            "weights/weight.bin",
+        ];
+
+        // Try to download each .mlmodelc bundle by downloading its individual files
         for dir_name in &coreml_model_dirs {
-            tracing::debug!("Attempting to download CoreML bundle: {}", dir_name);
-            match repo.get(dir_name) {
-                Ok(path) => {
-                    tracing::info!("✓ Downloaded CoreML bundle: {}", dir_name);
-                    downloaded_files.push(path);
+            tracing::debug!("Checking for CoreML bundle: {}", dir_name);
+
+            // Test if this bundle exists by trying to download metadata.json
+            let test_file = format!("{}/metadata.json", dir_name);
+            match repo.get(&test_file) {
+                Ok(_) => {
                     found_coreml = true;
+                    tracing::info!("✓ Found CoreML bundle: {}", dir_name);
+
+                    // Download all files in this bundle
+                    for file in &mlmodelc_files {
+                        let full_path = format!("{}/{}", dir_name, file);
+                        match repo.get(&full_path) {
+                            Ok(path) => {
+                                tracing::debug!("  ✓ {}", file);
+                                downloaded_files.push(path);
+                            }
+                            Err(e) => {
+                                tracing::debug!("  ✗ {} ({})", file, e);
+                            }
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::debug!("CoreML bundle {} not found: {}", dir_name, e);
+                Err(_) => {
+                    tracing::debug!("Bundle {} not found", dir_name);
                 }
             }
         }
