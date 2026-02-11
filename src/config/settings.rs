@@ -29,6 +29,9 @@ pub struct Config {
     /// Server configuration (daemon mode)
     pub server: ServerConfig,
 
+    /// Client configuration (connecting to daemon)
+    pub client: ClientConfig,
+
     /// Teacher LLM provider configuration (array of teachers in priority order)
     pub teachers: Vec<TeacherEntry>,
 }
@@ -50,6 +53,19 @@ pub struct ServerConfig {
     pub api_keys: Vec<String>,
 }
 
+/// Client configuration for connecting to daemon
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientConfig {
+    /// Use daemon client mode instead of loading model locally
+    pub use_daemon: bool,
+    /// Daemon bind address to connect to
+    pub daemon_address: String,
+    /// Auto-spawn daemon if not running
+    pub auto_spawn: bool,
+    /// Request timeout in seconds
+    pub timeout_seconds: u64,
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -59,6 +75,17 @@ impl Default for ServerConfig {
             session_timeout_minutes: 30,
             auth_enabled: false,
             api_keys: vec![],
+        }
+    }
+}
+
+impl Default for ClientConfig {
+    fn default() -> Self {
+        Self {
+            use_daemon: false, // Disabled by default (backwards compatibility)
+            daemon_address: "127.0.0.1:11434".to_string(),
+            auto_spawn: true,
+            timeout_seconds: 120,
         }
     }
 }
@@ -108,6 +135,7 @@ impl Config {
             constitution_path,
             backend: BackendConfig::default(),
             server: ServerConfig::default(),
+            client: ClientConfig::default(),
             teachers,
         }
     }
@@ -133,6 +161,7 @@ impl Config {
             streaming_enabled: self.streaming_enabled,
             tui_enabled: self.tui_enabled,
             backend: self.backend.clone(),
+            client: Some(self.client.clone()),
             teachers: self.teachers.clone(),
         };
 
@@ -150,5 +179,7 @@ struct TomlConfig {
     streaming_enabled: bool,
     tui_enabled: bool,
     backend: BackendConfig,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client: Option<ClientConfig>,
     teachers: Vec<TeacherEntry>,
 }

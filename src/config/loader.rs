@@ -43,6 +43,7 @@ pub fn load_config() -> Result<Config> {
 
 fn try_load_from_shammah_config() -> Result<Option<Config>> {
     use super::backend::BackendConfig;
+    use super::settings::ClientConfig;
     use super::TeacherEntry;
 
     let home = dirs::home_dir().context("Could not determine home directory")?;
@@ -65,6 +66,8 @@ fn try_load_from_shammah_config() -> Result<Option<Config>> {
         #[serde(default)]
         backend: BackendConfig,
         #[serde(default)]
+        client: Option<ClientConfig>,
+        #[serde(default)]
         teachers: Vec<TeacherEntry>,
     }
 
@@ -83,6 +86,9 @@ fn try_load_from_shammah_config() -> Result<Option<Config>> {
     config.streaming_enabled = toml_config.streaming_enabled;
     config.tui_enabled = toml_config.tui_enabled;
     config.backend = toml_config.backend;
+    if let Some(client) = toml_config.client {
+        config.client = client;
+    }
 
     Ok(Some(config))
 }

@@ -334,6 +334,7 @@ async fn run_daemon(bind_address: String) -> Result<()> {
     use shammah::server::{AgentServer, ServerConfig};
     use shammah::models::{BootstrapLoader, GeneratorState, DevicePreference, TrainingCoordinator};
     use shammah::local::LocalGenerator;
+    use shammah::daemon::DaemonLifecycle;
     use std::sync::Arc;
     use tokio::sync::RwLock;
     use shammah::{output_progress, output_status};
@@ -343,10 +344,26 @@ async fn run_daemon(bind_address: String) -> Result<()> {
 
     tracing::info!("Starting Shammah in daemon mode");
 
+    // Initialize daemon lifecycle (PID file management)
+    let lifecycle = DaemonLifecycle::new()?;
+
+    // Check if daemon is already running
+    if lifecycle.is_running() {
+        let existing_pid = lifecycle.read_pid()?;
+        anyhow::bail!(
+            "Daemon is already running (PID: {}). Use 'pkill -f \"shammah daemon\"' to stop it.",
+            existing_pid
+        );
+    }
+
+    // Write PID file
+    lifecycle.write_pid()?;
+    tracing::info!(pid = std::process::id(), "Daemon PID file written");
+
     // Load configuration
     let mut config = load_config()?;
     config.server.enabled = true;
-    config.server.bind_address = bind_address;
+    config.server.bind_address = bind_address.clone();
 
     // Load crisis detector
     let crisis_detector = CrisisDetector::load_from_file(&config.crisis_keywords_path)?;
@@ -472,15 +489,59 @@ async fn run_daemon(bind_address: String) -> Result<()> {
         generator_state,
         training_coordinator,
     )?;
-    server.serve().await?;
+
+    // Set up graceful shutdown handling
+    let server_handle = tokio::spawn(async move {
+        server.serve().await
+    });
+
+    // Wait for shutdown signal (Ctrl+C or SIGTERM)
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Received SIGINT, shutting down gracefully");
+        }
+        result = server_handle => {
+            match result {
+                Ok(Ok(())) => {
+                    tracing::info!("Server exited normally");
+                }
+                Ok(Err(e)) => {
+                    tracing::error!(error = %e, "Server exited with error");
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Server task panicked");
+                }
+            }
+        }
+    }
+
+    // Cleanup PID file on exit
+    lifecycle.cleanup()?;
+    tracing::info!("Daemon shutdown complete");
 
     Ok(())
 }
 
 /// Run a single query
 async fn run_query(query: &str) -> Result<()> {
-    // Initialize minimal components
+    // Load configuration
     let config = load_config()?;
+
+    // Check if daemon mode is enabled
+    if config.client.use_daemon {
+        // Use daemon client
+        use shammah::client::DaemonClient;
+
+        let daemon_config = shammah::client::DaemonClient::config_from_settings(&config.client);
+        let client = DaemonClient::connect(daemon_config).await?;
+
+        let response = client.query_text(query).await?;
+        println!("{}", response);
+
+        return Ok(());
+    }
+
+    // Traditional mode: use local REPL
     let crisis_detector = CrisisDetector::load_from_file(&config.crisis_keywords_path)?;
 
     let models_dir = dirs::home_dir()
