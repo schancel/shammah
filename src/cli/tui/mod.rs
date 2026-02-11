@@ -464,25 +464,38 @@ impl TuiRenderer {
                 all_lines.push(Line::raw(""));
             }
 
-            // Calculate how many terminal lines this will actually take
+            // Calculate exact height by pre-rendering with Ratatui
+            // This ensures insert_before() reserves the EXACT space needed
             let (term_width, _) = crossterm::terminal::size()?;
-            let width = term_width as usize;
 
-            let num_lines: usize = all_lines
-                .iter()
-                .map(|line| {
-                    let text = line.to_string();
-                    let visible_len = Self::visible_length(&text);
-                    if visible_len == 0 {
-                        1  // Empty line still takes 1 row
-                    } else {
-                        // Calculate wrapped lines
-                        (visible_len + width - 1) / width.max(1)
+            // Create a test buffer with terminal width
+            let test_area = ratatui::layout::Rect {
+                x: 0,
+                y: 0,
+                width: term_width,
+                height: u16::MAX, // Large enough to hold any wrapped content
+            };
+            let mut test_buffer = ratatui::buffer::Buffer::empty(test_area);
+
+            // Pre-render the paragraph to measure exact height
+            let text = Text::from(all_lines.clone());
+            let paragraph = Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: false });
+            paragraph.render(test_area, &mut test_buffer);
+
+            // Find the last non-empty row to get actual height
+            let mut actual_height = 0;
+            for y in 0..test_area.height {
+                let row_start = (y as usize) * (term_width as usize);
+                let row_end = row_start + (term_width as usize);
+                if row_end <= test_buffer.content.len() {
+                    let row = &test_buffer.content[row_start..row_end];
+                    if row.iter().any(|cell| cell.symbol() != " ") {
+                        actual_height = y + 1;
                     }
-                })
-                .sum();
+                }
+            }
 
-            let num_lines_u16 = num_lines.min(u16::MAX as usize) as u16;
+            let num_lines_u16 = actual_height.min(u16::MAX) as u16;
 
             // Use synchronized update to prevent flickering
             use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
