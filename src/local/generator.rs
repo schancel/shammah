@@ -34,6 +34,8 @@ pub struct ResponseGenerator {
     stats: ModelStats,
     /// Optional neural generator for trained model generation
     neural_generator: Option<Arc<RwLock<GeneratorModel>>>,
+    /// System prompt / constitution for guiding responses
+    system_prompt: String,
 }
 
 /// A response learned from Claude
@@ -56,6 +58,9 @@ impl ResponseGenerator {
         pattern_classifier: PatternClassifier,
         neural_generator: Option<Arc<RwLock<GeneratorModel>>>,
     ) -> Self {
+        // Load system prompt from constitution file
+        let system_prompt = Self::load_constitution();
+
         let mut templates = HashMap::new();
 
         // Initialize default templates for common patterns
@@ -91,6 +96,7 @@ impl ResponseGenerator {
             learned_responses: HashMap::new(),
             stats: ModelStats::default(),
             neural_generator,
+            system_prompt,
         }
     }
 
@@ -169,6 +175,44 @@ impl ResponseGenerator {
         ))
     }
 
+    /// Load constitution from file or use default
+    fn load_constitution() -> String {
+        let home = dirs::home_dir().expect("Could not determine home directory");
+        let constitution_path = home.join(".shammah/constitution.md");
+
+        if constitution_path.exists() {
+            match std::fs::read_to_string(&constitution_path) {
+                Ok(content) => {
+                    tracing::info!("Loaded constitution from {:?}", constitution_path);
+                    content
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to read constitution file: {}, using default", e);
+                    Self::default_constitution()
+                }
+            }
+        } else {
+            tracing::info!("No constitution file found, using default");
+            Self::default_constitution()
+        }
+    }
+
+    /// Default constitution if no file exists
+    fn default_constitution() -> String {
+        "You are Shammah, a helpful coding assistant. Be concise and accurate.".to_string()
+    }
+
+    /// Format user query with chat template
+    /// Uses a flexible format that works across model families (Qwen, Llama, Mistral, etc.)
+    fn format_chat_prompt(&self, user_query: &str) -> String {
+        // Use ChatML format (works with Qwen, many others)
+        // For other models, we can detect and switch format in the future
+        format!(
+            "<|im_start|>system\n{}<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+            self.system_prompt, user_query
+        )
+    }
+
     /// Try to generate response using neural model
     fn try_neural_generate(
         &self,
@@ -176,6 +220,10 @@ impl ResponseGenerator {
         generator: &Arc<RwLock<GeneratorModel>>,
     ) -> Result<String> {
         tracing::info!("[neural_gen] Starting neural generation for query: {}", query);
+
+        // Format query with system prompt using chat template
+        let formatted_prompt = self.format_chat_prompt(query);
+        tracing::debug!("[neural_gen] Formatted prompt length: {} chars", formatted_prompt.len());
 
         // Generate with neural model (try non-blocking lock)
         tracing::debug!("[neural_gen] Acquiring generator lock...");
@@ -186,7 +234,7 @@ impl ResponseGenerator {
         tracing::info!("[neural_gen] Lock acquired, starting generation (max 100 tokens)...");
 
         // Use generate_text() which handles tokenization internally
-        let response = gen.generate_text(query, 100)?; // max 100 new tokens
+        let response = gen.generate_text(&formatted_prompt, 100)?; // max 100 new tokens
 
         tracing::info!("[neural_gen] Neural generation finished, response length: {} chars", response.len());
 
@@ -373,6 +421,7 @@ impl<'de> serde::Deserialize<'de> for ResponseGenerator {
             learned_responses: data.learned_responses,
             stats: data.stats,
             neural_generator: None,
+            system_prompt: Self::load_constitution(),
         })
     }
 }
