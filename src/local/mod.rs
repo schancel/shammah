@@ -80,8 +80,7 @@ impl LocalGenerator {
     /// Try to generate a response from patterns with tools
     ///
     /// This method is used by the daemon to support tool execution.
-    /// For now, it returns None (indicating local generation doesn't support tools yet).
-    /// In the future, this will delegate to QwenGenerator's tool support.
+    /// Delegates to the neural generator (ONNX model) if available.
     pub fn try_generate_from_pattern_with_tools(
         &mut self,
         messages: &[Message],
@@ -90,10 +89,50 @@ impl LocalGenerator {
         // Check for newer adapter before generation
         self.check_and_reload_adapter()?;
 
-        // For now, local generator doesn't support tools
-        // This will be implemented when we integrate QwenGenerator properly
-        // Return None to fall back to Claude
-        Ok(None)
+        if !self.enabled {
+            return Ok(None);
+        }
+
+        // Extract the user's last message
+        let query = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "user")
+            .and_then(|m| {
+                m.content.iter().find_map(|block| match block {
+                    crate::claude::ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+            })
+            .ok_or_else(|| anyhow::anyhow!("No user message found"))?;
+
+        // Generate using the response generator (which tries neural model first)
+        match self.response_generator.generate(query) {
+            Ok(generated) => {
+                // Convert generated response to GeneratorResponse format
+                use crate::generators::ResponseMetadata;
+
+                let response = GeneratorResponse {
+                    text: generated.text.clone(),
+                    content_blocks: vec![crate::claude::ContentBlock::Text {
+                        text: generated.text.clone(),
+                    }],
+                    tool_uses: vec![], // TODO: Support tool use when integrated with QwenGenerator
+                    metadata: ResponseMetadata {
+                        generator: "qwen-local".to_string(),
+                        model: "Qwen2.5-1.5B-Instruct".to_string(), // TODO: Get from config
+                        confidence: Some(generated.confidence),
+                        stop_reason: None,
+                    },
+                };
+
+                Ok(Some(response))
+            }
+            Err(e) => {
+                tracing::warn!("Local generation failed: {}", e);
+                Ok(None)
+            }
+        }
     }
 
     /// Check if a newer adapter is available and reload if so
