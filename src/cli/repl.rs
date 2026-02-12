@@ -1813,6 +1813,7 @@ impl Repl {
                 let type_str = match pattern.pattern_type {
                     crate::tools::patterns::PatternType::Wildcard => "wildcard",
                     crate::tools::patterns::PatternType::Regex => "regex",
+                    crate::tools::patterns::PatternType::Structured => "structured",
                 };
                 output.push_str(&format!(
                     "  {} ({})\n",
@@ -2032,6 +2033,14 @@ impl Repl {
                 self.output_status("  ^cargo (test|build)$");
                 self.output_status(r"  reading /project/src/.*\.rs$");
             }
+            PatternType::Structured => {
+                self.output_status("  Match command, args, and directory separately");
+                self.output_status("  Use * to match anything, or specific values");
+                self.output_status("Examples:");
+                self.output_status("  cmd:cargo args:test dir:/project");
+                self.output_status("  cmd:git args:* dir:/home/*/projects");
+                self.output_status("  cmd:* args:--release dir:*");
+            }
         }
 
         let pattern_str = Menu::text_input("Pattern:", None, Some("Enter the pattern string"))?;
@@ -2075,6 +2084,9 @@ impl Repl {
             let test_sig = ToolSignature {
                 tool_name: pattern.tool_name.clone(),
                 context_key: test_str,
+                command: None,
+                args: None,
+                directory: None,
             };
 
             if pattern.matches(&test_sig) {

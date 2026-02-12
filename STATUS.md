@@ -238,15 +238,16 @@ See `docs/ROADMAP.md` for detailed implementation plans.
 
 ### Phase 5: Complex (8-20 hours each)
 
-20. **[ ] Flexible tool approval patterns** (NEW) 🔴 HIGH PRIORITY
+20. **[x] Flexible tool approval patterns** (NEW) 🔴 HIGH PRIORITY - ✅ COMPLETE
     - Allow patterns to match command, args, and directory separately
-    - Current: Pattern matches whole string like "cargo test in /Users/foo"
-    - Desired: Match components independently (e.g., any cargo command in specific dir)
-    - Structured pattern format: {tool: "bash", command: "cargo *", dir: "/home/*/projects"}
-    - Support wildcards for each component
-    - Backward compatible with existing patterns
-    - Files: `src/tools/patterns.rs`, `src/tools/executor.rs`
-    - Effort: 4-6 hours
+    - Added PatternType::Structured enum variant
+    - ToolSignature now includes command, args, directory fields
+    - Structured patterns: cmd:"cargo test" args:"*" dir:"/home/*/projects"
+    - Support wildcards for each component independently
+    - Backward compatible with existing Wildcard and Regex patterns
+    - New constructor: ToolPattern::new_structured()
+    - Files: `src/tools/patterns.rs`, `src/tools/executor.rs`, `src/cli/repl.rs`
+    - Effort: 4 hours (actual)
 
 21. **[ ] Additional model adapters** (Phi, DeepSeek, etc.)
     - Create adapters for other model families

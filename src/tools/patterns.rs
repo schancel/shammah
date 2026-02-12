@@ -15,6 +15,8 @@ pub enum PatternType {
     Wildcard,
     /// Regular expression matching
     Regex,
+    /// Structured pattern matching (matches command, args, dir separately)
+    Structured,
 }
 
 impl Default for PatternType {
@@ -41,6 +43,17 @@ pub struct ToolPattern {
     /// Compiled regex (not serialized, rebuilt on load)
     #[serde(skip)]
     compiled_regex: Option<Regex>,
+
+    // Structured pattern fields (only used when pattern_type == Structured)
+    /// Pattern to match command (e.g., "cargo test", "git *", "*")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_pattern: Option<String>,
+    /// Pattern to match arguments (e.g., "--release", "*", "")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args_pattern: Option<String>,
+    /// Pattern to match working directory (e.g., "/home/*/projects", "*")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir_pattern: Option<String>,
 }
 
 impl ToolPattern {
@@ -73,6 +86,42 @@ impl ToolPattern {
             last_used: None,
             created_by: None,
             compiled_regex,
+            command_pattern: None,
+            args_pattern: None,
+            dir_pattern: None,
+        }
+    }
+
+    /// Create a new structured pattern
+    pub fn new_structured(
+        tool_name: String,
+        description: String,
+        command_pattern: Option<String>,
+        args_pattern: Option<String>,
+        dir_pattern: Option<String>,
+    ) -> Self {
+        // Build a readable pattern string for display
+        let pattern = format!(
+            "cmd:{} args:{} dir:{}",
+            command_pattern.as_deref().unwrap_or("*"),
+            args_pattern.as_deref().unwrap_or("*"),
+            dir_pattern.as_deref().unwrap_or("*")
+        );
+
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            pattern,
+            tool_name,
+            description,
+            created_at: Utc::now(),
+            match_count: 0,
+            pattern_type: PatternType::Structured,
+            last_used: None,
+            created_by: None,
+            compiled_regex: None,
+            command_pattern,
+            args_pattern,
+            dir_pattern,
         }
     }
 
@@ -89,6 +138,16 @@ impl ToolPattern {
                     .with_context(|| format!("Invalid regex pattern: {}", self.pattern))?;
                 Ok(())
             }
+            PatternType::Structured => {
+                // At least one structured field must be specified
+                if self.command_pattern.is_none()
+                    && self.args_pattern.is_none()
+                    && self.dir_pattern.is_none()
+                {
+                    anyhow::bail!("Structured pattern must specify at least one field (command, args, or directory)");
+                }
+                Ok(())
+            }
         }
     }
 
@@ -102,6 +161,7 @@ impl ToolPattern {
         // Match pattern against context_key based on type
         match self.pattern_type {
             PatternType::Wildcard => pattern_matches(&self.pattern, &signature.context_key),
+            PatternType::Structured => self.matches_structured(signature),
             PatternType::Regex => {
                 // Use compiled regex if available, otherwise compile on demand
                 if let Some(ref regex) = self.compiled_regex {
@@ -132,6 +192,48 @@ impl ToolPattern {
         if self.pattern_type == PatternType::Regex && self.compiled_regex.is_none() {
             self.compiled_regex = Regex::new(&self.pattern).ok();
         }
+    }
+
+    /// Match using structured pattern (command, args, directory separately)
+    fn matches_structured(&self, signature: &ToolSignature) -> bool {
+        // Match command pattern (if specified)
+        if let Some(cmd_pattern) = &self.command_pattern {
+            if let Some(cmd) = &signature.command {
+                if !pattern_matches(cmd_pattern, cmd) {
+                    return false;
+                }
+            } else {
+                // Pattern expects command but signature has none
+                return false;
+            }
+        }
+
+        // Match args pattern (if specified)
+        if let Some(args_pattern) = &self.args_pattern {
+            if let Some(args) = &signature.args {
+                if !pattern_matches(args_pattern, args) {
+                    return false;
+                }
+            } else if args_pattern != "*" && !args_pattern.is_empty() {
+                // Pattern expects args but signature has none (unless pattern is wildcard)
+                return false;
+            }
+        }
+
+        // Match directory pattern (if specified)
+        if let Some(dir_pattern) = &self.dir_pattern {
+            if let Some(dir) = &signature.directory {
+                if !pattern_matches(dir_pattern, dir) {
+                    return false;
+                }
+            } else {
+                // Pattern expects directory but signature has none
+                return false;
+            }
+        }
+
+        // All specified patterns matched
+        true
     }
 }
 

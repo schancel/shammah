@@ -18,6 +18,14 @@ use tracing::{debug, error, info, instrument, warn};
 pub struct ToolSignature {
     pub tool_name: String,
     pub context_key: String,
+
+    // Structured components for flexible pattern matching
+    /// Command being executed (for bash, save_and_exec)
+    pub command: Option<String>,
+    /// Arguments passed to the command
+    pub args: Option<String>,
+    /// Working directory for the execution
+    pub directory: Option<String>,
 }
 
 /// Source of approval for a tool execution
@@ -381,9 +389,21 @@ pub fn generate_tool_signature(tool_use: &ToolUse, working_dir: &std::path::Path
     match tool_use.name.as_str() {
         "bash" => {
             let command = tool_use.input["command"].as_str().unwrap_or("");
+
+            // Parse command into base command and args
+            let (base_cmd, args) = if let Some(space_idx) = command.find(' ') {
+                let (cmd, rest) = command.split_at(space_idx);
+                (cmd.to_string(), Some(rest.trim().to_string()))
+            } else {
+                (command.to_string(), None)
+            };
+
             ToolSignature {
                 tool_name: "bash".to_string(),
                 context_key: format!("{} in {}", command, working_dir.display()),
+                command: Some(base_cmd),
+                args,
+                directory: Some(working_dir.display().to_string()),
             }
         }
         "read" => {
@@ -391,6 +411,9 @@ pub fn generate_tool_signature(tool_use: &ToolUse, working_dir: &std::path::Path
             ToolSignature {
                 tool_name: "read".to_string(),
                 context_key: format!("reading {}", file_path),
+                command: None,
+                args: None,
+                directory: Some(working_dir.display().to_string()),
             }
         }
         "glob" => {
@@ -398,6 +421,9 @@ pub fn generate_tool_signature(tool_use: &ToolUse, working_dir: &std::path::Path
             ToolSignature {
                 tool_name: "glob".to_string(),
                 context_key: format!("pattern {}", pattern),
+                command: None,
+                args: None,
+                directory: Some(working_dir.display().to_string()),
             }
         }
         "grep" => {
@@ -410,6 +436,9 @@ pub fn generate_tool_signature(tool_use: &ToolUse, working_dir: &std::path::Path
             ToolSignature {
                 tool_name: "grep".to_string(),
                 context_key: format!("pattern '{}' in {}", pattern, path),
+                command: None,
+                args: None,
+                directory: Some(working_dir.display().to_string()),
             }
         }
         "web_fetch" => {
@@ -417,13 +446,28 @@ pub fn generate_tool_signature(tool_use: &ToolUse, working_dir: &std::path::Path
             ToolSignature {
                 tool_name: "web_fetch".to_string(),
                 context_key: format!("fetching {}", url),
+                command: None,
+                args: None,
+                directory: None,
             }
         }
         "save_and_exec" => {
             let command = tool_use.input["command"].as_str().unwrap_or("");
+
+            // Parse command into base command and args (same as bash)
+            let (base_cmd, args) = if let Some(space_idx) = command.find(' ') {
+                let (cmd, rest) = command.split_at(space_idx);
+                (cmd.to_string(), Some(rest.trim().to_string()))
+            } else {
+                (command.to_string(), None)
+            };
+
             ToolSignature {
                 tool_name: "save_and_exec".to_string(),
                 context_key: format!("{} in {}", command, working_dir.display()),
+                command: Some(base_cmd),
+                args,
+                directory: Some(working_dir.display().to_string()),
             }
         }
         "train" => {
@@ -432,6 +476,9 @@ pub fn generate_tool_signature(tool_use: &ToolUse, working_dir: &std::path::Path
             ToolSignature {
                 tool_name: tool_use.name.clone(),
                 context_key: format!("train wait={}", wait),
+                command: None,
+                args: None,
+                directory: None,
             }
         }
         "query_local_model" => {
@@ -445,6 +492,9 @@ pub fn generate_tool_signature(tool_use: &ToolUse, working_dir: &std::path::Path
             ToolSignature {
                 tool_name: tool_use.name.clone(),
                 context_key: format!("query_local_model: {}", truncated_query),
+                command: None,
+                args: None,
+                directory: None,
             }
         }
         "analyze_model" => {
@@ -460,6 +510,9 @@ pub fn generate_tool_signature(tool_use: &ToolUse, working_dir: &std::path::Path
             ToolSignature {
                 tool_name: tool_use.name.clone(),
                 context_key: format!("analyze_model categories={}", categories),
+                command: None,
+                args: None,
+                directory: None,
             }
         }
         "generate_training_data" => {
@@ -472,17 +525,26 @@ pub fn generate_tool_signature(tool_use: &ToolUse, working_dir: &std::path::Path
             ToolSignature {
                 tool_name: tool_use.name.clone(),
                 context_key: format!("generate_training_data count={}", examples_count),
+                command: None,
+                args: None,
+                directory: None,
             }
         }
         "compare_responses" => ToolSignature {
             tool_name: tool_use.name.clone(),
             context_key: "compare_responses".to_string(),
+            command: None,
+            args: None,
+            directory: None,
         },
         _ => {
             // Generic signature for unknown tools
             ToolSignature {
                 tool_name: tool_use.name.clone(),
                 context_key: format!("in {}", working_dir.display()),
+                command: None,
+                args: None,
+                directory: Some(working_dir.display().to_string()),
             }
         }
     }
