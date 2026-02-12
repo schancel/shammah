@@ -65,6 +65,8 @@ enum Command {
     },
     /// Stop the running daemon
     DaemonStop,
+    /// Show daemon status
+    DaemonStatus,
     /// Execute a single query
     Query {
         /// Query text
@@ -107,6 +109,9 @@ async fn main() -> Result<()> {
         }
         Some(Command::DaemonStop) => {
             return run_daemon_stop();
+        }
+        Some(Command::DaemonStatus) => {
+            return run_daemon_status().await;
         }
         Some(Command::Query { query }) => {
             return run_query(&query).await;
@@ -382,6 +387,64 @@ fn run_daemon_stop() -> Result<()> {
     lifecycle.stop_daemon()?;
 
     println!("✓ Daemon stopped successfully");
+    Ok(())
+}
+
+/// Show daemon status
+async fn run_daemon_status() -> Result<()> {
+    use shammah::daemon::DaemonLifecycle;
+
+    let lifecycle = DaemonLifecycle::new()?;
+
+    // Check if daemon is running
+    if !lifecycle.is_running() {
+        println!("\x1b[1;33m⚠ Daemon is not running\x1b[0m");
+        println!("\nStart the daemon with:");
+        println!("  \x1b[1;36mshammah daemon-start\x1b[0m");
+        return Ok(());
+    }
+
+    // Get PID
+    let pid = lifecycle.read_pid()?;
+
+    // Query health endpoint
+    let client = reqwest::Client::new();
+    let daemon_url = format!("http://127.0.0.1:11435/health");
+
+    let response = client
+        .get(&daemon_url)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .context("Failed to connect to daemon")?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("Daemon returned error status: {}", response.status());
+    }
+
+    // Parse JSON response
+    #[derive(serde::Deserialize)]
+    struct HealthStatus {
+        status: String,
+        uptime_seconds: u64,
+        active_sessions: usize,
+    }
+
+    let health: HealthStatus = response
+        .json()
+        .await
+        .context("Failed to parse health response")?;
+
+    // Display status
+    println!("\x1b[1;32m✓ Daemon Status\x1b[0m");
+    println!();
+    println!("  Status:          \x1b[1;32m{}\x1b[0m", health.status);
+    println!("  PID:             {}", pid);
+    println!("  Uptime:          {}s", health.uptime_seconds);
+    println!("  Active Sessions: {}", health.active_sessions);
+    println!("  Bind Address:    127.0.0.1:11435");
+    println!();
+
     Ok(())
 }
 

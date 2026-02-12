@@ -139,11 +139,11 @@ See `docs/ROADMAP.md` for detailed implementation plans.
    - Files: `src/config/settings.rs`, `src/config/loader.rs`
    - Effort: 1 hour (actual)
 
-7. **[ ] Daemon status command**
-   - Add `shammah daemon status` subcommand
+7. **[x] Daemon status command** - ✅ COMPLETE
+   - Add `shammah daemon-status` subcommand
    - Show running/stopped, PID, uptime, active sessions
-   - Files: `src/cli/commands.rs`
-   - Effort: 2-4 hours
+   - Files: `src/main.rs`
+   - Effort: 1 hour (actual)
 
 8. **[ ] Model download progress in TUI** (NEW)
    - Show download progress in TUI status bar (not just logs)
