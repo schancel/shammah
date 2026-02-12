@@ -130,10 +130,11 @@ See `docs/ROADMAP.md` for detailed implementation plans.
    - Files: `src/cli/tui/async_input.rs`, `src/cli/tui/mod.rs`
    - Effort: 1.5 hours (actual)
 
-5. **[ ] Status bar live stats**
-   - Display tokens, latency, model info in status bar
-   - Files: `src/cli/tui/status_widget.rs`, `src/cli/output_manager.rs`
-   - Effort: 2-4 hours
+5. **[x] Status bar live stats** - ✅ COMPLETE
+   - Display tokens, latency, model info, speed in status bar
+   - Updates automatically after each query completion
+   - Files: `src/generators/mod.rs`, `src/cli/status_bar.rs`, `src/cli/repl_event/events.rs`
+   - Effort: 2 hours (actual)
 
 6. **[x] Config validation on startup** (NEW) - ✅ COMPLETE
    - Validate config file and show helpful errors
