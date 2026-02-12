@@ -95,7 +95,7 @@ pub async fn handle_chat_completions(
 
     let (content_blocks, routing_decision) = match decision {
         RouteDecision::Forward { reason } => {
-            info!(reason = ?reason, "Routing to Claude API");
+            info!("☁️  ROUTING TO TEACHER API (reason: {:?})", reason);
 
             // Forward to Claude with tools
             let mut claude_request = crate::claude::MessageRequest::with_context(internal_messages.clone());
@@ -112,7 +112,7 @@ pub async fn handle_chat_completions(
             (response.content, "forward")
         }
         RouteDecision::Local { .. } => {
-            info!("Routing to local model");
+            info!("🤖 ROUTING TO LOCAL MODEL");
 
             // Check if model is ready
             use crate::models::GeneratorState;
@@ -125,11 +125,33 @@ pub async fn handle_chat_completions(
                     // Try local generation with tools
                     let mut generator = server.local_generator().write().await;
                     match generator.try_generate_from_pattern_with_tools(&internal_messages, internal_tools.clone()) {
-                        Ok(Some(response)) => (response.content_blocks, "local"),
-                        Ok(None) | Err(_) => {
-                            // Fall back to Claude
+                        Ok(Some(response)) => {
+                            info!("✓ LOCAL MODEL RESPONDED");
+                            (response.content_blocks, "local")
+                        }
+                        Ok(None) => {
+                            // Fall back to teacher
                             drop(generator);
-                            warn!("Local generation failed, falling back to Claude");
+                            warn!("❌ Local generation returned None, falling back to teacher");
+
+                            let mut claude_request =
+                                crate::claude::MessageRequest::with_context(internal_messages.clone());
+                            if let Some(tools) = internal_tools.clone() {
+                                claude_request = claude_request.with_tools(tools);
+                            }
+
+                            let response = server
+                                .claude_client()
+                                .send_message(&claude_request)
+                                .await
+                                .map_err(|e| error_response(&e.to_string(), "api_error"))?;
+
+                            (response.content, "fallback")
+                        }
+                        Err(e) => {
+                            // Fall back to teacher
+                            drop(generator);
+                            warn!("❌ Local generation error: {}, falling back to teacher", e);
 
                             let mut claude_request =
                                 crate::claude::MessageRequest::with_context(internal_messages.clone());
