@@ -178,12 +178,86 @@ async fn main() -> Result<()> {
         anyhow::bail!("--no-daemon mode requires --initial-prompt");
     }
 
-    // For daemon mode, force raw mode (TUI not fully integrated yet)
-    config.tui_enabled = false;
-    output_manager.enable_stdout();
+    // Load crisis detector
+    let crisis_detector = CrisisDetector::load_from_file(&config.crisis_keywords_path)?;
 
-    // Run REPL via daemon (daemon-only mode)
-    run_repl_via_daemon(args.initial_prompt, args.restore_session, config).await
+    // Load or create threshold router
+    let models_dir = dirs::home_dir()
+        .map(|home| home.join(".shammah").join("models"))
+        .expect("Failed to determine home directory");
+    std::fs::create_dir_all(&models_dir)?;
+
+    let threshold_router_path = models_dir.join("threshold_router.json");
+    let threshold_router = if threshold_router_path.exists() {
+        match ThresholdRouter::load(&threshold_router_path) {
+            Ok(router) => {
+                if std::env::var("SHAMMAH_DEBUG").is_ok() {
+                    eprintln!(
+                        "✓ Loaded threshold router with {} queries",
+                        router.stats().total_queries
+                    );
+                }
+                router
+            }
+            Err(e) => {
+                if std::env::var("SHAMMAH_DEBUG").is_ok() {
+                    eprintln!("Warning: Failed to load threshold router: {}", e);
+                    eprintln!("  Creating new threshold router");
+                }
+                ThresholdRouter::new()
+            }
+        }
+    } else {
+        if std::env::var("SHAMMAH_DEBUG").is_ok() {
+            eprintln!("Creating new threshold router");
+        }
+        ThresholdRouter::new()
+    };
+
+    // Create router with threshold router
+    let router = Router::new(crisis_detector, threshold_router);
+
+    // Create Claude client
+    let claude_client = create_claude_client_with_provider(&config)?;
+
+    // Create metrics logger
+    let metrics_logger = MetricsLogger::new(config.metrics_dir.clone())?;
+
+    // Create and run REPL (with full TUI support)
+    let mut repl = Repl::new(config, claude_client, router, metrics_logger).await;
+
+    // Restore session if requested
+    if let Some(session_path) = args.restore_session {
+        if session_path.exists() {
+            match ConversationHistory::load(&session_path) {
+                Ok(history) => {
+                    repl.restore_conversation(history);
+                    if std::env::var("SHAMMAH_DEBUG").is_ok() {
+                        eprintln!("✓ Restored conversation from session");
+                    }
+                    std::fs::remove_file(&session_path)?;
+                }
+                Err(e) => {
+                    if std::env::var("SHAMMAH_DEBUG").is_ok() {
+                        eprintln!("⚠️  Failed to restore session: {}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    // Run REPL (with full TUI event loop)
+    if std::env::var("SHAMMAH_DEBUG").is_ok() {
+        eprintln!("[DEBUG] Starting REPL with full TUI...");
+    }
+
+    // Use event loop mode (has all TUI features)
+    repl.run_event_loop(args.initial_prompt).await?;
+
+    if std::env::var("SHAMMAH_DEBUG").is_ok() {
+        eprintln!("[DEBUG] REPL exited, returning from main");
+    }
+    Ok(())
 }
 
 /// Install panic handler to cleanup terminal state on panic
