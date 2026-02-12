@@ -5,6 +5,7 @@ use anyhow::{bail, Context, Result};
 use std::fs;
 
 use super::settings::Config;
+use crate::errors;
 
 /// Load configuration from Shammah config file or environment
 pub fn load_config() -> Result<Config> {
@@ -54,7 +55,12 @@ fn try_load_from_shammah_config() -> Result<Option<Config>> {
     }
 
     let contents = fs::read_to_string(&config_path)
-        .with_context(|| format!("Failed to read {}", config_path.display()))?;
+        .map_err(|e| {
+            anyhow::anyhow!(errors::file_not_found_error(
+                &config_path.display().to_string(),
+                "Configuration file"
+            ))
+        })?;
 
     // Parse TOML directly into a temp struct
     #[derive(serde::Deserialize)]
@@ -76,7 +82,7 @@ fn try_load_from_shammah_config() -> Result<Option<Config>> {
     }
 
     let toml_config: TomlConfig = toml::from_str(&contents)
-        .context("Failed to parse config.toml")?;
+        .map_err(|e| anyhow::anyhow!(errors::config_parse_error(&e.to_string())))?;
 
     if toml_config.teachers.is_empty() {
         bail!("Config is missing teachers array. Please run 'shammah setup' to configure.");

@@ -9,6 +9,7 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use super::lifecycle::DaemonLifecycle;
+use crate::errors;
 
 /// Default daemon bind address
 const DEFAULT_BIND: &str = "127.0.0.1:11435";
@@ -46,10 +47,14 @@ pub async fn ensure_daemon_running(bind_address: Option<&str>) -> Result<()> {
         }
 
         warn!("Daemon process exists but not responding to health checks");
-        bail!(
-            "Daemon is running (PID: {}) but not responding. Try: pkill -f 'shammah daemon'",
-            lifecycle.read_pid()?
-        );
+        let pid = lifecycle.read_pid()?;
+        bail!(errors::wrap_error_with_suggestion(
+            format!("Daemon is running (PID: {}) but not responding to health checks", pid),
+            "Try stopping and restarting:\n\
+             1. shammah daemon-stop\n\
+             2. shammah daemon-start\n\n\
+             Or check logs: tail -f ~/.shammah/daemon.log"
+        ));
     }
 
     // No daemon running, spawn it
@@ -70,7 +75,15 @@ pub async fn ensure_daemon_running(bind_address: Option<&str>) -> Result<()> {
         }
     }
 
-    bail!("Daemon failed to start within 10 seconds. Check logs at ~/.shammah/daemon.log")
+    bail!(errors::wrap_error_with_suggestion(
+        "Daemon failed to start within 10 seconds",
+        "Check daemon logs for errors:\n\
+         tail -f ~/.shammah/daemon.log\n\n\
+         Common issues:\n\
+         • Port already in use\n\
+         • Insufficient permissions\n\
+         • Missing dependencies"
+    ))
 }
 
 /// Spawn daemon as background process

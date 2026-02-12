@@ -439,10 +439,7 @@ async fn run_daemon(bind_address: String) -> Result<()> {
     // Check if daemon is already running
     if lifecycle.is_running() {
         let existing_pid = lifecycle.read_pid()?;
-        anyhow::bail!(
-            "Daemon is already running (PID: {}). Use 'pkill -f \"shammah daemon\"' to stop it.",
-            existing_pid
-        );
+        anyhow::bail!(shammah::errors::daemon_already_running_error(existing_pid));
     }
 
     // Write PID file

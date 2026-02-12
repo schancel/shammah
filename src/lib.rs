@@ -8,6 +8,7 @@ pub mod client; // HTTP client for daemon communication (Phase 8)
 pub mod config;
 pub mod crisis;
 pub mod daemon; // Daemon lifecycle and auto-spawn (Phase 8)
+pub mod errors; // User-friendly error messages
 pub mod generators; // Unified generator interface
 pub mod local; // Local generation system
 pub mod metrics;

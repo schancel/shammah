@@ -115,11 +115,11 @@ See `docs/ROADMAP.md` for detailed implementation plans.
    - Files: `src/main.rs`
    - Effort: 30 minutes (actual)
 
-3. **[ ] Error message improvements** (NEW)
+3. **[x] Error message improvements** (NEW) - ✅ COMPLETE
    - Make error messages user-friendly with actionable suggestions
    - Examples: "Model not found" → "Model not downloaded. Run setup wizard..."
    - Files: `src/errors.rs`, error handling sites
-   - Effort: 1-2 hours
+   - Effort: 2 hours (actual)
 
 ### Phase 2: Medium Difficulty (2-4 hours each)
 
