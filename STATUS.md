@@ -196,11 +196,12 @@ See `docs/ROADMAP.md` for detailed implementation plans.
 
 ### Phase 4: Challenging (4-8 hours each)
 
-14. **[ ] Command history navigation**
+14. **[x] Command history navigation** - ✅ COMPLETE
     - Up/down arrows for previous queries
-    - Handle multi-line, persist to disk
-    - Files: `src/cli/tui/input_widget.rs`
-    - Effort: 4-8 hours
+    - Supports multi-line commands, persists to ~/.shammah/history.txt
+    - Loads on startup, saves on shutdown (1000 command limit)
+    - Files: `src/cli/tui/async_input.rs`, `src/cli/tui/mod.rs`
+    - Effort: 2 hours (actual)
 
 15. **[x] Memory usage monitoring** (NEW) - ✅ COMPLETE
     - Track and display system and process memory usage
