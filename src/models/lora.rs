@@ -1,5 +1,18 @@
 // LoRA (Low-Rank Adaptation) - Fine-tuning adapter for Qwen models
 // Phase 6: Implemented JSONL queue writer and training coordinator
+//
+// TODO: Current Python-based training is inefficient with ONNX Runtime
+// - ONNX Runtime is inference-only (no training APIs)
+// - PyTorch training requires loading model twice (2x memory usage)
+// - Need pure Rust solution that works with ONNX models
+//
+// Future options:
+// 1. Build custom Rust LoRA implementation on top of ONNX Runtime
+// 2. Use burn.rs or other Rust ML framework with ONNX export
+// 3. Wait for ONNX Runtime training support
+// 4. Implement LoRA as ONNX graph modifications (advanced)
+//
+// For now: Python infrastructure exists but has known limitations
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};

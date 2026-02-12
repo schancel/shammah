@@ -285,10 +285,17 @@ See `docs/ROADMAP.md` for detailed implementation plans.
 **Impact:** Users manually edit config to add other providers
 **Fix:** Phase 2 - Add interactive prompts for all providers
 
-### 5. LoRA Training Not Active
-**Issue:** Infrastructure complete but Python deps not installed
-**Impact:** Weighted training not functional yet
-**Fix:** Phase 3 - Install dependencies, test end-to-end
+### 5. LoRA Training Architecture Limitation
+**Issue:** Python-based training inefficient with ONNX Runtime
+- ONNX Runtime is inference-only (no training APIs)
+- PyTorch training requires loading model twice (2x memory)
+- Current solution works but is not optimal
+**Impact:** LoRA fine-tuning has high memory overhead
+**Fix:** Long-term - Build pure Rust LoRA system
+- Option 1: Custom Rust LoRA on top of ONNX Runtime
+- Option 2: Use burn.rs with ONNX export
+- Option 3: Wait for ONNX Runtime training support
+- Option 4: Implement LoRA as ONNX graph modifications
 
 ---
 
@@ -348,6 +355,10 @@ See `docs/ROADMAP.md` for detailed implementation plans.
 - Plan mode redesign (big project)
 
 ### Long Term (Future)
+- **Pure Rust LoRA training system** (high priority)
+  - Custom implementation compatible with ONNX Runtime
+  - Avoid Python memory overhead (no model duplication)
+  - Options: burn.rs, custom ONNX graph mods, or wait for ONNX Training
 - Adapter loading in runtime
 - Quantization for lower memory usage
 - Multi-GPU support
