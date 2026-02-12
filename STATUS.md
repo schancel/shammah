@@ -199,11 +199,11 @@ See `docs/ROADMAP.md` for detailed implementation plans.
     - Files: `src/cli/tui/input_widget.rs`
     - Effort: 4-8 hours
 
-15. **[ ] Memory usage monitoring** (NEW)
-    - Track and display model memory usage
-    - Show available system RAM, warn if approaching limits
-    - Files: `src/models/`, `src/cli/tui/status_widget.rs`
-    - Effort: 4-6 hours
+15. **[x] Memory usage monitoring** (NEW) - ✅ COMPLETE
+    - Track and display system and process memory usage
+    - Show available system RAM, warn if low/critical
+    - Files: `src/monitoring/mod.rs`, `src/cli/commands.rs`, `src/cli/repl_event/event_loop.rs`
+    - Effort: 1 hour (actual)
 
 16. **[ ] Multi-provider setup wizard**
     - Support all providers (Claude, GPT-4, Gemini, Grok) in wizard
