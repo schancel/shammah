@@ -140,26 +140,29 @@ User Request
 - `src/models/download.rs` - ModelDownloader with HF Hub integration
 - `src/models/model_selector.rs` - RAM-based model selection
 
-#### 2. **Qwen Model Integration** (`src/models/qwen_loader.rs`)
+#### 2. **ONNX Model Integration** (`src/models/loaders/onnx.rs`)
 
-**Purpose:** Load pre-trained Qwen2 models from safetensors
+**Purpose:** Load pre-trained models in ONNX format with KV cache support
 
 **Model Selection:**
-- 8GB Mac → Qwen-2.5-1.5B (3GB RAM, fast)
-- 16GB Mac → Qwen-2.5-3B (6GB RAM, balanced)
-- 32GB Mac → Qwen-2.5-7B (14GB RAM, powerful)
-- 64GB+ Mac → Qwen-2.5-14B (28GB RAM, maximum)
+- 8GB Mac → Qwen-2.5-1.5B (1.5GB RAM, fast)
+- 16GB Mac → Qwen-2.5-3B (3GB RAM, balanced)
+- 32GB Mac → Qwen-2.5-7B (7GB RAM, powerful)
+- 64GB+ Mac → Qwen-2.5-14B (14GB RAM, maximum)
 
 **Features:**
-- Uses candle-transformers' built-in Qwen2 support
-- Automatic tokenizer loading (tokenizer.json)
-- Metal acceleration on Apple Silicon
+- Uses ONNX Runtime with CoreML execution provider
+- Full KV cache support (56+ dynamic inputs for 28 layers)
+- Autoregressive generation with cache reuse
+- Metal acceleration on Apple Silicon via CoreML
 - Graceful CPU fallback
+- Automatic tokenizer loading (tokenizer.json)
 
 **Key Files:**
-- `src/models/qwen_loader.rs` - QwenLoader, LoadedQwenModel
-- `src/models/generator_new.rs` - Unified GeneratorModel (Qwen + custom)
-- `src/models/common.rs` - GeneratorConfig enum
+- `src/models/loaders/onnx.rs` - OnnxLoader, LoadedOnnxModel, KV cache
+- `src/generators/qwen.rs` - QwenGenerator with multi-turn tool execution
+- `src/models/adapters/qwen.rs` - QwenAdapter with output cleaning
+- `src/models/loaders/onnx_config.rs` - Configuration types
 
 #### 3. **LoRA Fine-Tuning** (`src/models/lora.rs`)
 
@@ -571,28 +574,33 @@ adapters_dir = "~/.shammah/adapters"
 - High performance
 - Excellent Apple Silicon support
 
-**ML Framework:** Candle
-- Rust-native ML framework
-- Metal backend for Apple Silicon
-- Built-in Qwen2 support
-- SafeTensors format
+**ML Framework:** ONNX Runtime
+- Cross-platform inference engine
+- CoreML execution provider for Apple Silicon (Metal acceleration)
+- CPU fallback for maximum compatibility
+- KV cache support for efficient autoregressive generation
+- ONNX format (optimized, portable)
 
 **Models:**
-- Base: Qwen-2.5-1.5B/3B/7B/14B (pre-trained)
-- Adapters: LoRA (domain-specific, ~5MB each)
+- Base: Qwen-2.5-1.5B/3B/7B/14B (ONNX format, pre-trained)
+- Source: onnx-community on HuggingFace
+- Adapters: LoRA (domain-specific, ~5MB each, via Python training)
 
 **Storage:**
 - Models: `~/.cache/huggingface/hub/` (standard HF cache)
 - Adapters: `~/.shammah/adapters/`
 - Config: `~/.shammah/config.toml`
 - Metrics: `~/.shammah/metrics/`
+- Daemon: `~/.shammah/daemon.pid`, `~/.shammah/daemon.sock`
 
 **Dependencies:**
+- `ort` - ONNX Runtime bindings (Rust)
 - `hf-hub` - HuggingFace Hub integration
 - `indicatif` - Progress bars
-- `candle-transformers` - Qwen2 support
-- `tokenizers` - Tokenization
+- `tokenizers` - Tokenization (HF tokenizers crate)
 - `tokio` - Async runtime
+- `axum` - HTTP server for daemon mode
+- `sysinfo` - System RAM detection
 
 ## Key Design Decisions
 
@@ -811,50 +819,91 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
 
 ## Current Project Status
 
-**Phase**: Qwen Integration Complete (Phases 1-4) ✅
-**Next**: Implement actual LoRA fine-tuning (currently placeholders)
+**Phase**: Core Infrastructure Complete (Phases 1-8) ✅
+**Version**: 0.3.0 (Local Model Generation + Daemon Architecture)
+**Next**: Polish & UX improvements (see STATUS.md and ROADMAP.md)
 
 ### What's Done
 
-- ✅ **Model Download** - HF Hub integration with progress
-- ✅ **Model Selection** - RAM-based automatic selection
-- ✅ **Qwen Loading** - Load pre-trained models from safetensors
+**ONNX Runtime Integration (Complete):**
+- ✅ **ONNX Model Loading** - Load models from onnx-community repos
+- ✅ **KV Cache Support** - 56+ dynamic inputs for efficient generation
+- ✅ **Autoregressive Generation** - Multi-token generation with cache reuse
+- ✅ **Output Cleaning** - Production-quality response formatting
+- ✅ **CoreML Acceleration** - Metal backend on Apple Silicon
+- ✅ **Model Selection** - RAM-based automatic selection (1.5B/3B/7B/14B)
+
+**Tool Execution (Complete):**
+- ✅ **Local Model Tool Use** - XML + JSON format, multi-turn execution
+- ✅ **Tool Call Parser** - Regex-based extraction from model output
+- ✅ **6 Working Tools** - Read, Glob, Grep, WebFetch, Bash, Restart
+- ✅ **Permission System** - Session and persistent approval patterns
+- ✅ **Tool Pass-Through** - Client-side execution in daemon mode
+
+**Daemon Architecture (Complete):**
+- ✅ **Auto-Spawning Daemon** - PID management, health checks
+- ✅ **OpenAI-Compatible API** - Drop-in replacement for GPT/Claude APIs
+- ✅ **Session Management** - Automatic cleanup, concurrent clients
+- ✅ **Prometheus Metrics** - Monitoring endpoint
+- ✅ **Tool Pass-Through** - Execute tools on client side
+
+**LoRA Fine-Tuning Infrastructure (Complete):**
+- ✅ **Weighted Example Collection** - JSONL export with 10x/3x/1x weights
+- ✅ **Training Coordinator** - Queue management, batch processing
+- ✅ **Python Training Script** - PyTorch + PEFT implementation
+- ✅ **Subprocess Spawner** - Non-blocking background training
+- ✅ **Integration Tests** - 5/5 tests passing
+
+**Other Features:**
 - ✅ **Progressive Bootstrap** - Instant startup with background loading
-- ✅ **Router Graceful Degradation** - Forward during model load
-- ✅ **LoRA Placeholders** - API designed, ready for implementation
-- ✅ **Tool Execution** - 6 tools working reliably
+- ✅ **Router with Graceful Degradation** - Tries local, falls back to teacher
+- ✅ **Multi-Provider Support** - Claude, GPT-4, Gemini, Grok
+- ✅ **TUI with Scrollback** - Professional terminal UI
 - ✅ **Streaming Responses** - Real-time output
-- ✅ **Documentation** - Comprehensive phase docs
+- ✅ **Generic Terminology** - Local/teacher (no brand-specific terms)
 
 ### What's Next
 
-**Immediate (Current Sprint):**
-- [ ] Implement actual LoRA fine-tuning (not placeholders)
-- [ ] Add weighted example storage
-- [ ] Implement background training loop
-- [ ] Add /feedback commands for weighted training
-- [ ] Test LoRA convergence on coding examples
+See **STATUS.md** and **docs/ROADMAP.md** for detailed TODO list.
 
-**Near-term:**
-- [ ] Multiple adapter support (switch domains)
-- [ ] Adapter sharing (export/import)
-- [ ] Training metrics visualization
-- [ ] Automatic adapter selection
+**Immediate (This Week):**
+- [ ] Textarea improvements (shift-return, history navigation)
+- [ ] Status bar live stats (tokens, latency, model info)
+- [ ] Daemon management subcommands (stop, start, status)
 
-**Future:**
-- [ ] Multi-model support (switch between Qwen sizes)
+**Short-term (This Month):**
+- [ ] Multi-provider setup wizard enhancement
+- [ ] Test Mistral model support
+- [ ] Install Python deps for LoRA training
+- [ ] Complete adapter loading in runtime
+
+**Medium-term (Next Quarter):**
+- [ ] Plan mode redesign (match Claude Code quality)
+- [ ] Additional model adapters (Phi, DeepSeek)
+- [ ] User guide documentation
+
+**Long-term (Future):**
 - [ ] Quantization for lower memory usage
-- [ ] Batch inference for multiple queries
-- [ ] CoreML export for Neural Engine
+- [ ] Multi-GPU support
+- [ ] Custom domain-specific tools
+- [ ] CoreML export optimization
 
 ## Reference Documents
 
+**Current Documentation:**
 - **README.md**: User-facing documentation
 - **CLAUDE.md**: This file (AI assistant context)
-- **QWEN_INTEGRATION_COMPLETE.md**: Phases 1-4 implementation summary
-- **PHASE_3_BOOTSTRAP_COMPLETE.md**: Progressive bootstrap details
-- **PHASE_4_LORA_PLACEHOLDERS.md**: LoRA design (placeholders)
+- **STATUS.md**: Current project status and TODO list
+- **docs/ROADMAP.md**: Detailed future work planning
+- **docs/ARCHITECTURE.md**: System architecture overview
+- **docs/DAEMON_MODE.md**: Daemon architecture details
 - **docs/TOOL_CONFIRMATION.md**: Tool permission system
+- **docs/TUI_ARCHITECTURE.md**: Terminal UI rendering system
+- **docs/MODEL_BACKEND_STATUS.md**: Model backend comparison
+
+**Archived Documentation:**
+- **docs/archive/**: Completed phase documentation (PHASE_4-8, ONNX migration, tool pass-through)
+  - These documents describe completed work and are kept for historical reference
 
 ## Questions?
 
