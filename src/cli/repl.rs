@@ -263,90 +263,21 @@ impl Repl {
             (*output_manager_arc).disable_stdout();
         }
 
-        // Initialize tokenizer
+        // Initialize tokenizer (still needed for tool execution)
         let tokenizer = Arc::new(TextTokenizer::default().unwrap_or_else(|e| {
             output_status!("⚠️  Failed to create tokenizer: {}", e);
             output_status!("   Active learning tools may not work correctly");
             panic!("Cannot create tokenizer")
         }));
 
-        // Initialize BootstrapLoader for progressive Qwen model loading
-        let generator_state = Arc::new(RwLock::new(GeneratorState::Initializing));
+        // NOTE: Model loading removed - daemon handles all local inference
+        // Create placeholder bootstrap_loader and local_generator for compatibility
+        let generator_state = Arc::new(RwLock::new(GeneratorState::NotAvailable));
         let bootstrap_loader = Arc::new(BootstrapLoader::new(
             Arc::clone(&generator_state),
             Some(Arc::new(output_manager.clone())),
         ));
-
-        // Check HuggingFace token early (warn if missing)
-        let token_path = dirs::cache_dir()
-            .and_then(|p| Some(p.join("huggingface").join("token")));
-
-        if let Some(path) = token_path {
-            if !path.exists() && is_interactive {
-                output_progress!(
-                    "⚠️  HuggingFace token not found at {:?}\n\
-                     Local Qwen model downloads will fail.\n\
-                     See README.md for setup instructions.\n\
-                     Queries will forward to Claude API.",
-                    path
-                );
-            }
-        }
-
-        if is_interactive {
-            output_progress!("⏳ Initializing Qwen model (background)...");
-        }
-
-        // Start background model loading
-        let loader_clone = Arc::clone(&bootstrap_loader);
-        let state_clone = Arc::clone(&generator_state);
-        let model_family = config.backend.model_family;
-        let model_size = config.backend.model_size;
-        let device = config.backend.device;
-        let model_repo = config.backend.model_repo.clone();
-        tokio::spawn(async move {
-            if let Err(e) = loader_clone
-                .load_generator_async(model_family, model_size, device, model_repo)
-                .await
-            {
-                output_status!("⚠️  Model loading failed: {}", e);
-                output_status!("   Will forward all queries to Claude");
-                let mut state = state_clone.write().await;
-                *state = GeneratorState::Failed {
-                    error: format!("{}", e),
-                };
-            }
-        });
-
-        // Create local generator (will receive model when ready)
         let local_generator = Arc::new(RwLock::new(LocalGenerator::new()));
-
-        // Monitor generator state and inject model when ready
-        let gen_clone = Arc::clone(&local_generator);
-        let state_monitor = Arc::clone(&generator_state);
-        let tok_clone = Arc::clone(&tokenizer);
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
-                let state = state_monitor.read().await;
-                if let GeneratorState::Ready { model, .. } = &*state {
-                    // Inject Qwen model into LocalGenerator
-                    let mut gen = gen_clone.write().await;
-                    *gen = LocalGenerator::with_models(
-                        Some(Arc::clone(model)),
-                    );
-
-                    output_status!("✓ Qwen model ready - local generation enabled");
-                    break; // Stop monitoring once injected
-                } else if matches!(
-                    *state,
-                    GeneratorState::Failed { .. } | GeneratorState::NotAvailable
-                ) {
-                    break; // Stop monitoring on failure
-                }
-            }
-        });
 
         // Initialize LoRA fine-tuning system
         let training_coordinator = Arc::new(TrainingCoordinator::new(
