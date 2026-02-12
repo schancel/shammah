@@ -147,10 +147,13 @@ See `docs/ROADMAP.md` for detailed implementation plans.
    - Files: `src/main.rs`
    - Effort: 1 hour (actual)
 
-8. **[ ] Model download progress in TUI** (NEW)
-   - Show download progress in TUI status bar (not just logs)
-   - Files: `src/models/download.rs`, `src/cli/tui/status_widget.rs`
-   - Effort: 2-4 hours
+8. **[x] Model download progress in TUI** (NEW) - ✅ COMPLETE
+   - Show download progress with updating log messages
+   - Uses ProgressMessage with progress bar: `[████████░░] 80%`
+   - Updates automatically as download progresses
+   - Marks complete (✓) or failed (✗) when done
+   - Files: `src/models/download.rs`, `src/cli/messages/concrete.rs`
+   - Effort: 1 hour (actual)
 
 9. **[x] /help command improvements** (NEW) - ✅ COMPLETE
    - Document all slash commands, keyboard shortcuts

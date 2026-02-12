@@ -67,7 +67,18 @@ impl ModelDownloader {
         repo_id: &str,
         estimated_size_gb: f64,
     ) -> Result<(PathBuf, mpsc::Receiver<DownloadProgress>)> {
+        use crate::cli::messages::ProgressMessage;
+        use crate::cli::global_output::global_output;
+        use std::sync::Arc;
+
         let (tx, rx) = mpsc::channel();
+
+        // Create progress message for TUI
+        let progress_msg = Arc::new(ProgressMessage::new(
+            format!("Downloading {}", repo_id),
+            100, // We'll update as percentage (0-100)
+        ));
+        global_output().add_trait_message(progress_msg.clone());
 
         // Send starting event
         tx.send(DownloadProgress::Starting {
@@ -115,6 +126,7 @@ impl ModelDownloader {
 
         // Fail if required files didn't download
         if !required_failed.is_empty() {
+            progress_msg.set_failed();
             return Err(anyhow!(
                 "Failed to download required config files: {}\n\
                  This usually means authentication failed.\n\
@@ -276,10 +288,15 @@ impl ModelDownloader {
                 .context("Failed to get cache directory")?
                 .to_path_buf()
         } else {
+            progress_msg.set_failed();
             return Err(anyhow::anyhow!(
                 "No files downloaded - check network connection"
             ));
         };
+
+        // Mark progress as complete
+        progress_msg.update_progress(100);
+        progress_msg.set_complete();
 
         tx.send(DownloadProgress::Complete {
             model_id: repo_id.to_string(),
