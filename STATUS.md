@@ -179,11 +179,13 @@ See `docs/ROADMAP.md` for detailed implementation plans.
     - Files: `src/daemon/lifecycle.rs`, `src/daemon/client.rs`
     - Effort: 4-6 hours
 
-13. **[ ] Python deps installation helper** (NEW)
+13. **[x] Python deps installation helper** (NEW) - ✅ COMPLETE
     - Add `shammah train setup` command
-    - Create venv, install requirements.txt
-    - Files: `src/cli/commands.rs`, new `src/training/setup.rs`
-    - Effort: 3-5 hours
+    - Create venv at ~/.shammah/venv
+    - Install torch, transformers, peft, safetensors, accelerate
+    - Verify installation by importing packages
+    - Files: `src/main.rs`
+    - Effort: 1.5 hours (actual)
 
 ### Phase 4: Challenging (4-8 hours each)
 

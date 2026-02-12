@@ -67,11 +67,22 @@ enum Command {
     DaemonStop,
     /// Show daemon status
     DaemonStatus,
+    /// Training commands
+    Train {
+        #[command(subcommand)]
+        train_command: TrainCommand,
+    },
     /// Execute a single query
     Query {
         /// Query text
         query: String,
     },
+}
+
+#[derive(Parser, Debug)]
+enum TrainCommand {
+    /// Install Python dependencies for LoRA training
+    Setup,
 }
 
 /// Create a ClaudeClient with the configured provider
@@ -112,6 +123,9 @@ async fn main() -> Result<()> {
         }
         Some(Command::DaemonStatus) => {
             return run_daemon_status().await;
+        }
+        Some(Command::Train { train_command }) => {
+            return run_train_command(train_command).await;
         }
         Some(Command::Query { query }) => {
             return run_query(&query).await;
@@ -444,6 +458,120 @@ async fn run_daemon_status() -> Result<()> {
     println!("  Active Sessions: {}", health.active_sessions);
     println!("  Bind Address:    127.0.0.1:11435");
     println!();
+
+    Ok(())
+}
+
+/// Handle train subcommands
+async fn run_train_command(train_command: TrainCommand) -> Result<()> {
+    match train_command {
+        TrainCommand::Setup => run_train_setup().await,
+    }
+}
+
+/// Set up Python environment for LoRA training
+async fn run_train_setup() -> Result<()> {
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    println!("\x1b[1;36m🔧 Setting up Python environment for LoRA training\x1b[0m\n");
+
+    // Determine paths
+    let home = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+    let venv_dir = home.join(".shammah/venv");
+    let requirements_path = std::env::current_dir()?.join("scripts/requirements.txt");
+
+    // Check if requirements.txt exists
+    if !requirements_path.exists() {
+        anyhow::bail!(
+            "Requirements file not found at: {}\n\
+             Make sure you're running from the project root directory.",
+            requirements_path.display()
+        );
+    }
+
+    // Step 1: Check Python version
+    println!("1️⃣  Checking Python installation...");
+    let python_check = Command::new("python3")
+        .arg("--version")
+        .output()
+        .context("Failed to run 'python3 --version'. Is Python 3 installed?")?;
+
+    if !python_check.status.success() {
+        anyhow::bail!("Python 3 not found. Please install Python 3.8 or later.");
+    }
+
+    let python_version = String::from_utf8_lossy(&python_check.stdout);
+    println!("   ✓ Found {}", python_version.trim());
+
+    // Step 2: Create virtual environment
+    println!("\n2️⃣  Creating virtual environment at ~/.shammah/venv...");
+
+    if venv_dir.exists() {
+        println!("   ⚠️  Virtual environment already exists, skipping creation");
+    } else {
+        let venv_status = Command::new("python3")
+            .arg("-m")
+            .arg("venv")
+            .arg(&venv_dir)
+            .status()
+            .context("Failed to create virtual environment")?;
+
+        if !venv_status.success() {
+            anyhow::bail!("Failed to create virtual environment");
+        }
+        println!("   ✓ Virtual environment created");
+    }
+
+    // Step 3: Install dependencies
+    println!("\n3️⃣  Installing Python dependencies...");
+    println!("   (This may take several minutes)\n");
+
+    let pip_path = if cfg!(target_os = "windows") {
+        venv_dir.join("Scripts/pip.exe")
+    } else {
+        venv_dir.join("bin/pip")
+    };
+
+    let install_status = Command::new(&pip_path)
+        .arg("install")
+        .arg("-r")
+        .arg(&requirements_path)
+        .status()
+        .context("Failed to run pip install")?;
+
+    if !install_status.success() {
+        anyhow::bail!("Failed to install Python dependencies");
+    }
+
+    println!("\n   ✓ Dependencies installed successfully");
+
+    // Step 4: Verify installation
+    println!("\n4️⃣  Verifying installation...");
+
+    let python_path = if cfg!(target_os = "windows") {
+        venv_dir.join("Scripts/python.exe")
+    } else {
+        venv_dir.join("bin/python")
+    };
+
+    let verify_status = Command::new(&python_path)
+        .arg("-c")
+        .arg("import torch, transformers, peft; print('✓ All packages imported successfully')")
+        .status()
+        .context("Failed to verify installation")?;
+
+    if !verify_status.success() {
+        anyhow::bail!("Package verification failed");
+    }
+
+    // Success message
+    println!("\n\x1b[1;32m✅ Setup complete!\x1b[0m\n");
+    println!("Python environment ready at: \x1b[1m{}\x1b[0m", venv_dir.display());
+    println!("\nTo use the training scripts:");
+    println!("  \x1b[1;36m~/.shammah/venv/bin/python scripts/train_lora.py\x1b[0m");
+    println!("\nTraining will run automatically when you provide feedback.");
 
     Ok(())
 }
