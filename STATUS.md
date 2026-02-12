@@ -82,11 +82,11 @@ Shammah is now a fully functional local-first AI coding assistant with ONNX Runt
 **Organization:** Items sorted easiest → hardest for efficient progress and quick wins.
 
 **Summary:**
-- 24 total items (14 original + 10 new suggestions)
+- 25 total items (14 original + 11 new suggestions)
 - Phase 1: Quick wins (3 items, 1-2h each) ⚡
 - Phase 2: Medium difficulty (6 items, 2-4h each)
 - Phase 3: Moderate complexity (4 items, 3-6h each)
-- Phase 4: Challenging (6 items, 4-8h each)
+- Phase 4: Challenging (7 items, 3-8h each)
 - Phase 5: Complex (4 items, 4-20h each)
 - Phase 6: Very complex (1 item, 20-40h)
 
@@ -101,6 +101,7 @@ Shammah is now a fully functional local-first AI coding assistant with ONNX Runt
 8. Memory monitoring
 9. Color customization
 10. Flexible tool approval patterns
+11. Proxy-only mode (no local model)
 
 See `docs/ROADMAP.md` for detailed implementation plans.
 
@@ -236,9 +237,18 @@ See `docs/ROADMAP.md` for detailed implementation plans.
     - Files: `src/models/adapters/llama.rs`, new test
     - Effort: 2-8 hours (variable)
 
-### Phase 5: Complex (8-20 hours each)
+20. **[ ] Proxy-only mode** (NEW) 🟡 MEDIUM PRIORITY
+    - Allow users to use Shammah without local model (like Claude Code)
+    - Daemon still spawns but skips model loading
+    - Pure proxy to teacher APIs with tool execution
+    - Useful for users who want REPL + tools without model overhead
+    - Config option: `[backend] enabled = false`
+    - Files: `src/daemon/server.rs`, `src/config/settings.rs`, `src/cli/setup_wizard.rs`
+    - Effort: 3-4 hours
 
-20. **[x] Flexible tool approval patterns** (NEW) 🔴 HIGH PRIORITY - ✅ COMPLETE
+### Phase 4: Challenging (4-8 hours each) - Continued
+
+21. **[x] Flexible tool approval patterns** (NEW) 🔴 HIGH PRIORITY - ✅ COMPLETE
     - Allow patterns to match command, args, and directory separately
     - Added PatternType::Structured enum variant
     - ToolSignature now includes command, args, directory fields
@@ -249,17 +259,19 @@ See `docs/ROADMAP.md` for detailed implementation plans.
     - Files: `src/tools/patterns.rs`, `src/tools/executor.rs`, `src/cli/repl.rs`
     - Effort: 4 hours (actual)
 
-21. **[ ] Additional model adapters** (Phi, DeepSeek, etc.)
+### Phase 5: Complex (8-20 hours each)
+
+22. **[ ] Additional model adapters** (Phi, DeepSeek, etc.)
     - Create adapters for other model families
     - Files: `src/models/adapters/`
     - Effort: 4-8 hours per model
 
-22. **[ ] Adapter loading in runtime**
+23. **[ ] Adapter loading in runtime**
     - Load trained LoRA adapters in ONNX runtime
     - Files: `src/models/lora.rs`, `src/generators/qwen.rs`
     - Effort: 8-16 hours
 
-23. **[ ] Color scheme customization** (NEW)
+24. **[ ] Color scheme customization** (NEW)
     - Let users customize TUI colors via config
     - Accessibility improvement
     - Files: `src/cli/tui/`, `src/config/mod.rs`
@@ -267,7 +279,7 @@ See `docs/ROADMAP.md` for detailed implementation plans.
 
 ### Phase 6: Very Complex (20+ hours)
 
-24. **[ ] Plan mode redesign**
+25. **[ ] Plan mode redesign**
     - Match Claude Code's plan mode quality
     - Multi-step planning, approval workflow
     - Files: `src/cli/plan_mode.rs` (major refactor)
@@ -278,7 +290,7 @@ See `docs/ROADMAP.md` for detailed implementation plans.
 - [x] Clean up obsolete docs (moved to docs/archive/)
 - [x] Update STATUS.md with current capabilities
 - [x] Update CLAUDE.md with accurate ONNX architecture and recent progress
-- [ ] Create user guide (docs/USER_GUIDE.md)
+- [x] Create user guide (docs/USER_GUIDE.md) - ✅ COMPLETE
 - [ ] Update ARCHITECTURE.md with daemon mode
 
 ---
