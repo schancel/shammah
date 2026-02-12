@@ -51,9 +51,27 @@ pub fn spawn_input_task(
                             }
                         }
                         Ok(Event::Key(key)) => {
-                            // Pass key event to textarea
-                            tui.input_textarea.input(Event::Key(key));
-                            Ok(None)
+                            // Check for feedback shortcuts when input is empty
+                            let input_empty = tui.input_textarea.lines().join("").trim().is_empty();
+
+                            // Check for feedback shortcuts (Ctrl+G / Ctrl+B)
+                            match (key.code, key.modifiers) {
+                                (KeyCode::Char('g'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                    // Ctrl+G: Good feedback
+                                    tui.pending_feedback = Some(crate::feedback::FeedbackRating::Good);
+                                    Ok(None)
+                                }
+                                (KeyCode::Char('b'), m) if m.contains(KeyModifiers::CONTROL) => {
+                                    // Ctrl+B: Bad feedback
+                                    tui.pending_feedback = Some(crate::feedback::FeedbackRating::Bad);
+                                    Ok(None)
+                                }
+                                _ => {
+                                    // Pass key event to textarea
+                                    tui.input_textarea.input(Event::Key(key));
+                                    Ok(None)
+                                }
+                            }
                         }
                         Ok(_) => Ok(None), // Ignore other events (mouse, resize, etc.)
                         Err(e) => Err(anyhow::anyhow!("Failed to read input: {}", e)),

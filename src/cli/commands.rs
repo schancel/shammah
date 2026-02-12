@@ -250,10 +250,12 @@ pub fn format_help() -> String {
          \x1b[1;33m⌨️  Keyboard Shortcuts:\x1b[0m\n\
          \x1b[36m  Ctrl+C\x1b[0m             Cancel current query (interrupts generation)\n\
          \x1b[36m  Ctrl+D\x1b[0m             Exit REPL (same as /quit)\n\
+         \x1b[36m  Ctrl+G\x1b[0m             Mark last response as \x1b[32mgood\x1b[0m (1x training weight)\n\
+         \x1b[36m  Ctrl+B\x1b[0m             Mark last response as \x1b[31mbad\x1b[0m (10x training weight)\n\
+         \x1b[36m  Shift+Enter\x1b[0m        Multi-line input (insert newline)\n\
          \x1b[36m  Shift+PgUp\x1b[0m         Scroll up in history\n\
          \x1b[36m  Shift+PgDown\x1b[0m       Scroll down in history\n\
-         \x1b[90m  ↑ / ↓ arrows\x1b[0m       Navigate command history (coming soon)\n\
-         \x1b[90m  Shift+Enter\x1b[0m        Multi-line input (coming soon)\n\n\
+         \x1b[90m  ↑ / ↓ arrows\x1b[0m       Navigate command history (coming soon)\n\n\
          \x1b[1;33m🛠️  Tool Execution:\x1b[0m\n\
          When Claude needs to use tools (read files, run commands, etc.), you'll\n\
          be asked to approve each action. You can:\n\

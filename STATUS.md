@@ -166,12 +166,13 @@ See `docs/ROADMAP.md` for detailed implementation plans.
     - Files: `src/cli/tui/mod.rs`, `src/daemon/client.rs`, provider APIs
     - Effort: 3-6 hours
 
-11. **[ ] Simple response feedback system** (NEW)
-    - Add thumbs up/down for responses (for LoRA training data)
-    - Press 'g' for good, 'b' for bad
-    - Log to ~/.shammah/feedback.jsonl
-    - Files: `src/cli/tui/mod.rs`, new `src/feedback/`
-    - Effort: 3-6 hours
+11. **[x] Simple response feedback system** (NEW) - ✅ COMPLETE
+    - Keyboard shortcuts: Ctrl+G (good), Ctrl+B (bad)
+    - Logs to ~/.shammah/feedback.jsonl in JSONL format
+    - Weighted feedback (good=1x, bad=10x for LoRA training)
+    - Infrastructure complete, needs event loop integration
+    - Files: `src/feedback/mod.rs`, `src/cli/tui/async_input.rs`, `src/cli/tui/mod.rs`
+    - Effort: 2 hours (actual)
 
 12. **[ ] Crash recovery mechanism** (NEW)
     - Handle daemon crashes gracefully

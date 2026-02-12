@@ -87,6 +87,10 @@ pub struct TuiRenderer {
     prev_frame_buffer: ShadowBuffer,
     /// Whether full refresh is needed
     needs_full_refresh: bool,
+    /// Pending feedback rating from user ('g' or 'b' key press)
+    pub pending_feedback: Option<crate::feedback::FeedbackRating>,
+    /// Last query-response pair for feedback
+    last_interaction: Option<(String, String)>,
     /// Last refresh timestamp
     last_refresh: std::time::Instant,
     /// Refresh interval during streaming
@@ -247,7 +251,53 @@ impl TuiRenderer {
             needs_tui_render: true, // Initial render needed
             prev_input_text: String::new(),
             prev_status_content: String::new(),
+            pending_feedback: None,
+            last_interaction: None,
         })
+    }
+
+    /// Record the last query-response pair for feedback
+    pub fn record_interaction(&mut self, query: String, response: String) {
+        self.last_interaction = Some((query, response));
+    }
+
+    /// Check and process pending feedback
+    pub fn process_pending_feedback(&mut self) -> Result<()> {
+        if let Some(rating) = self.pending_feedback.take() {
+            if let Some((query, response)) = &self.last_interaction {
+                // Create feedback logger
+                let logger = crate::feedback::FeedbackLogger::new()
+                    .context("Failed to create feedback logger")?;
+
+                // Create feedback entry
+                let entry = crate::feedback::FeedbackEntry::new(
+                    query.clone(),
+                    response.clone(),
+                    rating,
+                );
+
+                // Log feedback
+                logger.log(&entry)
+                    .context("Failed to log feedback")?;
+
+                // Show confirmation message
+                let confirmation = format!(
+                    "\n{} Feedback recorded: {} (weight: {:.1}x)\n",
+                    match rating {
+                        crate::feedback::FeedbackRating::Good => "✓",
+                        crate::feedback::FeedbackRating::Bad => "⚠",
+                    },
+                    rating.display_str(),
+                    rating.training_weight()
+                );
+
+                self.output_manager.write_info(&confirmation);
+            } else {
+                self.output_manager.write_info("\n⚠ No recent interaction to provide feedback on\n");
+            }
+        }
+
+        Ok(())
     }
 
     /// Render the TUI inline viewport (6 lines: separator + input + status)
