@@ -199,8 +199,10 @@ impl TuiRenderer {
         let scrollback = ScrollbackBuffer::new(viewport_height, term_width as usize);
 
         // Calculate visible scrollback area (above inline viewport)
-        // Inline viewport is 6 lines at bottom, so visible area is (term_height - 6)
-        let visible_scrollback_rows = _term_height.saturating_sub(6) as usize;
+        // Inline viewport is dynamic: 1 (separator) + up to 10 (input) + 4 (status) = 15 lines max
+        // Reserve space for maximum possible inline viewport height
+        let max_inline_viewport_height = 15; // 1 + 10 + 4
+        let visible_scrollback_rows = _term_height.saturating_sub(max_inline_viewport_height) as usize;
 
         // Initialize shadow buffers for diff-based rendering
         let shadow_buffer = ShadowBuffer::new(term_width as usize, visible_scrollback_rows);
@@ -356,13 +358,16 @@ impl TuiRenderer {
                     }
                 } else {
                     // Normal mode: Render inline viewport (separator + input + status)
-                    // Layout: 1 separator + 1 input + 4 status = 6 lines
+                    // Calculate dynamic input height based on textarea lines (min 1, max 10)
+                    let input_lines = input_textarea.lines().len().max(1).min(10) as u16;
+
+                    // Layout: 1 separator + dynamic input + 4 status
                     let chunks = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([
-                            Constraint::Length(1),   // Separator line
-                            Constraint::Length(1),   // Input area
-                            Constraint::Length(4),   // Status area
+                            Constraint::Length(1),           // Separator line
+                            Constraint::Length(input_lines), // Input area (dynamic)
+                            Constraint::Length(4),           // Status area
                         ])
                         .split(frame.area());
 

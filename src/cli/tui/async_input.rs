@@ -1,7 +1,7 @@
 // Async input handler for TUI - non-blocking keyboard polling
 
 use anyhow::Result;
-use crossterm::event::{Event, KeyCode, KeyEvent};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
@@ -33,14 +33,21 @@ pub fn spawn_input_task(
                     // Process first event
                     let first_event_result = match crossterm::event::read() {
                         Ok(Event::Key(key)) if key.code == KeyCode::Enter => {
-                            // User pressed Enter - extract input and send
-                            let input = tui.input_textarea.lines().join("\n");
-                            if !input.trim().is_empty() {
-                                // Clear textarea for next input
-                                tui.input_textarea = create_clean_textarea();
-                                Ok(Some(input))
+                            // Check if Shift is held (Shift+Enter inserts newline, Enter submits)
+                            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                                // Shift+Enter: Insert newline (pass to textarea)
+                                tui.input_textarea.input(Event::Key(key));
+                                Ok(None)
                             } else {
-                                Ok(None) // Empty input, ignore
+                                // Enter without Shift: Submit input
+                                let input = tui.input_textarea.lines().join("\n");
+                                if !input.trim().is_empty() {
+                                    // Clear textarea for next input
+                                    tui.input_textarea = create_clean_textarea();
+                                    Ok(Some(input))
+                                } else {
+                                    Ok(None) // Empty input, ignore
+                                }
                             }
                         }
                         Ok(Event::Key(key)) => {
@@ -58,8 +65,14 @@ pub fn spawn_input_task(
                     while crossterm::event::poll(Duration::from_millis(0)).unwrap_or(false) {
                         match crossterm::event::read() {
                             Ok(Event::Key(key)) if key.code == KeyCode::Enter => {
-                                // Enter key during batch - will be processed next iteration
-                                break;
+                                if key.modifiers.contains(KeyModifiers::SHIFT) {
+                                    // Shift+Enter: Insert newline
+                                    tui.input_textarea.input(Event::Key(key));
+                                    had_input = true;
+                                } else {
+                                    // Enter without Shift: Stop batch, will be processed next iteration
+                                    break;
+                                }
                             }
                             Ok(Event::Key(key)) => {
                                 // Pass key event to textarea

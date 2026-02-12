@@ -123,10 +123,12 @@ See `docs/ROADMAP.md` for detailed implementation plans.
 
 ### Phase 2: Medium Difficulty (2-4 hours each)
 
-4. **[ ] Shift-return multi-line support**
+4. **[x] Shift-return multi-line support** - ✅ COMPLETE
    - Textarea shift-return for multi-line input
-   - Files: `src/cli/tui/input_widget.rs`
-   - Effort: 2-4 hours
+   - Dynamic input area height (1-10 lines)
+   - Shadow buffer automatically adjusts for expanded input
+   - Files: `src/cli/tui/async_input.rs`, `src/cli/tui/mod.rs`
+   - Effort: 1.5 hours (actual)
 
 5. **[ ] Status bar live stats**
    - Display tokens, latency, model info in status bar
