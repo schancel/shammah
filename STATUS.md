@@ -164,11 +164,12 @@ See `docs/ROADMAP.md` for detailed implementation plans.
 
 ### Phase 3: Moderate Complexity (3-6 hours each)
 
-10. **[ ] Control-C query termination** 🔴 HIGH PRIORITY
-    - Cancel in-progress queries with Control-C
-    - Pass cancellation through to teacher APIs
-    - Files: `src/cli/tui/mod.rs`, `src/daemon/client.rs`, provider APIs
-    - Effort: 3-6 hours
+10. **[x] Control-C query termination** 🔴 HIGH PRIORITY - ✅ COMPLETE
+    - Cancel in-progress queries with Ctrl+C
+    - Stops streaming, marks query as cancelled, clears state
+    - TODO: Pass cancellation to HTTP requests (abort connections)
+    - Files: `src/cli/tui/async_input.rs`, `src/cli/repl_event/events.rs`, `src/cli/repl_event/event_loop.rs`
+    - Effort: 2 hours (actual)
 
 11. **[x] Simple response feedback system** (NEW) - ✅ COMPLETE
     - Keyboard shortcuts: Ctrl+G (good), Ctrl+B (bad)
