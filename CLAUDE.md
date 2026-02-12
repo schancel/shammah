@@ -819,9 +819,10 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
 
 ## Current Project Status
 
-**Phase**: Core Infrastructure Complete (Phases 1-8) ✅
-**Version**: 0.3.0 (Local Model Generation + Daemon Architecture)
-**Next**: Polish & UX improvements (see STATUS.md and ROADMAP.md)
+**Phase**: Core Infrastructure + UX Polish (Phases 1-8 + Most of Phase 4) ✅
+**Version**: 0.4.0 (Production-Ready with Tool Confirmations)
+**Progress**: 17/23 TODO items complete (74%)
+**Next**: Model testing, adapter loading, documentation (see STATUS.md)
 
 ### What's Done
 
@@ -854,33 +855,49 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
 - ✅ **Subprocess Spawner** - Non-blocking background training
 - ✅ **Integration Tests** - 5/5 tests passing
 
-**Other Features:**
-- ✅ **Progressive Bootstrap** - Instant startup with background loading
-- ✅ **Router with Graceful Degradation** - Tries local, falls back to teacher
-- ✅ **Multi-Provider Support** - Claude, GPT-4, Gemini, Grok
-- ✅ **TUI with Scrollback** - Professional terminal UI
-- ✅ **Streaming Responses** - Real-time output
+**TUI & UX (Complete):**
+- ✅ **Professional Terminal UI** - Scrollback, shadow buffer, diff-based updates
+- ✅ **Multi-line Input** - Shift+Enter support, dynamic height (1-10 lines)
+- ✅ **Command History** - Up/down navigation, persistent to disk (1000 commands)
+- ✅ **Live Status Bar** - Tokens, latency, model info, speed stats
+- ✅ **Query Cancellation** - Ctrl+C to stop in-progress queries
+- ✅ **Feedback System** - Ctrl+G (good), Ctrl+B (bad), weighted training data
+- ✅ **Tool Confirmation Dialogs** - Non-blocking approval UI with 6 options
+- ✅ **Streaming Responses** - Real-time output with rate limiting
+
+**Multi-Provider Support (Complete):**
+- ✅ **Teacher APIs** - Claude, GPT-4, Gemini, Grok, Mistral, Groq
+- ✅ **Setup Wizard** - Add/remove multiple providers, configure API keys
+- ✅ **Adaptive Routing** - Tries local by default, graceful fallback
+- ✅ **Crash Recovery** - Auto-restart daemon on connection errors
 - ✅ **Generic Terminology** - Local/teacher (no brand-specific terms)
+
+**System Reliability (Complete):**
+- ✅ **Progressive Bootstrap** - Instant startup with background loading
+- ✅ **Memory Monitoring** - Track system and process RAM usage
+- ✅ **Daemon Management** - Auto-spawn, stop, start, status commands
+- ✅ **Config Validation** - Helpful error messages on startup
+- ✅ **Download Progress** - Visual progress bars in TUI
 
 ### What's Next
 
-See **STATUS.md** and **docs/ROADMAP.md** for detailed TODO list.
+**Progress: 17/23 TODO items complete (74%)**
 
-**Immediate (This Week):**
-- [ ] Textarea improvements (shift-return, history navigation)
-- [ ] Status bar live stats (tokens, latency, model info)
-- [ ] Daemon management subcommands (stop, start, status)
+See **STATUS.md** for detailed TODO list with effort estimates.
 
-**Short-term (This Month):**
-- [ ] Multi-provider setup wizard enhancement
-- [ ] Test Mistral model support
-- [ ] Install Python deps for LoRA training
-- [ ] Complete adapter loading in runtime
+**Remaining High-Priority Items:**
+- [ ] Multi-model setup wizard (let users choose specific model variants)
+- [ ] Test Mistral model support with LlamaAdapter
+- [ ] LoRA adapter loading in ONNX runtime
 
-**Medium-term (Next Quarter):**
+**Phase 5 - Complex (8-20 hours each):**
+- [ ] Additional model adapters (Phi, DeepSeek, etc.)
+- [ ] Color scheme customization (accessibility)
 - [ ] Plan mode redesign (match Claude Code quality)
-- [ ] Additional model adapters (Phi, DeepSeek)
-- [ ] User guide documentation
+
+**Documentation:**
+- [ ] Create USER_GUIDE.md with setup and usage instructions
+- [ ] Update ARCHITECTURE.md with daemon mode details
 
 **Long-term (Future):**
 - [ ] Quantization for lower memory usage
