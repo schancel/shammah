@@ -313,12 +313,27 @@ impl EventLoop {
                         self.handle_local_query(query).await?;
                     }
                     Command::PlanModeToggle | Command::Plan(_) => {
-                        // Plan mode is now tool-driven, not command-driven
-                        self.output_manager.write_info(
-                            "ℹ️  Plan mode is now automatic. Just ask Claude to create a plan:\n\
-                             Example: 'Please create a plan to add authentication'\n\
-                             Claude will use the EnterPlanMode and PresentPlan tools automatically."
-                        );
+                        // Check current mode and toggle
+                        let current_mode = self.mode.read().await.clone();
+                        match current_mode {
+                            ReplMode::Normal => {
+                                // Already in normal mode, show info about automatic plan mode
+                                self.output_manager.write_info(
+                                    "ℹ️  Plan mode is now automatic. Just ask Claude to create a plan:\n\
+                                     Example: 'Please create a plan to add authentication'\n\
+                                     Claude will use the EnterPlanMode and PresentPlan tools automatically."
+                                );
+                            }
+                            ReplMode::Planning { .. } | ReplMode::Executing { .. } => {
+                                // Exit plan mode, return to normal
+                                *self.mode.write().await = ReplMode::Normal;
+                                self.output_manager.write_info(
+                                    "✅ Exited plan mode. Returned to normal mode."
+                                );
+                                // Update status bar indicator
+                                self.update_plan_mode_indicator(&ReplMode::Normal);
+                            }
+                        }
                         self.render_tui().await?;
                     }
                     _ => {
