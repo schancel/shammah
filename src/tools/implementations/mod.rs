@@ -17,10 +17,16 @@ pub mod bash;
 pub mod restart;
 pub mod save_and_exec;
 
+// Plan mode tools
+pub mod enter_plan_mode;
+pub mod present_plan;
+
 // Re-exports for convenience
 pub use bash::BashTool;
+pub use enter_plan_mode::EnterPlanModeTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
+pub use present_plan::PresentPlanTool;
 pub use read::ReadTool;
 pub use restart::RestartTool;
 pub use save_and_exec::SaveAndExecTool;

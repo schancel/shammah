@@ -28,7 +28,8 @@ use crate::providers::{TeacherContextConfig, TeacherSession};
 use crate::router::{ForwardReason, RouteDecision, Router};
 use crate::tools::executor::{generate_tool_signature, ApprovalSource, ToolSignature};
 use crate::tools::implementations::{
-    BashTool, GlobTool, GrepTool, ReadTool, RestartTool, SaveAndExecTool, WebFetchTool,
+    BashTool, EnterPlanModeTool, GlobTool, GrepTool, PresentPlanTool, ReadTool, RestartTool,
+    SaveAndExecTool, WebFetchTool,
 };
 use crate::tools::patterns::ToolPattern;
 use crate::tools::types::{ToolDefinition, ToolUse};
@@ -186,6 +187,10 @@ impl Repl {
         tool_registry.register(Box::new(RestartTool::new(session_state_file.clone())));
         tool_registry.register(Box::new(SaveAndExecTool::new(session_state_file.clone())));
 
+        // Plan mode tools
+        tool_registry.register(Box::new(EnterPlanModeTool));
+        tool_registry.register(Box::new(PresentPlanTool));
+
         // Create permission manager (allow all for now)
         let permissions = PermissionManager::new().with_default_rule(PermissionRule::Allow);
 
@@ -209,6 +214,9 @@ impl Repl {
                 fallback_registry.register(Box::new(RestartTool::new(session_state_file.clone())));
                 fallback_registry
                     .register(Box::new(SaveAndExecTool::new(session_state_file.clone())));
+                // Plan mode tools
+                fallback_registry.register(Box::new(EnterPlanModeTool));
+                fallback_registry.register(Box::new(PresentPlanTool));
                 ToolExecutor::new(
                     fallback_registry,
                     PermissionManager::new().with_default_rule(PermissionRule::Allow),
