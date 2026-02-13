@@ -41,9 +41,9 @@ struct Args {
     #[arg(long = "no-tui")]
     no_tui: bool,
 
-    /// Force direct mode (bypass daemon, for debugging)
-    #[arg(long = "no-daemon")]
-    no_daemon: bool,
+    /// Direct mode - talk directly to teacher API, bypass daemon
+    #[arg(long = "direct")]
+    direct: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -203,19 +203,9 @@ async fn main() -> Result<()> {
         output_manager.enable_stdout();
     }
 
-    // Check for --no-daemon debug flag
-    if args.no_daemon {
-        eprintln!("⚠️  Running in no-daemon mode (debug only)");
-        eprintln!("   Connecting directly to teacher API");
-
-        // Read query if provided
-        if let Some(query) = args.initial_prompt {
-            return run_query_teacher_only(&query, &config).await;
-        }
-
-        eprintln!("Error: --no-daemon requires --initial-prompt");
-        anyhow::bail!("--no-daemon mode requires --initial-prompt");
-    }
+    // Check for --direct flag (bypass daemon)
+    // In direct mode: no daemon connection, talk directly to teacher API
+    let use_daemon = !args.direct;
 
     // Load or create threshold router
     let models_dir = dirs::home_dir()
@@ -259,8 +249,37 @@ async fn main() -> Result<()> {
     // Create metrics logger
     let metrics_logger = MetricsLogger::new(config.metrics_dir.clone())?;
 
+    // Try to connect to daemon BEFORE creating Repl
+    // This allows Repl to suppress local model logs if daemon is available
+    use shammah::client::{DaemonClient, DaemonConfig};
+    let daemon_client = if use_daemon && config.client.use_daemon {
+        let daemon_config = DaemonConfig {
+            bind_address: config.client.daemon_address.clone(),
+            auto_spawn: config.client.auto_spawn,
+            timeout_seconds: 5,
+        };
+        match DaemonClient::connect(daemon_config).await {
+            Ok(client) => {
+                output_manager.write_status("✓ Connected to daemon");
+                Some(Arc::new(client))
+            }
+            Err(e) => {
+                if std::env::var("SHAMMAH_DEBUG").is_ok() {
+                    eprintln!("Failed to connect to daemon: {}", e);
+                }
+                None
+            }
+        }
+    } else {
+        if args.direct && io::stdout().is_terminal() {
+            output_manager.write_status("⚠️  Direct mode - bypassing daemon, using teacher API");
+        }
+        None
+    };
+
     // Create and run REPL (with full TUI support)
-    let mut repl = Repl::new(config, claude_client, router, metrics_logger).await;
+    // Pass daemon_client so Repl knows whether to suppress local model logs
+    let mut repl = Repl::new(config, claude_client, router, metrics_logger, daemon_client).await;
 
     // Restore session if requested
     if let Some(session_path) = args.restore_session {

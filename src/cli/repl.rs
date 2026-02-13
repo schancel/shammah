@@ -142,15 +142,19 @@ impl Repl {
         claude_client: ClaudeClient,
         router: Router,
         metrics_logger: MetricsLogger,
+        daemon_client: Option<Arc<crate::client::DaemonClient>>,
     ) -> Self {
         // Detect if we're in interactive mode (stdout is a TTY)
         let is_interactive = io::stdout().is_terminal();
+
+        // Determine if we're in daemon mode (suppress local model logs)
+        let daemon_mode = daemon_client.is_some();
 
         // Set up models directory
         let models_dir = dirs::home_dir().map(|home| home.join(".shammah").join("models"));
 
         // Load validator only (router is now in Router)
-        let threshold_validator = Self::load_validator(models_dir.as_ref(), is_interactive);
+        let threshold_validator = Self::load_validator(models_dir.as_ref(), is_interactive, daemon_mode);
 
         // Initialize input handler for interactive mode
         let input_handler = if is_interactive {
@@ -214,7 +218,8 @@ impl Repl {
             })
         ));
 
-        if is_interactive {
+        // Only show tool execution log in standalone mode (not daemon mode)
+        if is_interactive && !daemon_mode {
             output_status!(
                 "✓ Tool execution enabled ({} tools)",
                 tool_executor.lock().await.registry().len()
@@ -328,7 +333,8 @@ impl Repl {
         let sampling_config = SamplingConfig::default(); // 5% baseline, 3x arch, 5x security
         let sampler = Arc::new(RwLock::new(Sampler::new(sampling_config)));
 
-        if is_interactive {
+        // Only show LoRA log in standalone mode (daemon handles training)
+        if is_interactive && !daemon_mode {
             output_status!("✓ LoRA fine-tuning enabled (weighted training)");
         }
 
@@ -380,15 +386,14 @@ impl Repl {
             teacher_config,
         )));
 
-        if is_interactive {
+        // Only show teacher optimization log in standalone mode
+        if is_interactive && !daemon_mode {
             output_status!("✓ Teacher context optimization enabled (Level 3)");
         }
 
-        // Try to connect to daemon (non-blocking, best effort)
-        let daemon_client = Self::try_connect_daemon(&config).await;
-        if daemon_client.is_some() {
-            output_status!("✓ Connected to daemon");
-        } else if is_interactive {
+        // daemon_client is now passed as a parameter (checked in main.rs)
+        // Show warning only if in standalone mode and interactive
+        if daemon_client.is_none() && is_interactive && !daemon_mode {
             output_status!("⚠️  Daemon not available, using teacher API directly");
         }
 
@@ -539,7 +544,7 @@ impl Repl {
     }
 
     /// Load validator from disk or create new one
-    fn load_validator(models_dir: Option<&PathBuf>, is_interactive: bool) -> ThresholdValidator {
+    fn load_validator(models_dir: Option<&PathBuf>, is_interactive: bool, daemon_mode: bool) -> ThresholdValidator {
         let Some(models_dir) = models_dir else {
             return ThresholdValidator::new();
         };
@@ -548,7 +553,8 @@ impl Repl {
         if validator_path.exists() {
             match ThresholdValidator::load(&validator_path) {
                 Ok(validator) => {
-                    if is_interactive {
+                    // Only show validator log in standalone mode (daemon has its own)
+                    if is_interactive && !daemon_mode {
                         output_status!(
                             "✓ Loaded validator with {} validations",
                             validator.stats().total_validations
