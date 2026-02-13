@@ -86,7 +86,28 @@ impl ToolExecutionCoordinator {
             // Check if tool needs approval
             let approval_source = tool_executor.lock().await.is_approved(&signature);
 
-            let needs_approval = matches!(approval_source, crate::tools::executor::ApprovalSource::NotApproved);
+            // Auto-approve certain non-destructive operations
+            let is_auto_approved = {
+                let tool_name = tool_use.name.as_str();
+
+                // Always auto-approve EnterPlanMode (non-destructive mode change)
+                if tool_name == "EnterPlanMode" || tool_name == "enter_plan_mode" {
+                    true
+                } else {
+                    // Auto-approve read-only tools when in plan mode
+                    let current_mode = repl_mode.read().await;
+                    let is_plan_mode = matches!(*current_mode, crate::cli::ReplMode::Planning { .. });
+                    let is_readonly_tool = matches!(
+                        tool_name,
+                        "read" | "Read" | "glob" | "Glob" | "grep" | "Grep" | "web_fetch" | "WebFetch"
+                    );
+
+                    is_plan_mode && is_readonly_tool
+                }
+            };
+
+            let needs_approval = !is_auto_approved
+                && matches!(approval_source, crate::tools::executor::ApprovalSource::NotApproved);
 
             if needs_approval {
                 // Request approval from user (non-blocking for other queries)

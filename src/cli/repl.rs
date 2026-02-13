@@ -862,11 +862,30 @@ impl Repl {
                 let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                 let signature = generate_tool_signature(tool_use, &working_dir);
 
+                // Auto-approve certain non-destructive operations
+                let is_auto_approved = {
+                    let tool_name = tool_use.name.as_str();
+
+                    // Always auto-approve EnterPlanMode (non-destructive mode change)
+                    if tool_name == "EnterPlanMode" || tool_name == "enter_plan_mode" {
+                        true
+                    } else {
+                        // Auto-approve read-only tools when in plan mode
+                        let is_plan_mode = matches!(self.mode, ReplMode::Planning { .. });
+                        let is_readonly_tool = matches!(
+                            tool_name,
+                            "read" | "Read" | "glob" | "Glob" | "grep" | "Grep" | "web_fetch" | "WebFetch"
+                        );
+
+                        is_plan_mode && is_readonly_tool
+                    }
+                };
+
                 // Check if pre-approved in cache
                 let approval_source = self.tool_executor.lock().await.is_approved(&signature);
 
                 match approval_source {
-                    ApprovalSource::NotApproved => {
+                    ApprovalSource::NotApproved if !is_auto_approved => {
                         // Show prompt if interactive
                         if self.is_interactive {
                             match self.confirm_tool_execution(tool_use, &signature)? {
@@ -920,6 +939,10 @@ impl Repl {
                                 }
                             }
                         }
+                    }
+                    ApprovalSource::NotApproved => {
+                        // Auto-approved (non-destructive operation)
+                        // Continue to execution without prompting
                     }
                     ApprovalSource::SessionExact => {
                         // Already approved, execute silently
