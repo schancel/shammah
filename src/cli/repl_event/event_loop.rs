@@ -3,7 +3,6 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use crossterm::style::Stylize;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -14,7 +13,7 @@ use crate::cli::conversation::ConversationHistory;
 use crate::cli::output_manager::OutputManager;
 use crate::cli::repl::ReplMode;
 use crate::cli::status_bar::StatusBar;
-use crate::cli::tui::{spawn_input_task, Dialog, DialogOption, TuiRenderer};
+use crate::cli::tui::{spawn_input_task, TuiRenderer};
 use crate::claude::ContentBlock;
 use crate::generators::{Generator, StreamChunk};
 use crate::local::LocalGenerator;
@@ -322,12 +321,6 @@ impl EventLoop {
                         );
                         self.render_tui().await?;
                     }
-                    Command::ApprovePlan => {
-                        self.handle_approve_plan().await?;
-                    }
-                    Command::RejectPlan => {
-                        self.handle_reject_plan().await?;
-                    }
                     _ => {
                         // All other commands output to scrollback via write_info
                         self.output_manager.write_info(format!(
@@ -426,6 +419,7 @@ impl EventLoop {
         let tool_coordinator = self.tool_coordinator.clone();
         let tui_renderer = Arc::clone(&self.tui_renderer);
         let mode = Arc::clone(&self.mode);
+        let output_manager = Arc::clone(&self.output_manager);
 
         tokio::spawn(async move {
             Self::process_query_with_tools(
@@ -442,6 +436,7 @@ impl EventLoop {
                 tool_coordinator,
                 tui_renderer,
                 mode,
+                output_manager,
             )
             .await;
         });
@@ -463,6 +458,7 @@ impl EventLoop {
         tool_coordinator: ToolExecutionCoordinator,
         tui_renderer: Arc<tokio::sync::Mutex<TuiRenderer>>,
         mode: Arc<RwLock<ReplMode>>,
+        output_manager: Arc<OutputManager>,
     ) {
         tracing::debug!("process_query_with_tools starting for query_id: {:?}", query_id);
 
@@ -642,6 +638,19 @@ impl EventLoop {
                                         tool_id: tool_use.id.clone(),
                                         result,
                                     });
+                                } else if let Some(result) = handle_present_plan(
+                                    &tool_use,
+                                    Arc::clone(&tui_renderer),
+                                    Arc::clone(&mode),
+                                    Arc::clone(&conversation),
+                                    Arc::clone(&output_manager),
+                                ).await {
+                                    // Send result immediately
+                                    let _ = event_tx.send(ReplEvent::ToolResult {
+                                        query_id,
+                                        tool_id: tool_use.id.clone(),
+                                        result,
+                                    });
                                 } else {
                                     // Regular tool execution
                                     tool_coordinator.spawn_tool_execution(query_id, tool_use);
@@ -739,6 +748,19 @@ impl EventLoop {
 
                             // Check if this is AskUserQuestion (handle specially)
                             if let Some(result) = handle_ask_user_question(&tool_use, Arc::clone(&tui_renderer)).await {
+                                // Send result immediately
+                                let _ = event_tx.send(ReplEvent::ToolResult {
+                                    query_id,
+                                    tool_id: tool_use.id.clone(),
+                                    result,
+                                });
+                            } else if let Some(result) = handle_present_plan(
+                                &tool_use,
+                                Arc::clone(&tui_renderer),
+                                Arc::clone(&mode),
+                                Arc::clone(&conversation),
+                                Arc::clone(&output_manager),
+                            ).await {
                                 // Send result immediately
                                 let _ = event_tx.send(ReplEvent::ToolResult {
                                     query_id,
@@ -1302,133 +1324,179 @@ impl EventLoop {
         self.render_tui().await?;
         Ok(())
     }
+}
 
-    /// Handle /approve command - approve plan and transition to execution mode
-    async fn handle_approve_plan(&mut self) -> Result<()> {
-        use chrono::Utc;
-        use crossterm::style::Stylize;
+/// Handle PresentPlan tool call specially (shows approval dialog instead of executing as tool)
+///
+/// Returns Some(tool_result) if this is a PresentPlan call, None otherwise
+async fn handle_present_plan(
+    tool_use: &ToolUse,
+    tui_renderer: Arc<tokio::sync::Mutex<TuiRenderer>>,
+    mode: Arc<tokio::sync::RwLock<crate::cli::ReplMode>>,
+    conversation: Arc<tokio::sync::RwLock<crate::cli::ConversationHistory>>,
+    output_manager: Arc<crate::cli::OutputManager>,
+) -> Option<Result<String>> {
+    use chrono::Utc;
+    use crossterm::style::Stylize;
 
-        // Get current mode and plan info
-        let (task, plan_path) = {
-            let mode = self.mode.read().await;
-            match &*mode {
-                ReplMode::Planning { task, plan_path, .. } => (task.clone(), plan_path.clone()),
-                ReplMode::Normal => {
-                    self.output_manager.write_info("⚠️  No active plan to approve. Use EnterPlanMode or /plan first.");
-                    self.render_tui().await?;
-                    return Ok(());
-                }
-                ReplMode::Executing { .. } => {
-                    self.output_manager.write_info("⚠️  Plan is already being executed.");
-                    self.render_tui().await?;
-                    return Ok(());
-                }
-            }
-        };
+    // Check if this is PresentPlan
+    if tool_use.name != "PresentPlan" {
+        return None;
+    }
 
-        self.output_manager.write_info(format!("{}", "✓ Plan approved!".green().bold()));
-        self.output_manager.write_info("");
+    tracing::debug!("[EVENT_LOOP] Detected PresentPlan tool call - showing approval dialog");
 
-        // Ask about context clearing
-        let dialog = crate::cli::tui::Dialog::select(
-            "Clear conversation context?".to_string(),
-            vec![
-                crate::cli::tui::DialogOption::with_description(
-                    "Clear context (recommended)",
-                    "Reduces token usage and focuses execution on the plan",
-                ),
-                crate::cli::tui::DialogOption::with_description(
-                    "Keep context",
-                    "Preserves exploration history in conversation",
-                ),
-            ],
-        );
+    // Extract plan content
+    let plan_content = match tool_use.input["plan"].as_str() {
+        Some(content) => content,
+        None => return Some(Err(anyhow::anyhow!("Missing 'plan' field in PresentPlan input"))),
+    };
 
-        let mut tui = self.tui_renderer.lock().await;
-        let dialog_result = tui.show_dialog(dialog)?;
-        drop(tui);
-
-        if dialog_result.is_cancelled() {
-            self.output_manager.write_info("⚠️  Plan approval cancelled.");
-            self.render_tui().await?;
-            return Ok(());
+    // Verify we're in planning mode and get plan path
+    let (task, plan_path) = {
+        let current_mode = mode.read().await;
+        match &*current_mode {
+            crate::cli::ReplMode::Planning { task, plan_path, .. } => (task.clone(), plan_path.clone()),
+            _ => return Some(Ok("⚠️  Not in planning mode. Use EnterPlanMode first.".to_string())),
         }
+    };
 
-        let clear_context = matches!(dialog_result, crate::cli::tui::DialogResult::Selected(0));
+    // Save plan to file
+    if let Err(e) = std::fs::write(&plan_path, plan_content) {
+        return Some(Err(anyhow::anyhow!("Failed to save plan: {}", e)));
+    }
 
-        // Transition to executing mode
-        *self.mode.write().await = ReplMode::Executing {
-            task: task.clone(),
-            plan_path: plan_path.clone(),
-            approved_at: Utc::now(),
-        };
+    // Show plan in output
+    output_manager.write_info(format!("\n{}\n", "━".repeat(70)));
+    output_manager.write_info(format!("{}", "📋 IMPLEMENTATION PLAN".bold()));
+    output_manager.write_info(format!("{}\n", "━".repeat(70)));
+    output_manager.write_info(plan_content.to_string());
+    output_manager.write_info(format!("\n{}\n", "━".repeat(70)));
 
-        // Update status bar
-        self.update_plan_mode_indicator(&ReplMode::Executing {
-            task: task.clone(),
-            plan_path: plan_path.clone(),
-            approved_at: Utc::now(),
-        });
+    // Show approval dialog
+    let dialog = crate::cli::tui::Dialog::select_with_custom(
+        "Review Implementation Plan".to_string(),
+        vec![
+            crate::cli::tui::DialogOption::with_description(
+                "Approve and execute",
+                "Clear context and proceed with implementation (all tools enabled)",
+            ),
+            crate::cli::tui::DialogOption::with_description(
+                "Request changes",
+                "Provide feedback for Claude to revise the plan",
+            ),
+            crate::cli::tui::DialogOption::with_description(
+                "Reject plan",
+                "Exit plan mode and return to normal conversation",
+            ),
+        ],
+    ).with_help("Use ↑↓ or j/k to navigate, Enter to select, 'o' for custom feedback, Esc to cancel");
 
-        if clear_context {
-            // Clear conversation and add plan as context
-            self.output_manager.write_info("");
-            self.output_manager.write_info(format!("{}", "Clearing conversation context...".blue()));
-            self.conversation.write().await.clear();
+    let mut tui = tui_renderer.lock().await;
+    let dialog_result = tui.show_dialog(dialog);
+    drop(tui);
 
-            // Read plan file and add as initial context
-            if plan_path.exists() {
-                let plan_content = std::fs::read_to_string(&plan_path)?;
-                self.conversation.write().await.add_user_message(format!(
+    let dialog_result = match dialog_result {
+        Ok(result) => result,
+        Err(e) => return Some(Err(anyhow::anyhow!("Failed to show approval dialog: {}", e))),
+    };
+
+    // Handle dialog result
+    match dialog_result {
+        crate::cli::tui::DialogResult::Selected(0) => {
+            // Approved - ask about context clearing
+            let clear_dialog = crate::cli::tui::Dialog::select(
+                "Clear conversation context?".to_string(),
+                vec![
+                    crate::cli::tui::DialogOption::with_description(
+                        "Clear context (recommended)",
+                        "Reduces token usage and focuses execution on the plan",
+                    ),
+                    crate::cli::tui::DialogOption::with_description(
+                        "Keep context",
+                        "Preserves exploration history in conversation",
+                    ),
+                ],
+            );
+
+            let mut tui = tui_renderer.lock().await;
+            let clear_result = tui.show_dialog(clear_dialog);
+            drop(tui);
+
+            let clear_context = match clear_result {
+                Ok(crate::cli::tui::DialogResult::Selected(0)) => true,
+                Ok(crate::cli::tui::DialogResult::Selected(1)) => false,
+                _ => false, // Default to not clearing on cancel
+            };
+
+            // Transition to executing mode
+            *mode.write().await = crate::cli::ReplMode::Executing {
+                task: task.clone(),
+                plan_path: plan_path.clone(),
+                approved_at: Utc::now(),
+            };
+
+            if clear_context {
+                // Clear conversation and add plan as context
+                output_manager.write_info(format!("{}", "Clearing conversation context...".blue()));
+                conversation.write().await.clear();
+                conversation.write().await.add_user_message(format!(
                     "[System: Plan approved! Execute this plan:]\n\n{}",
                     plan_content
                 ));
-                self.output_manager.write_info(format!("{}", "✓ Context cleared. Plan loaded as execution guide.".green()));
+                output_manager.write_info(format!("{}", "✓ Context cleared. Plan loaded as execution guide.".green()));
             } else {
-                self.output_manager.write_info(format!("{}", "⚠️  Plan file not found.".yellow()));
-                self.conversation.write().await.add_user_message(
+                // Keep history, just add approval message
+                conversation.write().await.add_user_message(
                     "[System: Plan approved! All tools are now enabled. You may execute bash commands and modify files.]".to_string()
                 );
             }
-        } else {
-            // Keep history, just add approval message
-            self.output_manager.write_info("");
-            self.output_manager.write_info(format!("{}", "Keeping conversation context...".blue()));
-            self.conversation.write().await.add_user_message(
-                "[System: Plan approved! All tools are now enabled. You may execute bash commands and modify files.]".to_string()
-            );
+
+            output_manager.write_info(format!("{}", "✓ Plan approved! All tools enabled.".green().bold()));
+
+            Some(Ok("Plan approved by user. Context has been prepared. You may now proceed with implementation using all available tools (Bash, Write, Edit, etc.).".to_string()))
         }
+        crate::cli::tui::DialogResult::Selected(1) | crate::cli::tui::DialogResult::CustomText(_) => {
+            // Request changes
+            let feedback = if let crate::cli::tui::DialogResult::CustomText(text) = dialog_result {
+                text
+            } else {
+                // Show text input for changes
+                let feedback_dialog = crate::cli::tui::Dialog::text_input(
+                    "What changes would you like?".to_string(),
+                    None,
+                );
 
-        self.output_manager.write_info("");
-        self.output_manager.write_info(format!("{}", "All tools enabled. Please proceed with implementation.".green()));
-        self.render_tui().await?;
-        Ok(())
-    }
+                let mut tui = tui_renderer.lock().await;
+                let feedback_result = tui.show_dialog(feedback_dialog);
+                drop(tui);
 
-    /// Handle /reject command - reject plan and return to normal mode
-    async fn handle_reject_plan(&mut self) -> Result<()> {
-        use crossterm::style::Stylize;
+                match feedback_result {
+                    Ok(crate::cli::tui::DialogResult::TextEntered(text)) => text,
+                    _ => return Some(Ok("Plan review cancelled.".to_string())),
+                }
+            };
 
-        let mode = self.mode.read().await;
-        match &*mode {
-            ReplMode::Planning { .. } | ReplMode::Executing { .. } => {
-                drop(mode);
-                self.output_manager.write_info(format!("{}", "✗ Plan rejected. Returning to normal mode.".yellow()));
-                *self.mode.write().await = ReplMode::Normal;
+            output_manager.write_info(format!("{}", "📝 Changes requested. Revising plan...".yellow()));
 
-                // Update status bar
-                self.update_plan_mode_indicator(&ReplMode::Normal);
-
-                self.conversation.write().await.add_user_message("[System: Plan rejected by user. Returning to normal mode.]".to_string());
-                self.render_tui().await?;
-            }
-            ReplMode::Normal => {
-                drop(mode);
-                self.output_manager.write_info("⚠️  No active plan to reject.");
-                self.render_tui().await?;
-            }
+            Some(Ok(format!(
+                "User reviewed the plan and requests the following changes:\n\n{}\n\n\
+                 Please revise the implementation plan based on this feedback and call PresentPlan again with the updated version.",
+                feedback
+            )))
         }
-        Ok(())
+        crate::cli::tui::DialogResult::Selected(2) => {
+            // Rejected
+            *mode.write().await = crate::cli::ReplMode::Normal;
+            output_manager.write_info(format!("{}", "✗ Plan rejected. Returning to normal mode.".yellow()));
+            conversation.write().await.add_user_message("[System: Plan rejected by user. Returning to normal conversation.]".to_string());
+
+            Some(Ok("Plan rejected by user. Exiting plan mode and returning to normal conversation.".to_string()))
+        }
+        crate::cli::tui::DialogResult::Cancelled => {
+            Some(Ok("Plan approval cancelled. Staying in planning mode.".to_string()))
+        }
+        _ => Some(Ok("Invalid dialog result.".to_string())),
     }
 }
 

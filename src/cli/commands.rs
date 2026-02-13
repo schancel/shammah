@@ -27,8 +27,6 @@ pub enum Command {
     // Plan mode commands
     PlanModeToggle,  // Toggle plan mode on/off (Shift+Tab or /plan without args)
     Plan(String),
-    ApprovePlan,     // Approve plan and transition to execution mode
-    RejectPlan,      // Reject plan and return to normal mode
     // Feedback commands for weighted LoRA training
     FeedbackCritical(Option<String>), // High-weight (10x) - critical strategy errors
     FeedbackMedium(Option<String>),   // Medium-weight (3x) - improvements
@@ -50,9 +48,6 @@ impl Command {
             "/debug" => return Some(Command::Debug),
             "/training" => return Some(Command::Training),
             "/clear" | "/reset" => return Some(Command::Clear),
-            // Plan mode commands
-            "/approve" | "/approve-plan" => return Some(Command::ApprovePlan),
-            "/reject" | "/reject-plan" => return Some(Command::RejectPlan),
             // Feedback commands (simple form)
             "/critical" => return Some(Command::FeedbackCritical(None)),
             "/medium" => return Some(Command::FeedbackMedium(None)),
@@ -196,9 +191,7 @@ pub fn handle_command(
         }
         // Plan mode commands are handled directly in REPL
         Command::PlanModeToggle
-        | Command::Plan(_)
-        | Command::ApprovePlan
-        | Command::RejectPlan => {
+        | Command::Plan(_) => {
             Ok(CommandOutput::Status("Plan mode commands should be handled in REPL.".to_string()))
         }
         // Feedback commands are handled directly in REPL
@@ -241,13 +234,12 @@ pub fn format_help() -> String {
          \x1b[90m  What are patterns?\x1b[0m Saved rules for auto-approving tool executions.\n\
          \x1b[90m  Example:\x1b[0m \"Always allow reading *.rs files\" or \"Allow git status\"\n\n\
          \x1b[1;33m📝 Plan Mode:\x1b[0m\n\
-         \x1b[90m  Claude can enter plan mode to explore your codebase in read-only mode.\x1b[0m\n\
-         \x1b[90m  It will present a plan for your approval. Use these commands to respond:\x1b[0m\n\
-         \x1b[36m  /approve\x1b[0m           Approve plan and execute (clears context, enables all tools)\n\
-         \x1b[36m  /reject\x1b[0m            Reject plan and return to normal mode\n\
+         \x1b[90m  Claude can enter plan mode to explore your codebase in read-only mode,\x1b[0m\n\
+         \x1b[90m  then present a plan for your approval via an interactive dialog.\x1b[0m\n\
          \x1b[0m\n\
          \x1b[90m  Workflow:\x1b[0m 1. Ask Claude to plan → 2. Claude explores (read-only) →\n\
-         \x1b[90m            3. Claude presents plan → 4. You approve/reject → 5. Execution\n\n\
+         \x1b[90m            3. Claude presents plan → 4. Dialog appears automatically →\n\
+         \x1b[90m            5. You approve/request changes/reject → 6. Execution\n\n\
          \x1b[1;33m🎓 Weighted Feedback (LoRA Fine-Tuning):\x1b[0m\n\
          \x1b[36m  /critical [note]\x1b[0m   Mark response as \x1b[31mcritical error\x1b[0m (10x training weight)\n\
          \x1b[36m  /medium [note]\x1b[0m     Mark response \x1b[33mneeds improvement\x1b[0m (3x weight)\n\
