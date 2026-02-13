@@ -408,11 +408,20 @@ See `docs/ROADMAP.md` for detailed implementation plans.
 
 ### Phase 6: Very Complex (20+ hours)
 
-28. **[ ] Plan mode redesign**
+28. **[ ] Plan mode redesign** 🎯 READY TO IMPLEMENT
     - Match Claude Code's plan mode quality
-    - Multi-step planning, approval workflow
-    - Files: `src/cli/plan_mode.rs` (major refactor)
-    - Effort: 20-40 hours
+    - Read-only exploration phase with tool-driven workflow
+    - Claude-initiated or user-requested
+    - Approval dialog with context clearing
+    - Enhanced dialogs (checkboxes + "Other" option)
+    - **Full implementation plan:** `docs/PLAN_MODE_REDESIGN.md`
+    - Files: Dialog enhancements, new tools (EnterPlanMode, PresentPlan), remove old commands
+    - Effort: 6-9 hours (was 20-40, now well-planned)
+    - Phases:
+      1. Dialog enhancements (2-3h) - Add "Other" option, submit button
+      2. Plan mode tools (2-3h) - EnterPlanMode, PresentPlan tools
+      3. Remove old code (1h) - Clean up command handlers
+      4. Testing (1-2h) - Verify full workflow
 
 29. **[x] Prompt suggestions** (NEW) ✅ COMPLETE
     - ✅ Full infrastructure with hardcoded + LLM support
@@ -475,9 +484,11 @@ See `docs/ROADMAP.md` for detailed implementation plans.
 **Fix:** Phase 1 - Debug pattern matching logic (Item 6)
 
 ### 2. Plan Mode Needs Redesign
-**Issue:** Current plan mode is basic and not user-friendly
-**Impact:** Users find it "nearly useless" compared to Claude Code
-**Fix:** Phase 6 - Study Claude Code's plan mode and redesign (Item 28)
+**Issue:** Current plan mode uses manual commands, needs Claude Code-style workflow
+**Impact:** Not intuitive, requires manual state management
+**Solution:** Tool-driven approach with read-only exploration and approval workflow
+**Status:** ✅ Implementation plan complete - See `docs/PLAN_MODE_REDESIGN.md`
+**Fix:** Phase 6 - Item 28 (6-9 hours estimated)
 
 ### 3. Live Stats Not Showing
 **Issue:** Status bar exists but live stats (tokens, latency, model) not populated
