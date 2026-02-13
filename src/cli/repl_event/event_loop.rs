@@ -1208,7 +1208,7 @@ impl EventLoop {
             DialogOption::with_description("Deny", "Do not execute this tool"),
         ];
 
-        let dialog = Dialog::select(
+        let dialog = Dialog::select_with_custom(
             format!("Tool '{}' requires approval\n{}", tool_name, summary),
             options,
         );
@@ -1273,6 +1273,11 @@ impl EventLoop {
                 }
                 _ => ConfirmationResult::Deny, // Index 5 or cancelled
             },
+            crate::cli::tui::DialogResult::CustomText(text) => {
+                // User provided custom response - log it and deny for safety
+                tracing::info!("Tool approval custom response: {}", text);
+                ConfirmationResult::Deny
+            }
             _ => ConfirmationResult::Deny,
         }
     }
