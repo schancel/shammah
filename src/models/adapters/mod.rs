@@ -9,10 +9,12 @@
 pub mod qwen;
 pub mod llama;
 pub mod mistral;
+pub mod phi;
 
 pub use qwen::QwenAdapter;
 pub use llama::LlamaAdapter;
 pub use mistral::MistralAdapter;
+pub use phi::PhiAdapter;
 
 use std::fmt;
 
@@ -86,6 +88,8 @@ impl AdapterRegistry {
             Box::new(LlamaAdapter)
         } else if name_lower.contains("mistral") {
             Box::new(MistralAdapter)
+        } else if name_lower.contains("phi") {
+            Box::new(PhiAdapter)
         } else if name_lower.contains("gemma") {
             // Gemma uses similar format to Llama
             Box::new(LlamaAdapter)
@@ -106,6 +110,7 @@ impl AdapterRegistry {
             ModelFamily::Llama => Box::new(LlamaAdapter),
             ModelFamily::Mistral => Box::new(MistralAdapter),
             ModelFamily::Gemma => Box::new(LlamaAdapter),
+            ModelFamily::Phi => Box::new(PhiAdapter),
         }
     }
 }
@@ -117,6 +122,7 @@ pub enum ModelFamily {
     Llama,
     Mistral,
     Gemma,
+    Phi,
 }
 
 impl ModelFamily {
@@ -129,6 +135,8 @@ impl ModelFamily {
             Some(ModelFamily::Llama)
         } else if name_lower.contains("mistral") {
             Some(ModelFamily::Mistral)
+        } else if name_lower.contains("phi") {
+            Some(ModelFamily::Phi)
         } else if name_lower.contains("gemma") {
             Some(ModelFamily::Gemma)
         } else {
@@ -151,6 +159,9 @@ mod tests {
 
         let mistral = AdapterRegistry::get_adapter("Mistral-7B-Instruct-v0.3");
         assert_eq!(mistral.family_name(), "Mistral");
+
+        let phi = AdapterRegistry::get_adapter("Phi-3-mini-4k-instruct");
+        assert_eq!(phi.family_name(), "Phi");
     }
 
     #[test]
@@ -158,6 +169,7 @@ mod tests {
         assert_eq!(ModelFamily::from_name("Qwen2.5-1.5B"), Some(ModelFamily::Qwen));
         assert_eq!(ModelFamily::from_name("Llama-3-8B"), Some(ModelFamily::Llama));
         assert_eq!(ModelFamily::from_name("Mistral-7B"), Some(ModelFamily::Mistral));
+        assert_eq!(ModelFamily::from_name("Phi-3-mini"), Some(ModelFamily::Phi));
         assert_eq!(ModelFamily::from_name("unknown-model"), None);
     }
 }
