@@ -11,40 +11,42 @@ use ratatui::{
 };
 
 use crate::cli::{StatusBar, StatusLineType};
+use crate::config::ColorScheme;
 
 /// Widget for rendering the status area
 pub struct StatusWidget<'a> {
     status_bar: &'a StatusBar,
+    colors: &'a ColorScheme,
 }
 
 impl<'a> StatusWidget<'a> {
     /// Create a new status widget
-    pub fn new(status_bar: &'a StatusBar) -> Self {
-        Self { status_bar }
+    pub fn new(status_bar: &'a StatusBar, colors: &'a ColorScheme) -> Self {
+        Self { status_bar, colors }
     }
 
     /// Get the style for a status line based on its type
-    fn get_line_style(line_type: &StatusLineType) -> Style {
+    fn get_line_style(&self, line_type: &StatusLineType) -> Style {
         match line_type {
             StatusLineType::LiveStats => {
-                // Live stats: bright green
+                // Live stats: from color scheme
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(self.colors.status.live_stats.to_color())
                     .add_modifier(Modifier::BOLD)
             }
             StatusLineType::TrainingStats => {
-                // Training stats: gray
-                Style::default().fg(Color::DarkGray)
+                // Training stats: from color scheme
+                Style::default().fg(self.colors.status.training.to_color())
             }
             StatusLineType::DownloadProgress => {
-                // Download progress: cyan
+                // Download progress: from color scheme
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(self.colors.status.download.to_color())
                     .add_modifier(Modifier::BOLD)
             }
             StatusLineType::OperationStatus => {
-                // Operation status: yellow
-                Style::default().fg(Color::Yellow)
+                // Operation status: from color scheme
+                Style::default().fg(self.colors.status.operation.to_color())
             }
             StatusLineType::Custom(_) => {
                 // Custom status lines: readable dark gray
@@ -54,8 +56,8 @@ impl<'a> StatusWidget<'a> {
     }
 
     /// Convert a status line to a styled Line
-    fn status_line_to_line(line_type: &StatusLineType, content: &str) -> Line<'static> {
-        let style = Self::get_line_style(line_type);
+    fn status_line_to_line(&self, line_type: &StatusLineType, content: &str) -> Line<'static> {
+        let style = self.get_line_style(line_type);
         Line::from(Span::styled(content.to_string(), style))
     }
 }
@@ -68,7 +70,7 @@ impl<'a> Widget for StatusWidget<'a> {
         // Convert to styled lines
         let lines: Vec<Line> = status_lines
             .iter()
-            .map(|sl| Self::status_line_to_line(&sl.line_type, &sl.content))
+            .map(|sl| self.status_line_to_line(&sl.line_type, &sl.content))
             .collect();
 
         // If no status lines, show empty
@@ -87,7 +89,7 @@ impl<'a> Widget for StatusWidget<'a> {
                 .borders(Borders::TOP)
                 .title(" Status ")
                 .title_alignment(Alignment::Right)
-                .border_style(Style::default().fg(Color::Gray)),
+                .border_style(Style::default().fg(self.colors.status.border.to_color())),
         );
 
         paragraph.render(area, buf);
@@ -100,31 +102,46 @@ mod tests {
 
     #[test]
     fn test_training_stats_style() {
-        let style = StatusWidget::get_line_style(&StatusLineType::TrainingStats);
+        let status_bar = StatusBar::new();
+        let colors = ColorScheme::default();
+        let widget = StatusWidget::new(&status_bar, &colors);
+        let style = widget.get_line_style(&StatusLineType::TrainingStats);
         assert_eq!(style.fg, Some(Color::DarkGray));
     }
 
     #[test]
     fn test_download_progress_style() {
-        let style = StatusWidget::get_line_style(&StatusLineType::DownloadProgress);
+        let status_bar = StatusBar::new();
+        let colors = ColorScheme::default();
+        let widget = StatusWidget::new(&status_bar, &colors);
+        let style = widget.get_line_style(&StatusLineType::DownloadProgress);
         assert_eq!(style.fg, Some(Color::Cyan));
     }
 
     #[test]
     fn test_operation_status_style() {
-        let style = StatusWidget::get_line_style(&StatusLineType::OperationStatus);
+        let status_bar = StatusBar::new();
+        let colors = ColorScheme::default();
+        let widget = StatusWidget::new(&status_bar, &colors);
+        let style = widget.get_line_style(&StatusLineType::OperationStatus);
         assert_eq!(style.fg, Some(Color::Yellow));
     }
 
     #[test]
     fn test_custom_style() {
-        let style = StatusWidget::get_line_style(&StatusLineType::Custom("test".to_string()));
+        let status_bar = StatusBar::new();
+        let colors = ColorScheme::default();
+        let widget = StatusWidget::new(&status_bar, &colors);
+        let style = widget.get_line_style(&StatusLineType::Custom("test".to_string()));
         assert_eq!(style.fg, Some(Color::DarkGray));
     }
 
     #[test]
     fn test_status_line_conversion() {
-        let line = StatusWidget::status_line_to_line(
+        let status_bar = StatusBar::new();
+        let colors = ColorScheme::default();
+        let widget = StatusWidget::new(&status_bar, &colors);
+        let line = widget.status_line_to_line(
             &StatusLineType::TrainingStats,
             "Training: 10 queries",
         );
@@ -134,7 +151,8 @@ mod tests {
     #[test]
     fn test_widget_creation() {
         let status_bar = StatusBar::new();
-        let widget = StatusWidget::new(&status_bar);
+        let colors = ColorScheme::default();
+        let widget = StatusWidget::new(&status_bar, &colors);
         // Just verify it creates without panic
         assert_eq!(widget.status_bar.len(), 0);
     }

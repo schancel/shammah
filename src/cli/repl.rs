@@ -283,7 +283,11 @@ impl Repl {
         // Initialize TUI renderer if enabled (Phase 2: Ratatui interface)
         // Moved to global for Phase 5 native ratatui dialogs
         if config.tui_enabled && is_interactive {
-            match TuiRenderer::new(Arc::new(output_manager.clone()), Arc::new(status_bar.clone())) {
+            match TuiRenderer::new(
+                Arc::new(output_manager.clone()),
+                Arc::new(status_bar.clone()),
+                config.colors.clone(),
+            ) {
                 Ok(renderer) => {
                     output_status!("✓ TUI mode enabled (Ratatui)");
 

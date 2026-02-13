@@ -109,6 +109,8 @@ pub struct TuiRenderer {
     prev_input_text: String,
     /// Previous status bar content (for change detection)
     prev_status_content: String,
+    /// Color scheme for TUI elements
+    colors: crate::config::ColorScheme,
 }
 
 impl TuiRenderer {
@@ -175,7 +177,11 @@ impl TuiRenderer {
     }
 
     /// Create a new TUI renderer with inline viewport
-    pub fn new(output_manager: Arc<OutputManager>, status_bar: Arc<StatusBar>) -> Result<Self> {
+    pub fn new(
+        output_manager: Arc<OutputManager>,
+        status_bar: Arc<StatusBar>,
+        colors: crate::config::ColorScheme,
+    ) -> Result<Self> {
         // Setup terminal with inline viewport - preserves terminal scrollback
         enable_raw_mode().context("Failed to enable raw mode")?;
         let mut stdout = io::stdout();
@@ -259,6 +265,7 @@ impl TuiRenderer {
             pending_cancellation: false,
             pending_dialog_result: None,
             last_interaction: None,
+            colors,
         })
     }
 
@@ -470,7 +477,7 @@ impl TuiRenderer {
                         frame.render_widget(dialog_widget, chunks[2]);
 
                         // Render status
-                        let status_widget = StatusWidget::new(&status_bar);
+                        let status_widget = StatusWidget::new(&status_bar, &self.colors);
                         frame.render_widget(status_widget, chunks[3]);
                     }
                 } else {
@@ -505,7 +512,7 @@ impl TuiRenderer {
                     render_input_widget(frame, &input_textarea, chunks[1], "❯");
 
                     // Render status
-                    let status_widget = StatusWidget::new(&status_bar);
+                    let status_widget = StatusWidget::new(&status_bar, &self.colors);
                     frame.render_widget(status_widget, chunks[2]);
                 }
             })
