@@ -83,9 +83,10 @@ impl ToolExecutionCoordinator {
             // Generate tool signature for approval checking
             let signature = generate_tool_signature(&tool_use, std::path::Path::new("."));
 
-            // Check if tool needs approval (is_approved takes &mut self, so we can't call it from Arc)
-            // We'll just always show the approval dialog for now in event loop mode
-            let needs_approval = true; // TODO: Add is_approved method that doesn't require &mut
+            // Check if tool needs approval
+            let approval_source = tool_executor.lock().await.is_approved(&signature);
+
+            let needs_approval = matches!(approval_source, crate::tools::executor::ApprovalSource::NotApproved);
 
             if needs_approval {
                 // Request approval from user (non-blocking for other queries)
@@ -113,54 +114,34 @@ impl ToolExecutionCoordinator {
                                 // Approved for this execution only, continue
                             }
                             ConfirmationResult::ApproveExactSession(sig) => {
-                                // Save session approval (requires &mut, can't do from Arc)
-                                // TODO: Make approval methods thread-safe
-                                // For now, approvals are temporary per-execution only
-                                let _ = sig; // Suppress warning
+                                // Save session approval
+                                tool_executor.lock().await.approve_exact_session(sig);
                             }
                             ConfirmationResult::ApprovePatternSession(pattern) => {
-                                // Save session pattern approval (requires &mut, can't do from Arc)
-                                // TODO: Make approval methods thread-safe
-                                // For now, approvals are temporary per-execution only
-                                let _ = pattern; // Suppress warning
-                                /*
-                                if let Err(e) = tool_executor.approve_pattern_session(pattern) {
-                                    let _ = event_tx.send(ReplEvent::ToolResult {
-                                        query_id,
-                                        tool_id: tool_use.id.clone(),
-                                        result: Err(anyhow::anyhow!(
-                                            "Failed to save pattern approval: {}",
-                                            e
-                                        )),
-                                    });
-                                    return;
-                                }
-                                */
+                                // Save session pattern approval
+                                tool_executor.lock().await.approve_pattern_session(pattern);
                             }
                             ConfirmationResult::ApproveExactPersistent(sig) => {
-                                // Save persistent approval (requires &mut, can't do from Arc)
-                                // TODO: Make approval methods thread-safe
-                                // For now, approvals are temporary per-execution only
-                                let _ = sig; // Suppress warning
+                                // Save persistent approval and write to disk immediately
+                                {
+                                    let mut executor = tool_executor.lock().await;
+                                    executor.approve_exact_persistent(sig);
+                                    if let Err(e) = executor.save_patterns() {
+                                        tracing::warn!("Failed to save persistent approval: {}", e);
+                                        // Continue anyway - approval is in memory
+                                    }
+                                }
                             }
                             ConfirmationResult::ApprovePatternPersistent(pattern) => {
-                                // Save persistent pattern approval (requires &mut, can't do from Arc)
-                                // TODO: Make approval methods thread-safe
-                                // For now, approvals are temporary per-execution only
-                                let _ = pattern; // Suppress warning
-                                /*
-                                if let Err(e) = tool_executor.approve_pattern_persistent(pattern) {
-                                    let _ = event_tx.send(ReplEvent::ToolResult {
-                                        query_id,
-                                        tool_id: tool_use.id.clone(),
-                                        result: Err(anyhow::anyhow!(
-                                            "Failed to save pattern approval: {}",
-                                            e
-                                        )),
-                                    });
-                                    return;
+                                // Save persistent pattern approval and write to disk immediately
+                                {
+                                    let mut executor = tool_executor.lock().await;
+                                    executor.approve_pattern_persistent(pattern);
+                                    if let Err(e) = executor.save_patterns() {
+                                        tracing::warn!("Failed to save persistent pattern: {}", e);
+                                        // Continue anyway - pattern is in memory
+                                    }
                                 }
-                                */
                             }
                             ConfirmationResult::Deny => {
                                 // Tool denied, send error result
