@@ -11,20 +11,23 @@ use ratatui::{
 };
 
 use super::dialog::{Dialog, DialogOption, DialogType};
+use crate::config::ColorScheme;
 
 /// Widget for rendering dialogs
 pub struct DialogWidget<'a> {
     pub dialog: &'a Dialog,
+    colors: &'a ColorScheme,
 }
 
 impl<'a> DialogWidget<'a> {
     /// Create a new dialog widget
-    pub fn new(dialog: &'a Dialog) -> Self {
-        Self { dialog }
+    pub fn new(dialog: &'a Dialog, colors: &'a ColorScheme) -> Self {
+        Self { dialog, colors }
     }
 
     /// Render a single-select dialog
     fn render_select(
+        &self,
         options: &[DialogOption],
         selected_index: usize,
         help: &Option<String>,
@@ -41,23 +44,23 @@ impl<'a> DialogWidget<'a> {
                 Span::styled(
                     format!("{}. ", number),
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(self.colors.dialog.border.to_color())
                         .add_modifier(Modifier::BOLD),
                 )
             } else {
-                Span::styled(format!("{}. ", number), Style::default().fg(Color::Gray))
+                Span::styled(format!("{}. ", number), Style::default().fg(self.colors.ui.separator.to_color()))
             };
 
             let label = if is_selected {
                 Span::styled(
                     option.label.clone(),
                     Style::default()
-                        .fg(Color::White)
-                        .bg(Color::Blue)
+                        .fg(self.colors.dialog.selected_fg.to_color())
+                        .bg(self.colors.dialog.selected_bg.to_color())
                         .add_modifier(Modifier::BOLD),
                 )
             } else {
-                Span::styled(option.label.clone(), Style::default().fg(Color::White))
+                Span::styled(option.label.clone(), Style::default().fg(self.colors.dialog.option.to_color()))
             };
 
             let mut spans = vec![prefix, label];
@@ -65,7 +68,7 @@ impl<'a> DialogWidget<'a> {
             if let Some(desc) = &option.description {
                 spans.push(Span::styled(
                     format!(" - {}", desc),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(self.colors.ui.separator.to_color()),
                 ));
             }
 
@@ -77,7 +80,7 @@ impl<'a> DialogWidget<'a> {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 help_text.clone(),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(self.colors.status.operation.to_color()),
             )));
         }
 
@@ -85,7 +88,7 @@ impl<'a> DialogWidget<'a> {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "↑/↓ or j/k: Navigate | 1-9: Select directly | Enter: Confirm | Esc: Cancel",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(self.colors.ui.separator.to_color()),
         )));
 
         lines
@@ -93,6 +96,7 @@ impl<'a> DialogWidget<'a> {
 
     /// Render a multi-select dialog
     fn render_multiselect(
+        &self,
         options: &[DialogOption],
         selected_indices: &std::collections::HashSet<usize>,
         cursor_index: usize,
@@ -111,23 +115,23 @@ impl<'a> DialogWidget<'a> {
                 Span::styled(
                     format!("{} ", checkbox),
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(self.colors.dialog.border.to_color())
                         .add_modifier(Modifier::BOLD),
                 )
             } else {
-                Span::styled(format!("{} ", checkbox), Style::default().fg(Color::Gray))
+                Span::styled(format!("{} ", checkbox), Style::default().fg(self.colors.ui.separator.to_color()))
             };
 
             let label = if is_cursor {
                 Span::styled(
                     option.label.clone(),
                     Style::default()
-                        .fg(Color::White)
-                        .bg(Color::Blue)
+                        .fg(self.colors.dialog.selected_fg.to_color())
+                        .bg(self.colors.dialog.selected_bg.to_color())
                         .add_modifier(Modifier::BOLD),
                 )
             } else {
-                Span::styled(option.label.clone(), Style::default().fg(Color::White))
+                Span::styled(option.label.clone(), Style::default().fg(self.colors.dialog.option.to_color()))
             };
 
             let mut spans = vec![checkbox_span, label];
@@ -135,7 +139,7 @@ impl<'a> DialogWidget<'a> {
             if let Some(desc) = &option.description {
                 spans.push(Span::styled(
                     format!(" - {}", desc),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(self.colors.ui.separator.to_color()),
                 ));
             }
 
@@ -147,7 +151,7 @@ impl<'a> DialogWidget<'a> {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 help_text.clone(),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(self.colors.status.operation.to_color()),
             )));
         }
 
@@ -155,7 +159,7 @@ impl<'a> DialogWidget<'a> {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "↑/↓ or j/k: Navigate | Space: Toggle | Enter: Confirm | Esc: Cancel",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(self.colors.ui.separator.to_color()),
         )));
 
         lines
@@ -163,6 +167,7 @@ impl<'a> DialogWidget<'a> {
 
     /// Render a text input dialog
     fn render_text_input(
+        &self,
         prompt: &str,
         input: &str,
         cursor_pos: usize,
@@ -174,14 +179,14 @@ impl<'a> DialogWidget<'a> {
         // Add prompt
         lines.push(Line::from(Span::styled(
             prompt.to_string(),
-            Style::default().fg(Color::White),
+            Style::default().fg(self.colors.dialog.option.to_color()),
         )));
 
         // Show default if present
         if let Some(def) = default {
             lines.push(Line::from(Span::styled(
                 format!("(default: {})", def),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(self.colors.ui.separator.to_color()),
             )));
         }
 
@@ -191,7 +196,7 @@ impl<'a> DialogWidget<'a> {
         let mut input_spans = vec![Span::styled(
             "> ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(self.colors.ui.cursor.to_color())
                 .add_modifier(Modifier::BOLD),
         )];
 
@@ -199,7 +204,7 @@ impl<'a> DialogWidget<'a> {
         if cursor_pos > 0 {
             input_spans.push(Span::styled(
                 input[..cursor_pos].to_string(),
-                Style::default().fg(Color::White),
+                Style::default().fg(self.colors.ui.input.to_color()),
             ));
         }
 
@@ -209,8 +214,8 @@ impl<'a> DialogWidget<'a> {
             input_spans.push(Span::styled(
                 input.chars().nth(cursor_pos).unwrap().to_string(),
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::White)
+                    .fg(self.colors.dialog.selected_fg.to_color())
+                    .bg(self.colors.ui.cursor.to_color())
                     .add_modifier(Modifier::BOLD),
             ));
 
@@ -218,7 +223,7 @@ impl<'a> DialogWidget<'a> {
             if cursor_pos + 1 < input.len() {
                 input_spans.push(Span::styled(
                     input[cursor_pos + 1..].to_string(),
-                    Style::default().fg(Color::White),
+                    Style::default().fg(self.colors.ui.input.to_color()),
                 ));
             }
         } else {
@@ -226,7 +231,7 @@ impl<'a> DialogWidget<'a> {
             input_spans.push(Span::styled(
                 " ",
                 Style::default()
-                    .bg(Color::White)
+                    .bg(self.colors.ui.cursor.to_color())
                     .add_modifier(Modifier::BOLD),
             ));
         }
@@ -238,7 +243,7 @@ impl<'a> DialogWidget<'a> {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 help_text.clone(),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(self.colors.status.operation.to_color()),
             )));
         }
 
@@ -246,7 +251,7 @@ impl<'a> DialogWidget<'a> {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "Type to enter text | Backspace: Delete | ←/→: Move cursor | Enter: Confirm | Esc: Cancel",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(self.colors.ui.separator.to_color()),
         )));
 
         lines
@@ -254,6 +259,7 @@ impl<'a> DialogWidget<'a> {
 
     /// Render a confirmation dialog
     fn render_confirm(
+        &self,
         prompt: &str,
         default: bool,
         selected: bool,
@@ -264,7 +270,7 @@ impl<'a> DialogWidget<'a> {
         // Add prompt
         lines.push(Line::from(Span::styled(
             prompt.to_string(),
-            Style::default().fg(Color::White),
+            Style::default().fg(self.colors.dialog.option.to_color()),
         )));
 
         lines.push(Line::from(""));
@@ -272,20 +278,20 @@ impl<'a> DialogWidget<'a> {
         // Render Yes/No options
         let yes_style = if selected {
             Style::default()
-                .fg(Color::White)
-                .bg(Color::Blue)
+                .fg(self.colors.dialog.selected_fg.to_color())
+                .bg(self.colors.dialog.selected_bg.to_color())
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(self.colors.ui.separator.to_color())
         };
 
         let no_style = if !selected {
             Style::default()
-                .fg(Color::White)
-                .bg(Color::Blue)
+                .fg(self.colors.dialog.selected_fg.to_color())
+                .bg(self.colors.dialog.selected_bg.to_color())
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(self.colors.ui.separator.to_color())
         };
 
         let yes_label = if default { "Yes (default)" } else { "Yes" };
@@ -302,7 +308,7 @@ impl<'a> DialogWidget<'a> {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 help_text.clone(),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(self.colors.status.operation.to_color()),
             )));
         }
 
@@ -310,7 +316,7 @@ impl<'a> DialogWidget<'a> {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "y/n: Select | ←/→: Toggle | Enter: Confirm | Esc: Cancel",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(self.colors.ui.separator.to_color()),
         )));
 
         lines
@@ -324,13 +330,13 @@ impl<'a> Widget for DialogWidget<'a> {
             DialogType::Select {
                 options,
                 selected_index,
-            } => Self::render_select(options, *selected_index, &self.dialog.help_message),
+            } => self.render_select(options, *selected_index, &self.dialog.help_message),
 
             DialogType::MultiSelect {
                 options,
                 selected_indices,
                 cursor_index,
-            } => Self::render_multiselect(
+            } => self.render_multiselect(
                 options,
                 selected_indices,
                 *cursor_index,
@@ -342,7 +348,7 @@ impl<'a> Widget for DialogWidget<'a> {
                 input,
                 cursor_pos,
                 default,
-            } => Self::render_text_input(
+            } => self.render_text_input(
                 prompt,
                 input,
                 *cursor_pos,
@@ -354,7 +360,7 @@ impl<'a> Widget for DialogWidget<'a> {
                 prompt,
                 default,
                 selected,
-            } => Self::render_confirm(prompt, *default, *selected, &self.dialog.help_message),
+            } => self.render_confirm(prompt, *default, *selected, &self.dialog.help_message),
         };
 
         // Create paragraph with border
@@ -365,7 +371,7 @@ impl<'a> Widget for DialogWidget<'a> {
                     .border_type(BorderType::Rounded)
                     .title(format!(" {} ", self.dialog.title))
                     .title_alignment(Alignment::Center)
-                    .style(Style::default().fg(Color::Cyan)),
+                    .style(Style::default().fg(self.colors.dialog.border.to_color())),
             )
             .wrap(Wrap { trim: false });
 
@@ -380,6 +386,8 @@ mod tests {
 
     #[test]
     fn test_widget_creation() {
+        use crate::config::ColorScheme;
+
         let dialog = Dialog::select(
             "Test",
             vec![
@@ -388,18 +396,33 @@ mod tests {
             ],
         );
 
-        let widget = DialogWidget::new(&dialog);
+        let colors = ColorScheme::default();
+        let widget = DialogWidget::new(&dialog, &colors);
         assert_eq!(widget.dialog.title, "Test");
     }
 
     #[test]
     fn test_select_render() {
-        let options = vec![
-            DialogOption::new("Option 1"),
-            DialogOption::with_description("Option 2", "With description"),
-        ];
+        use crate::config::ColorScheme;
 
-        let lines = DialogWidget::render_select(&options, 0, &None);
+        let dialog = Dialog::select(
+            "Test",
+            vec![
+                DialogOption::new("Option 1"),
+                DialogOption::with_description("Option 2", "With description"),
+            ],
+        );
+
+        let colors = ColorScheme::default();
+        let widget = DialogWidget::new(&dialog, &colors);
+        let lines = widget.render_select(
+            &[
+                DialogOption::new("Option 1"),
+                DialogOption::with_description("Option 2", "With description"),
+            ],
+            0,
+            &None,
+        );
 
         // Should have: 2 options + empty line + keybindings = 4 lines
         assert!(lines.len() >= 3);
@@ -407,14 +430,25 @@ mod tests {
 
     #[test]
     fn test_multiselect_render() {
+        use crate::config::ColorScheme;
         use std::collections::HashSet;
 
-        let options = vec![DialogOption::new("Option 1"), DialogOption::new("Option 2")];
+        let dialog = Dialog::select(
+            "Test",
+            vec![DialogOption::new("Option 1"), DialogOption::new("Option 2")],
+        );
 
         let mut selected = HashSet::new();
         selected.insert(0);
 
-        let lines = DialogWidget::render_multiselect(&options, &selected, 0, &None);
+        let colors = ColorScheme::default();
+        let widget = DialogWidget::new(&dialog, &colors);
+        let lines = widget.render_multiselect(
+            &[DialogOption::new("Option 1"), DialogOption::new("Option 2")],
+            &selected,
+            0,
+            &None,
+        );
 
         // Should have: 2 options + empty line + keybindings = 4 lines
         assert!(lines.len() >= 3);
@@ -422,7 +456,13 @@ mod tests {
 
     #[test]
     fn test_text_input_render() {
-        let lines = DialogWidget::render_text_input("Enter text", "hello", 3, &None, &None);
+        use crate::config::ColorScheme;
+
+        let dialog = Dialog::select("Test", vec![DialogOption::new("Option 1")]);
+
+        let colors = ColorScheme::default();
+        let widget = DialogWidget::new(&dialog, &colors);
+        let lines = widget.render_text_input("Enter text", "hello", 3, &None, &None);
 
         // Should have: prompt + empty line + input + empty line + keybindings = 5 lines
         assert!(lines.len() >= 4);
@@ -430,7 +470,13 @@ mod tests {
 
     #[test]
     fn test_confirm_render() {
-        let lines = DialogWidget::render_confirm("Are you sure?", true, true, &None);
+        use crate::config::ColorScheme;
+
+        let dialog = Dialog::select("Test", vec![DialogOption::new("Option 1")]);
+
+        let colors = ColorScheme::default();
+        let widget = DialogWidget::new(&dialog, &colors);
+        let lines = widget.render_confirm("Are you sure?", true, true, &None);
 
         // Should have: prompt + empty line + options + empty line + keybindings = 5 lines
         assert!(lines.len() >= 4);

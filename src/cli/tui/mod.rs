@@ -473,7 +473,7 @@ impl TuiRenderer {
                         frame.render_widget(separator_widget, chunks[1]);
 
                         // Render dialog
-                        let dialog_widget = DialogWidget::new(dialog);
+                        let dialog_widget = DialogWidget::new(dialog, &self.colors);
                         frame.render_widget(dialog_widget, chunks[2]);
 
                         // Render status
