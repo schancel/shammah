@@ -30,6 +30,9 @@ pub fn spawn_input_task(
                 if crossterm::event::poll(Duration::from_millis(100))
                     .unwrap_or(false)
                 {
+                    // Track if we need to render after processing first event
+                    let mut first_event_modified_input = false;
+
                     // Process first event
                     let first_event_result = match crossterm::event::read() {
                         Ok(Event::Key(key)) => {
@@ -52,6 +55,7 @@ pub fn spawn_input_task(
                             if key.modifiers.contains(KeyModifiers::SHIFT) {
                                 // Shift+Enter: Insert newline (pass to textarea)
                                 tui.input_textarea.input(Event::Key(key));
+                                first_event_modified_input = true; // Mark for render
                                 Ok(None)
                             } else {
                                 // Enter without Shift: Submit input
@@ -127,6 +131,7 @@ pub fn spawn_input_task(
                                 _ => {
                                     // Pass key event to textarea
                                     tui.input_textarea.input(Event::Key(key));
+                                    first_event_modified_input = true; // Mark for render
                                     Ok(None)
                                 }
                             }
@@ -138,7 +143,7 @@ pub fn spawn_input_task(
 
                     // Fast path: Check if more events are immediately available (for paste operations)
                     // Process all available events without delay to make pasting instant
-                    let mut had_input = false;
+                    let mut had_input = first_event_modified_input;
                     while crossterm::event::poll(Duration::from_millis(0)).unwrap_or(false) {
                         match crossterm::event::read() {
                             Ok(Event::Key(key)) if key.code == KeyCode::Enter => {
