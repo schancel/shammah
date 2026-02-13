@@ -433,6 +433,22 @@ impl TuiRenderer {
             eprintln!("[DEBUG resize] Viewport: {} → {} lines",
                 self.current_inline_viewport_size, needed_size);
 
+            // Clear BOTH old and new viewport areas to prevent artifacts
+            use crossterm::terminal::{Clear, ClearType};
+            let term_size = crossterm::terminal::size()?;
+            let old_viewport_start = term_size.1.saturating_sub(self.current_inline_viewport_size);
+            let new_viewport_start = term_size.1.saturating_sub(needed_size);
+
+            // Clear from the new viewport start to the end (covers both old and new)
+            let clear_start = old_viewport_start.min(new_viewport_start);
+            for row in clear_start..term_size.1 {
+                execute!(
+                    io::stdout(),
+                    cursor::MoveTo(0, row),
+                    Clear(ClearType::UntilNewLine)
+                )?;
+            }
+
             let backend = CrosstermBackend::new(io::stdout());
             self.terminal = Terminal::with_options(
                 backend,
@@ -448,6 +464,15 @@ impl TuiRenderer {
             let visible_scrollback_rows = term_size.1.saturating_sub(needed_size) as usize;
             self.shadow_buffer = ShadowBuffer::new(term_size.0 as usize, visible_scrollback_rows);
             self.prev_frame_buffer = ShadowBuffer::new(term_size.0 as usize, visible_scrollback_rows);
+
+            // Force full refresh after viewport resize
+            self.needs_full_refresh = true;
+            self.needs_tui_render = true;
+
+            // Clear double-buffering state to force re-render of everything
+            self.prev_input_text.clear();
+            self.prev_cursor_pos = (0, 0);
+            self.prev_status_content.clear();
         }
 
         Ok(())
