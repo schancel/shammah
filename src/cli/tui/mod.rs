@@ -107,6 +107,8 @@ pub struct TuiRenderer {
     needs_tui_render: bool,
     /// Previous input text (for change detection)
     prev_input_text: String,
+    /// Previous cursor position (for change detection)
+    prev_cursor_pos: (usize, usize),
     /// Previous status bar content (for change detection)
     prev_status_content: String,
     /// Color scheme for TUI elements
@@ -262,6 +264,7 @@ impl TuiRenderer {
             blit_interval: Duration::from_millis(50), // 20 FPS max for blitting
             needs_tui_render: true, // Initial render needed
             prev_input_text: String::new(),
+            prev_cursor_pos: (0, 0),
             prev_status_content: String::new(),
             pending_feedback: None,
             pending_cancellation: false,
@@ -413,20 +416,23 @@ impl TuiRenderer {
 
         // Double buffering: Check if anything changed
         let current_input_text = self.input_textarea.lines().join("\n");
+        let current_cursor = self.input_textarea.cursor();
         let current_status_content = self.status_bar.get_status();
         let has_dialog = self.active_dialog.is_some();
 
         let input_changed = current_input_text != self.prev_input_text;
+        let cursor_changed = current_cursor != self.prev_cursor_pos;
         let status_changed = current_status_content != self.prev_status_content;
         let force_render = self.needs_tui_render;
 
-        // Skip render if nothing changed
-        if !input_changed && !status_changed && !force_render {
+        // Skip render if nothing changed (including cursor position)
+        if !input_changed && !cursor_changed && !status_changed && !force_render {
             return Ok(());
         }
 
         // Update previous state for next comparison
         self.prev_input_text = current_input_text;
+        self.prev_cursor_pos = current_cursor;
         self.prev_status_content = current_status_content.clone();
         self.needs_tui_render = false;
 
@@ -515,10 +521,16 @@ impl TuiRenderer {
                     // Calculate dynamic input height based on textarea lines (min 1, max 10)
                     let input_lines = input_textarea.lines().len().max(1).min(10) as u16;
 
-                    // Layout: 1 separator + dynamic input + 4 status
+                    // Calculate viewport height and position at bottom of screen
+                    let viewport_height = 1 + input_lines + 4; // separator + input + status
+                    let total_height = frame.area().height;
+                    let top_space = total_height.saturating_sub(viewport_height);
+
+                    // Layout: top space (for scrollback) + viewport at bottom
                     let chunks = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([
+                            Constraint::Length(top_space),   // Top space (scrollback area)
                             Constraint::Length(1),           // Separator line
                             Constraint::Length(input_lines), // Input area (dynamic)
                             Constraint::Length(4),           // Status area
@@ -531,19 +543,19 @@ impl TuiRenderer {
                     use ratatui::style::{Color, Style};
 
                     let separator_char = '─'; // Unicode box-drawing (U+2500)
-                    let separator_line = separator_char.to_string().repeat(chunks[0].width as usize);
+                    let separator_line = separator_char.to_string().repeat(chunks[1].width as usize);
                     let separator_widget = Paragraph::new(Line::from(Span::styled(
                         separator_line,
                         Style::default().fg(Color::DarkGray),
                     )));
-                    frame.render_widget(separator_widget, chunks[0]);
+                    frame.render_widget(separator_widget, chunks[1]);
 
                     // Render input
-                    render_input_widget(frame, &input_textarea, chunks[1], "❯", &self.colors);
+                    render_input_widget(frame, &input_textarea, chunks[2], "❯", &self.colors);
 
                     // Render status
                     let status_widget = StatusWidget::new(&status_bar, &self.colors);
-                    frame.render_widget(status_widget, chunks[2]);
+                    frame.render_widget(status_widget, chunks[3]);
                 }
             })
             .context("Failed to draw frame")?;
