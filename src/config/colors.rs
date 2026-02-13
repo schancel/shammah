@@ -154,7 +154,7 @@ pub struct DialogColors {
     pub selected_fg: ColorSpec,
 
     /// Normal option text
-    #[serde(default = "default_white")]
+    #[serde(default = "default_cyan")]
     pub option: ColorSpec,
 }
 
@@ -164,7 +164,7 @@ fn default_dialog_colors() -> DialogColors {
         title: default_cyan(),
         selected_bg: default_cyan(),
         selected_fg: default_black(),
-        option: default_white(),
+        option: default_cyan(),
     }
 }
 
