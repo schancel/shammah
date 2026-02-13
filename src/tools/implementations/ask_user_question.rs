@@ -3,7 +3,7 @@
 // Enables the LLM to display interactive dialogs and collect user input during
 // task execution. Supports single-select, multi-select, and custom text input.
 
-use crate::cli::llm_dialogs::{validate_input, AskUserQuestionInput, AskUserQuestionOutput};
+use crate::cli::llm_dialogs::{validate_input, AskUserQuestionInput};
 use crate::tools::registry::Tool;
 use crate::tools::types::{ToolContext, ToolInputSchema};
 use anyhow::{Context, Result};
@@ -23,38 +23,80 @@ impl Tool for AskUserQuestionTool {
          Use this when you need user input to proceed (e.g., choosing between approaches, \
          getting preferences, clarifying requirements). \
          \
-         Supports single-select, multi-select, and includes automatic 'Other' option \
-         for free-form text input. Can ask 1-4 questions at once. \
+         Input format (JSON):\n\
+         {\n\
+           \"questions\": [\n\
+             {\n\
+               \"question\": \"Which approach?\",\n\
+               \"header\": \"Approach\",\n\
+               \"options\": [\n\
+                 {\"label\": \"A\", \"description\": \"Fast\"},\n\
+                 {\"label\": \"B\", \"description\": \"Simple\"}\n\
+               ],\n\
+               \"multi_select\": false\n\
+             }\n\
+           ]\n\
+         }\n\
          \
-         Example uses:\n\
-         - \"Which library should we use?\" (single-select)\n\
-         - \"Which features do you want?\" (multi-select)\n\
-         - \"How should I format the output?\" (with custom text option)\n\
+         Supports single-select, multi-select, and automatic 'Other' option \
+         for free-form text input. Can ask 1-4 questions at once. \
          \
          Available in all modes including plan mode."
     }
 
     fn input_schema(&self) -> ToolInputSchema {
-        ToolInputSchema::object(vec![
-            ("questions", ToolInputSchema::array(
-                "Array of 1-4 questions to ask the user",
-                ToolInputSchema::object(vec![
-                    ("question", ToolInputSchema::string("The question text (e.g., 'How should I format the output?')")),
-                    ("header", ToolInputSchema::string("Short label for display (max 12 chars, e.g., 'Format')")),
-                    ("options", ToolInputSchema::array(
-                        "Available options (2-4 required)",
-                        ToolInputSchema::object(vec![
-                            ("label", ToolInputSchema::string("Display label (e.g., 'Summary')")),
-                            ("description", ToolInputSchema::string("What this option means")),
-                        ])
-                    )),
-                    ("multi_select", ToolInputSchema::optional_bool("Allow multiple selections (default: false)")),
-                ])
-            )),
-        ])
+        // Manually construct schema for complex nested JSON
+        let properties = serde_json::json!({
+            "questions": {
+                "type": "array",
+                "description": "Array of 1-4 questions to ask the user",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question": {
+                            "type": "string",
+                            "description": "The question text (e.g., 'How should I format the output?')"
+                        },
+                        "header": {
+                            "type": "string",
+                            "description": "Short label for display (max 12 chars, e.g., 'Format')"
+                        },
+                        "options": {
+                            "type": "array",
+                            "description": "Available options (2-4 required)",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "label": {
+                                        "type": "string",
+                                        "description": "Display label (e.g., 'Summary')"
+                                    },
+                                    "description": {
+                                        "type": "string",
+                                        "description": "What this option means"
+                                    }
+                                },
+                                "required": ["label", "description"]
+                            }
+                        },
+                        "multi_select": {
+                            "type": "boolean",
+                            "description": "Allow multiple selections (default: false)"
+                        }
+                    },
+                    "required": ["question", "header", "options"]
+                }
+            }
+        });
+
+        ToolInputSchema {
+            schema_type: "object".to_string(),
+            properties,
+            required: vec!["questions".to_string()],
+        }
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext<'_>) -> Result<String> {
+    async fn execute(&self, input: Value, _context: &ToolContext<'_>) -> Result<String> {
         // Parse input
         let ask_input: AskUserQuestionInput = serde_json::from_value(input)
             .context("Failed to parse AskUserQuestion input")?;
@@ -63,24 +105,12 @@ impl Tool for AskUserQuestionTool {
         validate_input(&ask_input)
             .map_err(|e| anyhow::anyhow!("Invalid question format: {}", e))?;
 
-        // Check if TUI renderer is available
-        let tui_renderer = context.tui_renderer.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("TUI dialogs not available in this context"))?;
-
-        // Show dialog and collect answers
-        let mut tui = tui_renderer.lock().await;
-        let output = tui.show_llm_question(&ask_input)
-            .context("Failed to display question dialog")?;
-        drop(tui); // Release lock
-
-        // Format output for Claude
-        let mut result = String::from("User responses:\n\n");
-
-        for (question_text, answer) in &output.answers {
-            result.push_str(&format!("Q: {}\nA: {}\n\n", question_text, answer));
-        }
-
-        Ok(result)
+        // Return instruction for the TUI to handle this
+        // The event loop will intercept this and show the actual dialog
+        Ok(format!(
+            "__ASK_USER_QUESTION__\n{}",
+            serde_json::to_string(&ask_input)?
+        ))
     }
 }
 
@@ -108,10 +138,7 @@ mod tests {
         let schema = tool.input_schema();
 
         // Verify schema structure
-        if let ToolInputSchema::Object { properties, .. } = schema {
-            assert!(properties.contains_key("questions"));
-        } else {
-            panic!("Expected object schema");
-        }
+        assert_eq!(schema.schema_type, "object");
+        assert_eq!(schema.required, vec!["questions"]);
     }
 }
