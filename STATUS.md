@@ -90,11 +90,11 @@ Shammah is now a fully functional local-first AI coding assistant with ONNX Runt
 **Organization:** Items sorted easiest → hardest for efficient progress and quick wins.
 
 **Summary:**
-- 26 total items (14 original + 12 new suggestions)
-- 22/26 complete (84.6%) ✅
+- 27 total items (14 original + 13 new suggestions)
+- 22/27 complete (81.5%) ✅
 - 2 BLOCKED (Mistral support, local model adapters)
 - 1 COMPLEX (LoRA adapter loading - 40-80 hours)
-- 1 VERY COMPLEX (Plan mode redesign - 20-40 hours)
+- 2 UI ENHANCEMENTS (Plan mode redesign - 20-40h, Prompt suggestions - 6-12h)
 - Phase 1: Quick wins (4 items, 1-2h each) ⚡
 - Phase 2: Medium difficulty (6 items, 2-4h each)
 - Phase 3: Moderate complexity (4 items, 3-6h each)
@@ -373,6 +373,14 @@ See `docs/ROADMAP.md` for detailed implementation plans.
     - Multi-step planning, approval workflow
     - Files: `src/cli/plan_mode.rs` (major refactor)
     - Effort: 20-40 hours
+
+27. **[ ] Prompt suggestions** (NEW)
+    - Implement Claude Code-style prompt suggestions for users
+    - Provide contextual suggestions based on current state
+    - Help users discover features and improve query quality
+    - Research: How does Claude Code implement this feature?
+    - Files: `src/cli/suggestions.rs` (new), `src/cli/tui/mod.rs` (integration)
+    - Effort: 6-12 hours
 
 ### Phase 7: Documentation (Ongoing)
 
