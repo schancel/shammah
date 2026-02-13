@@ -3,7 +3,6 @@
 use shammah::{
     claude::ClaudeClient,
     config::Config,
-    crisis::CrisisDetector,
     metrics::MetricsLogger,
     models::ThresholdRouter,
     router::Router,
@@ -19,9 +18,8 @@ async fn test_server_creation() {
     let config = Config::new(api_key.clone());
 
     // Create components
-    let crisis_detector = CrisisDetector::default();
     let threshold_router = ThresholdRouter::new();
-    let router = Router::new(crisis_detector, threshold_router);
+    let router = Router::new(threshold_router);
     let claude_client = ClaudeClient::new(api_key).expect("Failed to create Claude client");
     let metrics_logger = MetricsLogger::new(std::env::temp_dir().join("shammah_test_metrics"))
         .expect("Failed to create metrics logger");

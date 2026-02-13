@@ -2482,23 +2482,17 @@ impl Repl {
             RouteDecision::Forward { reason } => {
                 if self.is_interactive {
                     match reason {
-                        ForwardReason::Crisis => {
-                            self.output_status("⚠️  CRISIS DETECTED");
-                            self.output_status("→ Routing: FORWARDING TO CLAUDE");
-                        }
                         ForwardReason::ModelNotReady => {
                             let status_msg = {
                                 let state = self.bootstrap_loader.state().read().await;
                                 state.status_message()
                             }; // Drop the state guard here
-                            self.output_status("✓ Crisis check: PASS");
                             self.output_status(format!("ℹ️  Model status: {}", status_msg));
-                            self.output_status("→ Routing: FORWARDING TO CLAUDE");
+                            self.output_status("→ Routing: FORWARDING TO TEACHER");
                         }
                         _ => {
-                            self.output_status("✓ Crisis check: PASS");
                             self.output_status("✗ Threshold check: FAIL (confidence too low)");
-                            self.output_status("→ Routing: FORWARDING TO CLAUDE");
+                            self.output_status("→ Routing: FORWARDING TO TEACHER");
                         }
                     }
                 }

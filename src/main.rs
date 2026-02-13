@@ -11,7 +11,6 @@ use shammah::claude::ClaudeClient;
 use shammah::cli::output_layer::OutputManagerLayer;
 use shammah::cli::{ConversationHistory, Repl};
 use shammah::config::{load_config, Config};
-use shammah::crisis::CrisisDetector;
 use shammah::metrics::MetricsLogger;
 use shammah::models::ThresholdRouter;
 use shammah::providers::create_provider;
@@ -218,9 +217,6 @@ async fn main() -> Result<()> {
         anyhow::bail!("--no-daemon mode requires --initial-prompt");
     }
 
-    // Load crisis detector
-    let crisis_detector = CrisisDetector::load_from_file(&config.crisis_keywords_path)?;
-
     // Load or create threshold router
     let models_dir = dirs::home_dir()
         .map(|home| home.join(".shammah").join("models"))
@@ -254,8 +250,8 @@ async fn main() -> Result<()> {
         ThresholdRouter::new()
     };
 
-    // Create router with threshold router
-    let router = Router::new(crisis_detector, threshold_router);
+    // Create router
+    let router = Router::new(threshold_router);
 
     // Create Claude client
     let claude_client = create_claude_client_with_provider(&config)?;
@@ -644,9 +640,6 @@ async fn run_daemon(bind_address: String) -> Result<()> {
     config.server.enabled = true;
     config.server.bind_address = bind_address.clone();
 
-    // Load crisis detector
-    let crisis_detector = CrisisDetector::load_from_file(&config.crisis_keywords_path)?;
-
     // Load or create threshold router
     let models_dir = dirs::home_dir()
         .map(|home| home.join(".shammah").join("models"))
@@ -674,7 +667,7 @@ async fn run_daemon(bind_address: String) -> Result<()> {
     };
 
     // Create router
-    let router = Router::new(crisis_detector, threshold_router);
+    let router = Router::new(threshold_router);
 
     // Create Claude client
     let claude_client = create_claude_client_with_provider(&config)?;

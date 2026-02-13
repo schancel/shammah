@@ -8,9 +8,6 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Path to crisis_keywords.json
-    pub crisis_keywords_path: PathBuf,
-
     /// Directory for metrics storage
     pub metrics_dir: PathBuf,
 
@@ -264,7 +261,6 @@ impl Config {
         };
 
         Self {
-            crisis_keywords_path: project_dir.join("data/crisis_keywords.json"),
             metrics_dir: home.join(".shammah/metrics"),
             streaming_enabled: true, // Enable by default
             tui_enabled: true,       // TUI is the default for interactive terminals

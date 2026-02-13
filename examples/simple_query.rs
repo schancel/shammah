@@ -2,28 +2,27 @@
 
 use anyhow::Result;
 
-use shammah::crisis::CrisisDetector;
+use shammah::models::ThresholdRouter;
 use shammah::router::{RouteDecision, Router};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("Shammah - Simple Query Example\n");
 
-    // Load crisis detector
-    let crisis_path = std::path::PathBuf::from("data/crisis_keywords.json");
-    let crisis_detector = CrisisDetector::load_from_file(&crisis_path)?;
-    println!("Loaded crisis detector\n");
+    // Create threshold router (learns which queries to route locally)
+    let threshold_router = ThresholdRouter::new();
+    println!("Created threshold router\n");
 
-    // Create router (patterns removed - all queries forward except crisis)
-    let router = Router::new(crisis_detector);
+    // Create router
+    let router = Router::new(threshold_router);
 
     // Test queries
     let test_queries = vec![
         "What is the golden rule?",
         "Why do lies require more lies?",
         "How does trauma affect people?",
-        "I'm thinking about suicide",
         "How do I learn Rust?",
+        "Explain async/await in Rust",
     ];
 
     for query in test_queries {

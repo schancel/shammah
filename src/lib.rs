@@ -6,7 +6,6 @@ pub mod claude;
 pub mod cli;
 pub mod client; // HTTP client for daemon communication (Phase 8)
 pub mod config;
-pub mod crisis;
 pub mod daemon; // Daemon lifecycle and auto-spawn (Phase 8)
 pub mod errors; // User-friendly error messages
 pub mod feedback; // Response feedback system for LoRA training

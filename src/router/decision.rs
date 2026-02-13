@@ -1,13 +1,11 @@
 // Routing decision logic
 
-use crate::crisis::CrisisDetector;
 use crate::models::{ThresholdRouter, ThresholdRouterStats};
 use anyhow::Result;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub enum ForwardReason {
-    Crisis,
     NoMatch,
     LowConfidence,
     ModelNotReady, // New: Model is still loading/downloading
@@ -16,7 +14,6 @@ pub enum ForwardReason {
 impl ForwardReason {
     pub fn as_str(&self) -> &str {
         match self {
-            ForwardReason::Crisis => "crisis",
             ForwardReason::NoMatch => "no_match",
             ForwardReason::LowConfidence => "low_confidence",
             ForwardReason::ModelNotReady => "model_not_ready",
@@ -33,29 +30,19 @@ pub enum RouteDecision {
 
 #[derive(Clone)]
 pub struct Router {
-    crisis_detector: CrisisDetector,
     threshold_router: ThresholdRouter,
 }
 
 impl Router {
-    pub fn new(crisis_detector: CrisisDetector, threshold_router: ThresholdRouter) -> Self {
+    pub fn new(threshold_router: ThresholdRouter) -> Self {
         Self {
-            crisis_detector,
             threshold_router,
         }
     }
 
     /// Make a routing decision for a query
     pub fn route(&self, query: &str) -> RouteDecision {
-        // Layer 1: Safety gate - check for crisis
-        if self.crisis_detector.detect_crisis(query) {
-            tracing::info!("Routing decision: FORWARD (crisis detected)");
-            return RouteDecision::Forward {
-                reason: ForwardReason::Crisis,
-            };
-        }
-
-        // Layer 2: Data-driven routing - use threshold model
+        // Layer 1: Data-driven routing - use threshold model
         if self.threshold_router.should_try_local(query) {
             let stats = self.threshold_router.stats();
             tracing::info!(
@@ -68,7 +55,7 @@ impl Router {
             };
         }
 
-        // Layer 3: Default fallback - forward when uncertain
+        // Layer 2: Default fallback - forward when uncertain
         tracing::info!("Routing decision: FORWARD (threshold too low)");
         RouteDecision::Forward {
             reason: ForwardReason::NoMatch,
