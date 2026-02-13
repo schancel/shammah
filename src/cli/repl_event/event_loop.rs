@@ -383,6 +383,7 @@ impl EventLoop {
         let conversation = Arc::clone(&self.conversation);
         let query_states = Arc::clone(&self.query_states);
         let tool_coordinator = self.tool_coordinator.clone();
+        let tui_renderer = Arc::clone(&self.tui_renderer);
 
         tokio::spawn(async move {
             Self::process_query_with_tools(
@@ -397,6 +398,7 @@ impl EventLoop {
                 conversation,
                 query_states,
                 tool_coordinator,
+                tui_renderer,
             )
             .await;
         });
@@ -416,6 +418,7 @@ impl EventLoop {
         conversation: Arc<RwLock<ConversationHistory>>,
         query_states: Arc<QueryStateManager>,
         tool_coordinator: ToolExecutionCoordinator,
+        tui_renderer: Arc<tokio::sync::Mutex<TuiRenderer>>,
     ) {
         tracing::debug!("process_query_with_tools starting for query_id: {:?}", query_id);
 
@@ -558,9 +561,20 @@ impl EventLoop {
                             conversation.write().await.add_message(assistant_message);
                             tracing::debug!("[EVENT_LOOP] Assistant message added, spawning tool executions");
 
-                            // Execute tools
+                            // Execute tools (check for AskUserQuestion first)
                             for tool_use in tool_uses {
-                                tool_coordinator.spawn_tool_execution(query_id, tool_use);
+                                // Check if this is AskUserQuestion (handle specially)
+                                if let Some(result) = handle_ask_user_question(&tool_use, Arc::clone(&tui_renderer)).await {
+                                    // Send result immediately
+                                    let _ = event_tx.send(ReplEvent::ToolResult {
+                                        query_id,
+                                        tool_id: tool_use.id.clone(),
+                                        result,
+                                    });
+                                } else {
+                                    // Regular tool execution
+                                    tool_coordinator.spawn_tool_execution(query_id, tool_use);
+                                }
                             }
                             tracing::debug!("[EVENT_LOOP] Tool executions spawned, returning");
                             return;
@@ -630,9 +644,20 @@ impl EventLoop {
                         };
                         conversation.write().await.add_message(assistant_message);
 
-                        // Execute tools
+                        // Execute tools (check for AskUserQuestion first)
                         for tool_use in tool_uses {
-                            tool_coordinator.spawn_tool_execution(query_id, tool_use);
+                            // Check if this is AskUserQuestion (handle specially)
+                            if let Some(result) = handle_ask_user_question(&tool_use, Arc::clone(&tui_renderer)).await {
+                                // Send result immediately
+                                let _ = event_tx.send(ReplEvent::ToolResult {
+                                    query_id,
+                                    tool_id: tool_use.id.clone(),
+                                    result,
+                                });
+                            } else {
+                                // Regular tool execution
+                                tool_coordinator.spawn_tool_execution(query_id, tool_use);
+                            }
                         }
                         return;
                     }
@@ -1059,6 +1084,48 @@ impl EventLoop {
                 _ => ConfirmationResult::Deny, // Index 5 or cancelled
             },
             _ => ConfirmationResult::Deny,
+        }
+    }
+
+}
+
+/// Handle AskUserQuestion tool call specially (shows dialog instead of executing as tool)
+///
+/// Returns Some(tool_result) if this is an AskUserQuestion call, None otherwise
+async fn handle_ask_user_question(
+    tool_use: &ToolUse,
+    tui_renderer: Arc<tokio::sync::Mutex<TuiRenderer>>,
+) -> Option<Result<String>> {
+    // Check if this is AskUserQuestion
+    if tool_use.name != "AskUserQuestion" {
+        return None;
+    }
+
+    tracing::debug!("[EVENT_LOOP] Detected AskUserQuestion tool call");
+
+    // Parse input
+    let input: crate::cli::AskUserQuestionInput = match serde_json::from_value(tool_use.input.clone()) {
+        Ok(input) => input,
+        Err(e) => {
+            return Some(Err(anyhow::anyhow!("Failed to parse AskUserQuestion input: {}", e)));
+        }
+    };
+
+    // Show dialog and collect answers
+    let mut tui = tui_renderer.lock().await;
+    let result = tui.show_llm_question(&input);
+    drop(tui);
+
+    match result {
+        Ok(output) => {
+            // Serialize output as JSON
+            match serde_json::to_string_pretty(&output) {
+                Ok(json) => Some(Ok(json)),
+                Err(e) => Some(Err(anyhow::anyhow!("Failed to serialize output: {}", e))),
+            }
+        }
+        Err(e) => {
+            Some(Err(anyhow::anyhow!("Failed to show LLM question: {}", e)))
         }
     }
 }

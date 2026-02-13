@@ -719,6 +719,51 @@ impl TuiRenderer {
         Ok(result)
     }
 
+    /// Show LLM-prompted questions and collect answers
+    ///
+    /// Displays 1-4 questions sequentially using DialogWidget and collects
+    /// user's answers. Returns AskUserQuestionOutput with all answers.
+    pub fn show_llm_question(
+        &mut self,
+        input: &crate::cli::AskUserQuestionInput,
+    ) -> Result<crate::cli::AskUserQuestionOutput> {
+        use crate::cli::llm_dialogs;
+        use std::collections::HashMap;
+
+        // Validate input
+        llm_dialogs::validate_input(input)
+            .context("Invalid AskUserQuestion input")?;
+
+        let mut answers = HashMap::new();
+
+        // Show each question sequentially
+        for question in &input.questions {
+            // Convert to Dialog
+            let dialog = llm_dialogs::question_to_dialog(question);
+
+            // Show dialog and wait for answer
+            let result = self.show_dialog(dialog)
+                .with_context(|| format!("Failed to show question: {}", question.question))?;
+
+            // Check for cancellation
+            if result.is_cancelled() {
+                anyhow::bail!("User cancelled dialog");
+            }
+
+            // Extract answer
+            if let Some(answer) = llm_dialogs::extract_answer(question, &result) {
+                answers.insert(question.question.clone(), answer);
+            } else {
+                anyhow::bail!("Failed to extract answer from dialog result");
+            }
+        }
+
+        Ok(crate::cli::AskUserQuestionOutput {
+            questions: input.questions.clone(),
+            answers,
+        })
+    }
+
     /// Read a line of input from the integrated text area
     pub fn read_line(&mut self) -> Result<Option<String>> {
         use crossterm::event::{KeyCode, KeyModifiers};
