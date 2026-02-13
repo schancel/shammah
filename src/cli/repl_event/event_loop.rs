@@ -322,6 +322,12 @@ impl EventLoop {
                         );
                         self.render_tui().await?;
                     }
+                    Command::ApprovePlan => {
+                        self.handle_approve_plan().await?;
+                    }
+                    Command::RejectPlan => {
+                        self.handle_reject_plan().await?;
+                    }
                     _ => {
                         // All other commands output to scrollback via write_info
                         self.output_manager.write_info(format!(
@@ -1294,6 +1300,134 @@ impl EventLoop {
         ));
 
         self.render_tui().await?;
+        Ok(())
+    }
+
+    /// Handle /approve command - approve plan and transition to execution mode
+    async fn handle_approve_plan(&mut self) -> Result<()> {
+        use chrono::Utc;
+        use crossterm::style::Stylize;
+
+        // Get current mode and plan info
+        let (task, plan_path) = {
+            let mode = self.mode.read().await;
+            match &*mode {
+                ReplMode::Planning { task, plan_path, .. } => (task.clone(), plan_path.clone()),
+                ReplMode::Normal => {
+                    self.output_manager.write_info("⚠️  No active plan to approve. Use EnterPlanMode or /plan first.");
+                    self.render_tui().await?;
+                    return Ok(());
+                }
+                ReplMode::Executing { .. } => {
+                    self.output_manager.write_info("⚠️  Plan is already being executed.");
+                    self.render_tui().await?;
+                    return Ok(());
+                }
+            }
+        };
+
+        self.output_manager.write_info(format!("{}", "✓ Plan approved!".green().bold()));
+        self.output_manager.write_info("");
+
+        // Ask about context clearing
+        let dialog = crate::cli::tui::Dialog::select(
+            "Clear conversation context?".to_string(),
+            vec![
+                crate::cli::tui::DialogOption::with_description(
+                    "Clear context (recommended)",
+                    "Reduces token usage and focuses execution on the plan",
+                ),
+                crate::cli::tui::DialogOption::with_description(
+                    "Keep context",
+                    "Preserves exploration history in conversation",
+                ),
+            ],
+        );
+
+        let mut tui = self.tui_renderer.lock().await;
+        let dialog_result = tui.show_dialog(dialog)?;
+        drop(tui);
+
+        if dialog_result.is_cancelled() {
+            self.output_manager.write_info("⚠️  Plan approval cancelled.");
+            self.render_tui().await?;
+            return Ok(());
+        }
+
+        let clear_context = matches!(dialog_result, crate::cli::tui::DialogResult::Selected(0));
+
+        // Transition to executing mode
+        *self.mode.write().await = ReplMode::Executing {
+            task: task.clone(),
+            plan_path: plan_path.clone(),
+            approved_at: Utc::now(),
+        };
+
+        // Update status bar
+        self.update_plan_mode_indicator(&ReplMode::Executing {
+            task: task.clone(),
+            plan_path: plan_path.clone(),
+            approved_at: Utc::now(),
+        });
+
+        if clear_context {
+            // Clear conversation and add plan as context
+            self.output_manager.write_info("");
+            self.output_manager.write_info(format!("{}", "Clearing conversation context...".blue()));
+            self.conversation.write().await.clear();
+
+            // Read plan file and add as initial context
+            if plan_path.exists() {
+                let plan_content = std::fs::read_to_string(&plan_path)?;
+                self.conversation.write().await.add_user_message(format!(
+                    "[System: Plan approved! Execute this plan:]\n\n{}",
+                    plan_content
+                ));
+                self.output_manager.write_info(format!("{}", "✓ Context cleared. Plan loaded as execution guide.".green()));
+            } else {
+                self.output_manager.write_info(format!("{}", "⚠️  Plan file not found.".yellow()));
+                self.conversation.write().await.add_user_message(
+                    "[System: Plan approved! All tools are now enabled. You may execute bash commands and modify files.]".to_string()
+                );
+            }
+        } else {
+            // Keep history, just add approval message
+            self.output_manager.write_info("");
+            self.output_manager.write_info(format!("{}", "Keeping conversation context...".blue()));
+            self.conversation.write().await.add_user_message(
+                "[System: Plan approved! All tools are now enabled. You may execute bash commands and modify files.]".to_string()
+            );
+        }
+
+        self.output_manager.write_info("");
+        self.output_manager.write_info(format!("{}", "All tools enabled. Please proceed with implementation.".green()));
+        self.render_tui().await?;
+        Ok(())
+    }
+
+    /// Handle /reject command - reject plan and return to normal mode
+    async fn handle_reject_plan(&mut self) -> Result<()> {
+        use crossterm::style::Stylize;
+
+        let mode = self.mode.read().await;
+        match &*mode {
+            ReplMode::Planning { .. } | ReplMode::Executing { .. } => {
+                drop(mode);
+                self.output_manager.write_info(format!("{}", "✗ Plan rejected. Returning to normal mode.".yellow()));
+                *self.mode.write().await = ReplMode::Normal;
+
+                // Update status bar
+                self.update_plan_mode_indicator(&ReplMode::Normal);
+
+                self.conversation.write().await.add_user_message("[System: Plan rejected by user. Returning to normal mode.]".to_string());
+                self.render_tui().await?;
+            }
+            ReplMode::Normal => {
+                drop(mode);
+                self.output_manager.write_info("⚠️  No active plan to reject.");
+                self.render_tui().await?;
+            }
+        }
         Ok(())
     }
 }
