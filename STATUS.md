@@ -144,11 +144,18 @@ See `docs/ROADMAP.md` for detailed implementation plans.
    - Files: Root *.md → docs/archive/
    - Effort: 10 minutes (actual)
 
-5. **[ ] Ctrl+/ shortcut fix** (NEW) 🟡 MEDIUM PRIORITY
-   - Current issue: Ctrl+/ is advertised in help text but doesn't work
-   - Decision needed: Implement the shortcut or remove from help
-   - Files: `src/cli/tui/async_input.rs`, `src/cli/commands.rs`
-   - Effort: 15 minutes
+5. **[x] Ctrl+/ shortcut fix** (NEW) - ✅ COMPLETE
+   - Added Ctrl+/ handler that sends /help command
+   - Keyboard shortcut now works as advertised
+   - Files: `src/cli/tui/async_input.rs`
+   - Effort: 5 minutes (actual)
+
+6. **[ ] Persistent tool patterns not matching** (NEW) 🔴 HIGH PRIORITY
+   - Issue: Persistent tool approval patterns not matching subsequent tool calls
+   - Impact: Users must re-approve tools that should be remembered
+   - Possible causes: Pattern generation mismatch, signature comparison bug
+   - Files: `src/tools/patterns.rs`, `src/tools/executor.rs`
+   - Effort: 1-2 hours
 
 ### Phase 2: Medium Difficulty (2-4 hours each)
 
@@ -460,33 +467,26 @@ See `docs/ROADMAP.md` for detailed implementation plans.
 
 ## Known Issues
 
-### 1. Tool Confirmations Not Working
-**Issue:** Tool confirmation system is broken/non-functional
-**Impact:** Tools may execute without proper user approval
-**Security:** High priority - affects user control and safety
-**Fix:** Phase 1 - Debug and fix permission system
+### 1. Persistent Tool Patterns Not Matching
+**Issue:** Persistent tool approval patterns not matching subsequent tool calls
+**Impact:** Users must re-approve tools that should be permanently allowed
+**Security:** Medium priority - affects convenience but doesn't compromise security
+**Status:** Reported 2026-02-12
+**Fix:** Phase 1 - Debug pattern matching logic (Item 6)
 
-### 2. Control-C Cannot Stop Queries
-**Issue:** No way to cancel in-progress queries
-**Impact:** Users stuck waiting for long-running queries to complete
-**Fix:** Phase 1 - Implement query cancellation with Control-C
-
-### 3. Plan Mode Needs Redesign
+### 2. Plan Mode Needs Redesign
 **Issue:** Current plan mode is basic and not user-friendly
 **Impact:** Users find it "nearly useless" compared to Claude Code
-**Fix:** Phase 3 - Study Claude Code's plan mode and redesign
+**Fix:** Phase 6 - Study Claude Code's plan mode and redesign (Item 28)
 
-### 3. Status Bar Empty
-**Issue:** Status bar exists but doesn't show live stats
-**Impact:** Users don't see token counts, speed, model info
-**Fix:** Phase 1 - Wire up OutputManager stats to status bar
+### 3. Live Stats Not Showing
+**Issue:** Status bar exists but live stats (tokens, latency, model) not populated
+**Impact:** Users don't see token counts, speed, model info after queries
+**Root cause:** ResponseMetadata fields set to None in generators
+**Status:** Diagnosed 2026-02-12
+**Fix:** Phase 2 - Implement token counting and latency tracking in generators
 
-### 4. Setup Wizard Limited
-**Issue:** Only supports Claude setup during first run
-**Impact:** Users manually edit config to add other providers
-**Fix:** Phase 2 - Add interactive prompts for all providers
-
-### 5. LoRA Training Architecture Limitation
+### 4. LoRA Training Architecture Limitation
 **Issue:** Python-based training inefficient with ONNX Runtime
 - ONNX Runtime is inference-only (no training APIs)
 - PyTorch training requires loading model twice (2x memory)
