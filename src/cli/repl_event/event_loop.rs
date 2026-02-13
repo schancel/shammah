@@ -1,6 +1,9 @@
 // Event loop for concurrent REPL - handles user input, queries, and rendering simultaneously
 
 use anyhow::{Context, Result};
+use chrono::Utc;
+use crossterm::style::Stylize;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex, RwLock};
@@ -9,16 +12,16 @@ use uuid::Uuid;
 use crate::cli::commands::{Command, format_help};
 use crate::cli::conversation::ConversationHistory;
 use crate::cli::output_manager::OutputManager;
+use crate::cli::repl::ReplMode;
 use crate::cli::status_bar::StatusBar;
-use crate::cli::tui::{spawn_input_task, Dialog, DialogOption, DialogType, TuiRenderer};
-use crate::claude::{ClaudeClient, ContentBlock, MessageRequest};
-use crate::generators::{Generator, StreamChunk, ToolUse as GenToolUse};
+use crate::cli::tui::{spawn_input_task, Dialog, DialogOption, TuiRenderer};
+use crate::claude::ContentBlock;
+use crate::generators::{Generator, StreamChunk};
 use crate::local::LocalGenerator;
 use crate::models::bootstrap::GeneratorState;
 use crate::models::tokenizer::TextTokenizer;
 use crate::router::Router;
-use crate::tools::executor::{generate_tool_signature, ToolExecutor};
-use crate::tools::patterns::ToolPattern;
+use crate::tools::executor::ToolExecutor;
 use crate::tools::types::{ToolDefinition, ToolUse};
 
 use super::events::ReplEvent;
@@ -85,6 +88,9 @@ pub struct EventLoop {
 
     /// Daemon client (for /local command)
     daemon_client: Option<Arc<crate::client::DaemonClient>>,
+
+    /// REPL mode (Normal, Planning, Executing)
+    mode: Arc<RwLock<ReplMode>>,
 }
 
 impl EventLoop {
@@ -105,6 +111,7 @@ impl EventLoop {
         local_generator: Arc<RwLock<LocalGenerator>>,
         tokenizer: Arc<TextTokenizer>,
         daemon_client: Option<Arc<crate::client::DaemonClient>>,
+        mode: Arc<RwLock<ReplMode>>,
     ) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
 
@@ -144,6 +151,7 @@ impl EventLoop {
             active_query_id: Arc::new(RwLock::new(None)),
             pending_approvals: Arc::new(RwLock::new(std::collections::HashMap::new())),
             daemon_client,
+            mode,
         }
     }
 
@@ -291,17 +299,43 @@ impl EventLoop {
                         self.handle_local_query(query).await?;
                     }
                     Command::PlanModeToggle => {
-                        // Toggle plan mode
-                        let mut tui = self.tui_renderer.lock().await;
-                        tui.toggle_plan_mode();
-                        let mode_status = if tui.is_plan_mode() {
-                            "Plan mode enabled"
-                        } else {
-                            "Plan mode disabled"
-                        };
-                        drop(tui);
-                        self.output_manager.write_info(mode_status);
-                        self.render_tui().await?;
+                        // Cycle: Normal → Planning → Normal
+                        let mode = self.mode.read().await;
+                        match &*mode {
+                            ReplMode::Normal => {
+                                drop(mode);
+                                // Enter planning with default task
+                                self.handle_plan_command("Interactive planning session".to_string()).await?;
+                            }
+                            ReplMode::Planning { .. } => {
+                                drop(mode);
+                                // Exit planning
+                                self.handle_reject_command().await?;
+                            }
+                            ReplMode::Executing { .. } => {
+                                drop(mode);
+                                self.output_manager.write_info("⚠️  Cannot toggle during execution. Use /done first.");
+                                self.render_tui().await?;
+                            }
+                        }
+                    }
+                    Command::Plan(ref task) => {
+                        self.handle_plan_command(task.clone()).await?;
+                    }
+                    Command::Approve => {
+                        self.handle_approve_command().await?;
+                    }
+                    Command::Reject => {
+                        self.handle_reject_command().await?;
+                    }
+                    Command::ShowPlan => {
+                        self.handle_show_plan_command().await?;
+                    }
+                    Command::SavePlan => {
+                        self.handle_save_plan_command().await?;
+                    }
+                    Command::Done => {
+                        self.handle_done_command().await?;
                     }
                     _ => {
                         // All other commands output to scrollback via write_info
@@ -397,6 +431,7 @@ impl EventLoop {
         let query_states = Arc::clone(&self.query_states);
         let tool_coordinator = self.tool_coordinator.clone();
         let tui_renderer = Arc::clone(&self.tui_renderer);
+        let mode = Arc::clone(&self.mode);
 
         tokio::spawn(async move {
             Self::process_query_with_tools(
@@ -412,6 +447,7 @@ impl EventLoop {
                 query_states,
                 tool_coordinator,
                 tui_renderer,
+                mode,
             )
             .await;
         });
@@ -432,6 +468,7 @@ impl EventLoop {
         query_states: Arc<QueryStateManager>,
         tool_coordinator: ToolExecutionCoordinator,
         tui_renderer: Arc<tokio::sync::Mutex<TuiRenderer>>,
+        mode: Arc<RwLock<ReplMode>>,
     ) {
         tracing::debug!("process_query_with_tools starting for query_id: {:?}", query_id);
 
@@ -574,8 +611,27 @@ impl EventLoop {
                             conversation.write().await.add_message(assistant_message);
                             tracing::debug!("[EVENT_LOOP] Assistant message added, spawning tool executions");
 
-                            // Execute tools (check for AskUserQuestion first)
+                            // Execute tools (check for AskUserQuestion first, then mode restrictions)
+                            let current_mode = mode.read().await;
                             for tool_use in tool_uses {
+                                // Check if tool is allowed in current mode
+                                if !Self::is_tool_allowed_in_mode(&tool_use.name, &*current_mode) {
+                                    // Tool blocked by plan mode - send error result
+                                    let error_msg = format!(
+                                        "Tool '{}' is not allowed in planning mode.\n\
+                                         Reason: This tool can modify system state.\n\
+                                         Available tools: read, glob, grep, web_fetch\n\
+                                         Type /approve to execute your plan with all tools enabled.",
+                                        tool_use.name
+                                    );
+                                    let _ = event_tx.send(ReplEvent::ToolResult {
+                                        query_id,
+                                        tool_id: tool_use.id.clone(),
+                                        result: Err(anyhow::anyhow!("{}", error_msg)),
+                                    });
+                                    continue;
+                                }
+
                                 // Check if this is AskUserQuestion (handle specially)
                                 if let Some(result) = handle_ask_user_question(&tool_use, Arc::clone(&tui_renderer)).await {
                                     // Send result immediately
@@ -589,6 +645,7 @@ impl EventLoop {
                                     tool_coordinator.spawn_tool_execution(query_id, tool_use);
                                 }
                             }
+                            drop(current_mode);
                             tracing::debug!("[EVENT_LOOP] Tool executions spawned, returning");
                             return;
                         }
@@ -657,8 +714,27 @@ impl EventLoop {
                         };
                         conversation.write().await.add_message(assistant_message);
 
-                        // Execute tools (check for AskUserQuestion first)
+                        // Execute tools (check for AskUserQuestion first, then mode restrictions)
+                        let current_mode = mode.read().await;
                         for tool_use in tool_uses {
+                            // Check if tool is allowed in current mode
+                            if !Self::is_tool_allowed_in_mode(&tool_use.name, &*current_mode) {
+                                // Tool blocked by plan mode - send error result
+                                let error_msg = format!(
+                                    "Tool '{}' is not allowed in planning mode.\n\
+                                     Reason: This tool can modify system state.\n\
+                                     Available tools: read, glob, grep, web_fetch\n\
+                                     Type /approve to execute your plan with all tools enabled.",
+                                    tool_use.name
+                                );
+                                let _ = event_tx.send(ReplEvent::ToolResult {
+                                    query_id,
+                                    tool_id: tool_use.id.clone(),
+                                    result: Err(anyhow::anyhow!("{}", error_msg)),
+                                });
+                                continue;
+                            }
+
                             // Check if this is AskUserQuestion (handle specially)
                             if let Some(result) = handle_ask_user_question(&tool_use, Arc::clone(&tui_renderer)).await {
                                 // Send result immediately
@@ -672,6 +748,7 @@ impl EventLoop {
                                 tool_coordinator.spawn_tool_execution(query_id, tool_use);
                             }
                         }
+                        drop(current_mode);
                         return;
                     }
 
@@ -1098,6 +1175,321 @@ impl EventLoop {
             },
             _ => ConfirmationResult::Deny,
         }
+    }
+
+    // ========== Plan Mode Handlers ==========
+
+    /// Check if a tool is allowed in the current mode
+    fn is_tool_allowed_in_mode(tool_name: &str, mode: &ReplMode) -> bool {
+        match mode {
+            ReplMode::Normal | ReplMode::Executing { .. } => {
+                // All tools allowed (subject to normal confirmation)
+                true
+            }
+            ReplMode::Planning { .. } => {
+                // Only inspection tools allowed
+                matches!(tool_name, "read" | "glob" | "grep" | "web_fetch")
+            }
+        }
+    }
+
+    /// Handle /plan command - enter planning mode
+    async fn handle_plan_command(&mut self, task: String) -> Result<()> {
+        // Check if already in plan mode
+        {
+            let mode = self.mode.read().await;
+            if matches!(
+                *mode,
+                ReplMode::Planning { .. } | ReplMode::Executing { .. }
+            ) {
+                let mode_name = match &*mode {
+                    ReplMode::Planning { .. } => "planning",
+                    ReplMode::Executing { .. } => "executing",
+                    _ => unreachable!(),
+                };
+                drop(mode);
+                self.output_manager.write_info(format!(
+                    "⚠️  Already in {} mode. Finish current task first.",
+                    mode_name
+                ));
+                self.render_tui().await?;
+                return Ok(());
+            }
+        }
+
+        // Create plans directory
+        let plans_dir = dirs::home_dir()
+            .context("Home directory not found")?
+            .join(".shammah")
+            .join("plans");
+        std::fs::create_dir_all(&plans_dir)?;
+
+        // Generate plan filename
+        let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
+        let plan_path = plans_dir.join(format!("plan_{}.md", timestamp));
+
+        // Transition to planning mode
+        *self.mode.write().await = ReplMode::Planning {
+            task: task.clone(),
+            plan_path: plan_path.clone(),
+            created_at: Utc::now(),
+        };
+
+        self.output_manager.write_info(format!("{}", "✓ Entered planning mode".blue().bold()));
+        self.output_manager.write_info(format!("📋 Task: {}", task));
+        self.output_manager.write_info(format!("📁 Plan will be saved to: {}", plan_path.display()));
+        self.output_manager.write_info("");
+        self.output_manager.write_info(format!("{}", "Available tools:".green()));
+        self.output_manager.write_info("  read, glob, grep, web_fetch");
+        self.output_manager.write_info(format!("{}", "Blocked tools:".red()));
+        self.output_manager.write_info("  bash, save_and_exec");
+        self.output_manager.write_info("");
+        self.output_manager.write_info("Ask me to explore the codebase and generate a plan.");
+        self.output_manager.write_info(format!(
+            "{}",
+            "Type /show-plan to view, /approve to execute, /reject to cancel.".dark_grey()
+        ));
+
+        // Add mode change notification to conversation
+        self.conversation.write().await.add_user_message(format!(
+            "[System: Entered planning mode for task: {}]\n\
+             Available tools: read, glob, grep, web_fetch\n\
+             Blocked tools: bash, save_and_exec\n\
+             Please explore the codebase and generate a detailed plan.",
+            task
+        ));
+
+        self.render_tui().await?;
+        Ok(())
+    }
+
+    /// Handle /approve command - approve plan and start execution
+    async fn handle_approve_command(&mut self) -> Result<()> {
+        let (task_clone, plan_path_clone) = {
+            let mode = self.mode.read().await;
+            match &*mode {
+                ReplMode::Planning { task, plan_path, .. } => {
+                    (task.clone(), plan_path.clone())
+                }
+                ReplMode::Normal => {
+                    drop(mode);
+                    self.output_manager.write_info("⚠️  No plan to approve. Use /plan first.");
+                    self.render_tui().await?;
+                    return Ok(());
+                }
+                ReplMode::Executing { .. } => {
+                    drop(mode);
+                    self.output_manager.write_info("⚠️  Already executing plan.");
+                    self.render_tui().await?;
+                    return Ok(());
+                }
+            }
+        };
+
+        self.output_manager.write_info(format!("{}", "✓ Plan approved!".green().bold()));
+        self.output_manager.write_info("");
+        self.output_manager.write_info(format!("The plan has been saved to: {}", plan_path_clone.display()));
+        self.output_manager.write_info("");
+
+        // Show context clearing dialog
+        let options = vec![
+            DialogOption::with_description(
+                "Clear context (recommended)",
+                "Reduces token usage and focuses execution on the plan",
+            ),
+            DialogOption::with_description(
+                "Keep context",
+                "Preserves exploration history in conversation",
+            ),
+        ];
+
+        let dialog = Dialog::select(
+            "Would you like to clear conversation and execute plan?".to_string(),
+            options,
+        );
+
+        let mut tui = self.tui_renderer.lock().await;
+        let dialog_result = tui.show_dialog(dialog)?;
+        drop(tui);
+
+        if dialog_result.is_cancelled() {
+            self.output_manager.write_info("⚠️  Plan approval cancelled.");
+            self.render_tui().await?;
+            return Ok(());
+        }
+
+        let clear_context = matches!(dialog_result, crate::cli::tui::DialogResult::Selected(0));
+
+        // Transition to executing mode
+        *self.mode.write().await = ReplMode::Executing {
+            task: task_clone,
+            plan_path: plan_path_clone.clone(),
+            approved_at: Utc::now(),
+        };
+
+        if clear_context {
+            // Clear conversation and add plan as context
+            self.output_manager.write_info("");
+            self.output_manager.write_info(format!("{}", "Clearing conversation context...".blue()));
+            self.conversation.write().await.clear();
+
+            // Read plan file and add as initial context
+            if plan_path_clone.exists() {
+                let plan_content = std::fs::read_to_string(&plan_path_clone)
+                    .context("Failed to read plan file")?;
+                self.conversation.write().await.add_user_message(format!(
+                    "Please execute this plan:\n\n{}",
+                    plan_content
+                ));
+                self.output_manager.write_info(format!(
+                    "{}",
+                    "✓ Context cleared. Plan loaded as primary reference.".green()
+                ));
+            } else {
+                self.output_manager.write_info(format!(
+                    "{}",
+                    "⚠️  Plan file not found. Adding approval message only.".yellow()
+                ));
+                self.conversation.write().await.add_user_message(
+                    "[System: Plan approved! All tools are now enabled. \
+                     You may execute bash commands and modify files.]"
+                        .to_string(),
+                );
+            }
+        } else {
+            // Keep history, just add approval message
+            self.output_manager.write_info("");
+            self.output_manager.write_info(format!("{}", "Keeping conversation context...".blue()));
+            self.conversation.write().await.add_user_message(
+                "[System: Plan approved! All tools are now enabled. \
+                 You may execute bash commands and modify files.]"
+                    .to_string(),
+            );
+        }
+
+        self.output_manager.write_info("");
+        self.output_manager.write_info(format!(
+            "{}",
+            "All tools enabled. Please proceed with implementation.".green()
+        ));
+
+        self.render_tui().await?;
+        Ok(())
+    }
+
+    /// Handle /reject command - reject plan and return to normal mode
+    async fn handle_reject_command(&mut self) -> Result<()> {
+        let mode = self.mode.read().await;
+        match &*mode {
+            ReplMode::Planning { .. } | ReplMode::Executing { .. } => {
+                drop(mode);
+                self.output_manager.write_info(format!("{}", "✗ Plan rejected. Returning to normal mode.".yellow()));
+                *self.mode.write().await = ReplMode::Normal;
+                self.conversation.write().await.add_user_message("[System: Plan rejected by user.]".to_string());
+                self.render_tui().await?;
+            }
+            ReplMode::Normal => {
+                drop(mode);
+                self.output_manager.write_info("⚠️  No active plan to reject.");
+                self.render_tui().await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle /show-plan command - display current plan
+    async fn handle_show_plan_command(&mut self) -> Result<()> {
+        let mode = self.mode.read().await;
+        match &*mode {
+            ReplMode::Planning { plan_path, .. } | ReplMode::Executing { plan_path, .. } => {
+                let plan_path = plan_path.clone();
+                drop(mode);
+                if plan_path.exists() {
+                    let content = std::fs::read_to_string(&plan_path)?;
+                    self.output_manager.write_info(format!("\n{}", "=".repeat(60)));
+                    self.output_manager.write_info("PLAN:");
+                    self.output_manager.write_info(format!("{}", "=".repeat(60)));
+                    self.output_manager.write_info(format!("{}", content));
+                    self.output_manager.write_info(format!("{}", "=".repeat(60)));
+                } else {
+                    self.output_manager.write_info("⚠️  Plan file not yet created.");
+                }
+                self.render_tui().await?;
+            }
+            ReplMode::Normal => {
+                drop(mode);
+                self.output_manager.write_info("⚠️  No active plan. Use /plan to start.");
+                self.render_tui().await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle /save-plan command - manually save current response as plan
+    async fn handle_save_plan_command(&mut self) -> Result<()> {
+        // Get the last assistant message from conversation
+        let messages = self.conversation.read().await.get_messages();
+        let last_assistant_msg = messages
+            .iter()
+            .rev()
+            .find(|msg| msg.role == "assistant")
+            .map(|msg| msg.text());
+
+        if let Some(content) = last_assistant_msg {
+            let mode = self.mode.read().await;
+            match &*mode {
+                ReplMode::Planning { plan_path, .. } => {
+                    let plan_path = plan_path.clone();
+                    drop(mode);
+                    std::fs::write(&plan_path, &content)?;
+                    self.output_manager.write_info(format!("✓ Plan saved to: {}", plan_path.display()));
+                }
+                ReplMode::Normal | ReplMode::Executing { .. } => {
+                    drop(mode);
+                    // Create a new plan file
+                    let plans_dir = dirs::home_dir()
+                        .map(|home| home.join(".shammah").join("plans"))
+                        .unwrap_or_else(|| PathBuf::from(".shammah/plans"));
+                    std::fs::create_dir_all(&plans_dir)?;
+
+                    let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
+                    let plan_path = plans_dir.join(format!("plan_{}.md", timestamp));
+                    std::fs::write(&plan_path, &content)?;
+                    self.output_manager.write_info(format!("✓ Plan saved to: {}", plan_path.display()));
+                }
+            }
+            self.render_tui().await?;
+        } else {
+            self.output_manager.write_info(
+                "⚠️  No assistant response to save. Please ask Claude to generate a plan first."
+            );
+            self.render_tui().await?;
+        }
+        Ok(())
+    }
+
+    /// Handle /done command - exit execution mode
+    async fn handle_done_command(&mut self) -> Result<()> {
+        let mode = self.mode.read().await;
+        match &*mode {
+            ReplMode::Executing { .. } => {
+                drop(mode);
+                self.output_manager.write_info("✓ Plan execution complete. Returning to normal mode.");
+                *self.mode.write().await = ReplMode::Normal;
+                self.render_tui().await?;
+            }
+            ReplMode::Planning { .. } => {
+                drop(mode);
+                self.output_manager.write_info("⚠️  Still in planning mode. Use /approve or /reject first.");
+                self.render_tui().await?;
+            }
+            ReplMode::Normal => {
+                drop(mode);
+                self.output_manager.write_info("⚠️  No active plan execution.");
+                self.render_tui().await?;
+            }
+        }
+        Ok(())
     }
 
 }

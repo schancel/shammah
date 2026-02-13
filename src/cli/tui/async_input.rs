@@ -91,9 +91,8 @@ pub fn spawn_input_task(
                                     Ok(None)
                                 }
                                 (KeyCode::BackTab, _) => {
-                                    // Shift+Tab: Toggle plan mode
-                                    tui.toggle_plan_mode();
-                                    Ok(None)
+                                    // Shift+Tab: Toggle plan mode (send as command)
+                                    Ok(Some("/plan".to_string()))
                                 }
                                 (KeyCode::Up, KeyModifiers::NONE) => {
                                     // Navigate history backwards (older commands)

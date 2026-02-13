@@ -248,10 +248,12 @@ pub fn format_help() -> String {
          \x1b[90m  Example:\x1b[0m \"Always allow reading *.rs files\" or \"Allow git status\"\n\n\
          \x1b[1;33m📝 Plan Mode Commands:\x1b[0m\n\
          \x1b[36m  /plan\x1b[0m              Toggle plan mode on/off (also: Shift+Tab)\n\
-         \x1b[36m  /plan <task>\x1b[0m       Enter planning mode for a complex task\n\
+         \x1b[36m  /plan <task>\x1b[0m       Enter planning mode with task description\n\
+         \x1b[90m                     Example: /plan Refactor authentication system\x1b[0m\n\
+         \x1b[90m                     In planning mode: only read, glob, grep, web_fetch allowed\x1b[0m\n\
          \x1b[36m  /show-plan\x1b[0m         Display the current plan\n\
          \x1b[36m  /save-plan\x1b[0m         Manually save current response as plan\n\
-         \x1b[36m  /approve\x1b[0m           Approve plan and start execution\n\
+         \x1b[36m  /approve\x1b[0m           Approve plan and start execution (all tools enabled)\n\
          \x1b[36m  /reject\x1b[0m            Reject the plan and return to normal mode\n\
          \x1b[36m  /done\x1b[0m              Exit execution mode\n\n\
          \x1b[1;33m🎓 Weighted Feedback (LoRA Fine-Tuning):\x1b[0m\n\

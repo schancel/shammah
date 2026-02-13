@@ -1201,6 +1201,9 @@ impl Repl {
         // Get generator state from bootstrap loader
         let generator_state = Arc::clone(self.bootstrap_loader.state());
 
+        // Extract mode to Arc (replace with Normal temporarily)
+        let mode = Arc::new(RwLock::new(std::mem::replace(&mut self.mode, ReplMode::Normal)));
+
         // Create EventLoop with all dependencies
         let mut event_loop = EventLoop::new(
             Arc::clone(&self.conversation),
@@ -1217,6 +1220,7 @@ impl Repl {
             Arc::clone(&self.local_generator),
             Arc::clone(&self.tokenizer),
             self.daemon_client.clone(),
+            mode,
         );
 
         // Run the event loop
