@@ -48,6 +48,31 @@ use dialog::DialogType as DType;
 
 // Note: input_handler (TuiInputHandler) removed - we now use integrated tui-textarea
 
+/// Strip ANSI escape codes from a string
+fn strip_ansi_codes(s: &str) -> String {
+    let mut result = String::new();
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip ANSI escape sequence
+            if chars.peek() == Some(&'[') {
+                chars.next(); // consume '['
+                // Skip until 'm' (end of SGR sequence)
+                while let Some(ch) = chars.next() {
+                    if ch == 'm' {
+                        break;
+                    }
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
+}
+
 /// Calculate viewport height dynamically based on terminal size
 fn calculate_viewport_height(terminal_size: (u16, u16)) -> usize {
     let (_, term_height) = terminal_size;
@@ -734,23 +759,31 @@ impl TuiRenderer {
             self.needs_full_refresh = true;
         }
 
-        // Write new messages to terminal scrollback using raw terminal output
-        // This preserves ANSI color codes and lets the terminal handle wrapping
+        // Write new messages to terminal scrollback using insert_before()
+        // Note: ANSI codes are stripped for scrollback (ratatui limitation)
         if !new_messages.is_empty() {
-            use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
-            use crossterm::style::Print;
-
-            let mut stdout = io::stdout();
-            execute!(stdout, BeginSynchronizedUpdate)?;
-
-            // Write each message with ANSI codes preserved
+            // Format and strip ANSI codes for scrollback
+            let mut lines = Vec::new();
             for msg in &new_messages {
                 let formatted = msg.format(&self.colors);
-                execute!(stdout, Print(formatted), Print("\n"))?;
+                // Strip ANSI codes for plain text display
+                let plain_text = strip_ansi_codes(&formatted);
+                for line in plain_text.lines() {
+                    lines.push(line.to_string());
+                }
+                lines.push(String::new()); // Blank line between messages
             }
 
-            execute!(stdout, EndSynchronizedUpdate)?;
-            stdout.flush()?;
+            let num_lines = lines.len().min(u16::MAX as usize) as u16;
+
+            // Use insert_before to properly manage viewport
+            self.terminal.insert_before(num_lines, |buf| {
+                for (i, line) in lines.iter().enumerate() {
+                    if i < buf.area.height as usize {
+                        buf.set_string(0, i as u16, line, ratatui::style::Style::default());
+                    }
+                }
+            })?;
 
             // Mark TUI for render (separator might need to move)
             self.needs_tui_render = true;
