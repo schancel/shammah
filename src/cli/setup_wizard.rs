@@ -82,6 +82,7 @@ enum WizardStep {
     AddTeacherProviderSelection(Vec<TeacherEntry>, usize), // (existing teachers, selected provider idx)
     AddTeacherApiKey(Vec<TeacherEntry>, String, String), // (existing teachers, provider, api_key input)
     AddTeacherModel(Vec<TeacherEntry>, String, String, String), // (existing teachers, provider, api_key, model input)
+    EditTeacher(Vec<TeacherEntry>, usize, String, String), // (teachers, teacher_idx, model_input, name_input)
     Confirm,
 }
 
@@ -423,15 +424,37 @@ fn run_wizard_loop(
                 WizardStep::TeacherConfig(teacher_list, selected) => {
                     match key.code {
                         KeyCode::Up => {
-                            if *selected > 0 {
-                                *selected -= 1;
-                                selected_teacher_idx = *selected;
+                            // Shift+Up or Ctrl+Up: Move teacher up (increase priority)
+                            if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) ||
+                               key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                                if *selected > 0 {
+                                    let mut new_teachers = teacher_list.clone();
+                                    new_teachers.swap(*selected, *selected - 1);
+                                    step = WizardStep::TeacherConfig(new_teachers, *selected - 1);
+                                }
+                            } else {
+                                // Normal Up: Navigate selection
+                                if *selected > 0 {
+                                    *selected -= 1;
+                                    selected_teacher_idx = *selected;
+                                }
                             }
                         }
                         KeyCode::Down => {
-                            if *selected < teacher_list.len() - 1 {
-                                *selected += 1;
-                                selected_teacher_idx = *selected;
+                            // Shift+Down or Ctrl+Down: Move teacher down (decrease priority)
+                            if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) ||
+                               key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                                if *selected < teacher_list.len() - 1 {
+                                    let mut new_teachers = teacher_list.clone();
+                                    new_teachers.swap(*selected, *selected + 1);
+                                    step = WizardStep::TeacherConfig(new_teachers, *selected + 1);
+                                }
+                            } else {
+                                // Normal Down: Navigate selection
+                                if *selected < teacher_list.len() - 1 {
+                                    *selected += 1;
+                                    selected_teacher_idx = *selected;
+                                }
                             }
                         }
                         KeyCode::Enter => {
@@ -442,8 +465,22 @@ fn run_wizard_loop(
                             // Add new teacher - go to provider selection
                             step = WizardStep::AddTeacherProviderSelection(teacher_list.clone(), 0);
                         }
-                        KeyCode::Char('d') => {
-                            // Delete selected teacher (if not the only one)
+                        KeyCode::Char('e') => {
+                            // Edit selected teacher
+                            if *selected < teacher_list.len() {
+                                let teacher = &teacher_list[*selected];
+                                let model_input = teacher.model.clone().unwrap_or_default();
+                                let name_input = teacher.name.clone().unwrap_or_default();
+                                step = WizardStep::EditTeacher(
+                                    teacher_list.clone(),
+                                    *selected,
+                                    model_input,
+                                    name_input,
+                                );
+                            }
+                        }
+                        KeyCode::Char('d') | KeyCode::Char('r') => {
+                            // Delete/Remove selected teacher (if not the only one)
                             if teacher_list.len() > 1 && *selected < teacher_list.len() {
                                 let mut new_teachers = teacher_list.clone();
                                 new_teachers.remove(*selected);
@@ -545,6 +582,45 @@ fn run_wizard_loop(
                     }
                 }
 
+                WizardStep::EditTeacher(teacher_list, teacher_idx, model_input, name_input) => {
+                    match key.code {
+                        KeyCode::Tab => {
+                            // Tab to switch between model and name fields
+                            // For now, we'll use Enter to save
+                        }
+                        KeyCode::Enter => {
+                            // Save edited teacher
+                            let mut new_teachers = teacher_list.clone();
+                            if *teacher_idx < new_teachers.len() {
+                                new_teachers[*teacher_idx].model = if model_input.is_empty() {
+                                    None
+                                } else {
+                                    Some(model_input.clone())
+                                };
+                                new_teachers[*teacher_idx].name = if name_input.is_empty() {
+                                    None
+                                } else {
+                                    Some(name_input.clone())
+                                };
+                            }
+                            step = WizardStep::TeacherConfig(new_teachers, *teacher_idx);
+                        }
+                        KeyCode::Backspace => {
+                            // For simplicity, only edit model field for now
+                            // In a real implementation, we'd track which field is active
+                            model_input.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            model_input.push(c);
+                        }
+                        KeyCode::Esc => {
+                            // Cancel edit, go back
+                            step = WizardStep::TeacherConfig(teacher_list.clone(), *teacher_idx);
+                        }
+                        _ => {}
+                    }
+                }
+
                 WizardStep::Confirm => {
                     match key.code {
                         KeyCode::Char('y') | KeyCode::Enter => {
@@ -623,6 +699,7 @@ fn render_wizard_step(
         WizardStep::AddTeacherProviderSelection(_, selected) => render_provider_selection(f, inner, *selected),
         WizardStep::AddTeacherApiKey(_, provider, input) => render_teacher_api_key_input(f, inner, provider, input),
         WizardStep::AddTeacherModel(_, provider, _, input) => render_teacher_model_input(f, inner, provider, input),
+        WizardStep::EditTeacher(teachers, idx, model_input, name_input) => render_edit_teacher(f, inner, teachers, *idx, model_input, name_input),
         WizardStep::Confirm => render_confirm(f, inner),
     }
 }
@@ -1225,9 +1302,9 @@ fn render_teacher_config(f: &mut Frame, area: Rect, teachers: &[TeacherEntry], s
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),  // Title
-            Constraint::Length(5),  // Instructions
-            Constraint::Min(6),     // Teacher list
-            Constraint::Length(2),  // Help
+            Constraint::Length(4),  // Instructions
+            Constraint::Min(8),     // Teacher list (more space for details)
+            Constraint::Length(3),  // Help
         ])
         .split(area);
 
@@ -1237,23 +1314,50 @@ fn render_teacher_config(f: &mut Frame, area: Rect, teachers: &[TeacherEntry], s
     f.render_widget(title, chunks[0]);
 
     let instructions = Paragraph::new(
-        "Configure teacher models for learning. The first teacher is primary.\n\
-         You can add more teachers later by editing ~/.shammah/config.toml"
+        "Teachers are tried in order. First teacher is primary.\n\
+         Use Shift+↑/↓ to reorder, e to edit, d to remove, a to add."
     )
-    .style(Style::default().fg(Color::Reset))
+    .style(Style::default().fg(Color::Yellow))
     .wrap(Wrap { trim: false });
     f.render_widget(instructions, chunks[1]);
 
+    // Build detailed teacher list with priority indicators
     let items: Vec<ListItem> = teachers
         .iter()
-        .map(|teacher| {
-            let name = teacher.name.as_deref().unwrap_or(&teacher.provider);
-            ListItem::new(Line::from(vec![
-                Span::styled(name, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                Span::raw(" ("),
-                Span::styled(&teacher.provider, Style::default().fg(Color::Gray)),
-                Span::raw(")"),
-            ]))
+        .enumerate()
+        .map(|(idx, teacher)| {
+            let priority_label = if idx == 0 {
+                "PRIMARY"
+            } else {
+                "FALLBACK"
+            };
+
+            let display_name = teacher.name.as_deref().unwrap_or(&teacher.provider);
+            let model_display = teacher.model.as_deref().unwrap_or("(default)");
+
+            let priority_style = if idx == 0 {
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Yellow)
+            };
+
+            ListItem::new(vec![
+                Line::from(vec![
+                    Span::styled(
+                        format!("{}. ", idx + 1),
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    ),
+                    Span::styled(display_name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                    Span::raw("  "),
+                    Span::styled(priority_label, priority_style),
+                ]),
+                Line::from(vec![
+                    Span::raw("   Provider: "),
+                    Span::styled(&teacher.provider, Style::default().fg(Color::Gray)),
+                    Span::raw("  Model: "),
+                    Span::styled(model_display, Style::default().fg(Color::Gray)),
+                ]),
+            ])
         })
         .collect();
 
@@ -1261,7 +1365,10 @@ fn render_teacher_config(f: &mut Frame, area: Rect, teachers: &[TeacherEntry], s
     list_state.select(Some(selected));
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL))
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .title(" Teachers (in priority order) ")
+        )
         .highlight_style(
             Style::default()
                 .bg(Color::Cyan)
@@ -1272,10 +1379,95 @@ fn render_teacher_config(f: &mut Frame, area: Rect, teachers: &[TeacherEntry], s
 
     f.render_stateful_widget(list, chunks[2], &mut list_state);
 
-    let help = Paragraph::new("↑/↓: Select  a: Add Provider  d: Delete  Enter: Continue  Esc: Cancel")
+    let help = Paragraph::new(
+        "↑/↓: Navigate  Shift+↑/↓: Reorder  e: Edit  d: Remove  a: Add\n\
+         Enter: Continue  Esc: Cancel"
+    )
+    .style(Style::default().fg(Color::Gray))
+    .alignment(Alignment::Center);
+    f.render_widget(help, chunks[3]);
+}
+
+fn render_edit_teacher(
+    f: &mut Frame,
+    area: Rect,
+    teachers: &[TeacherEntry],
+    teacher_idx: usize,
+    model_input: &str,
+    name_input: &str,
+) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Title
+            Constraint::Length(6),  // Current info
+            Constraint::Length(5),  // Model input
+            Constraint::Length(5),  // Name input (future)
+            Constraint::Min(2),     // Examples
+            Constraint::Length(2),  // Help
+        ])
+        .split(area);
+
+    let title = Paragraph::new("Edit Teacher")
+        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .alignment(Alignment::Center);
+    f.render_widget(title, chunks[0]);
+
+    // Show current teacher info
+    if teacher_idx < teachers.len() {
+        let teacher = &teachers[teacher_idx];
+        let current_info = Paragraph::new(format!(
+            "Provider: {}\n\
+             Current Model: {}\n\
+             Current Name: {}",
+            teacher.provider,
+            teacher.model.as_deref().unwrap_or("(default)"),
+            teacher.name.as_deref().unwrap_or("(none)")
+        ))
+        .style(Style::default().fg(Color::Gray))
+        .block(Block::default().borders(Borders::ALL).title(" Current Settings "));
+        f.render_widget(current_info, chunks[1]);
+    }
+
+    // Model input
+    let model_prompt = Paragraph::new("API Model Name (leave empty for provider default):")
+        .style(Style::default().fg(Color::Yellow));
+    f.render_widget(model_prompt, chunks[2]);
+
+    let model_widget = Paragraph::new(model_input)
+        .style(Style::default().fg(Color::Green))
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Green))
+            .title(" Model ")
+        );
+    f.render_widget(model_widget, chunks[3]);
+
+    // Examples based on provider
+    let examples = if teacher_idx < teachers.len() {
+        let teacher = &teachers[teacher_idx];
+        match teacher.provider.as_str() {
+            "claude" => "Examples: claude-opus-4-6 | claude-sonnet-4-20250514 | claude-haiku-4-5",
+            "openai" => "Examples: gpt-4o | gpt-4o-mini | gpt-4-turbo | o1",
+            "gemini" => "Examples: gemini-2.0-flash-exp | gemini-1.5-pro | gemini-1.5-flash",
+            "grok" => "Examples: grok-2-1212 | grok-beta",
+            "mistral" => "Examples: mistral-large-latest | mistral-small-latest",
+            "groq" => "Examples: llama-3.1-70b-versatile | mixtral-8x7b | gemma-7b",
+            _ => "Leave empty to use provider's default model"
+        }
+    } else {
+        ""
+    };
+
+    let examples_widget = Paragraph::new(examples)
+        .style(Style::default().fg(Color::Gray))
+        .wrap(Wrap { trim: false });
+    f.render_widget(examples_widget, chunks[4]);
+
+    let help = Paragraph::new("Type model name | Enter: Save | Esc: Cancel")
         .style(Style::default().fg(Color::Gray))
         .alignment(Alignment::Center);
-    f.render_widget(help, chunks[3]);
+    f.render_widget(help, chunks[5]);
 }
 
 fn render_confirm(f: &mut Frame, area: Rect) {
