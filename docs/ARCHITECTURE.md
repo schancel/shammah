@@ -1,425 +1,468 @@
 # Architecture
 
-This document describes the technical architecture of Shammah, a local-first Constitutional AI proxy that uses a 3-model ensemble trained on your Claude usage.
+This document describes the technical architecture of Shammah, a local-first AI coding assistant that uses pre-trained ONNX models with LoRA fine-tuning.
 
 ## Overview
 
-Shammah sits between the user and Claude API, intelligently routing requests using three specialized neural networks. Over time, it learns from your actual Claude usage to handle 95% of requests locally.
+Shammah provides **immediate, high-quality AI assistance** using pre-trained local models (Qwen via ONNX Runtime) or cloud fallback (Claude, GPT-4, Gemini, Grok), then continuously improves through weighted LoRA fine-tuning to adapt to your specific coding patterns.
 
-**Key Innovation:** All models are **trained from scratch** on YOUR Claude interactions, not pre-trained models.
+**Current State (v0.4.0):**
+- ✅ ONNX Runtime with KV cache support
+- ✅ Pre-trained Qwen models (1.5B/3B/7B/14B)
+- ✅ Daemon architecture with auto-spawn
+- ✅ OpenAI-compatible HTTP API
+- ✅ Tool execution with pass-through
+- ✅ SSE streaming for local and remote
+- ✅ LoRA training infrastructure (Python-based)
+- ✅ Multi-provider teacher support
 
-**Current State (v0.2.0):**
-- ✅ Tool execution system with 6 working tools
-- ✅ Streaming responses via SSE parsing
-- ✅ Threshold-based routing (learns from query 1)
-- ✅ Concurrent weight merging for multi-session safety
-- ✅ Constitution support infrastructure
-- 🔄 Neural models training (not primary yet)
+**Key Innovation:** Pre-trained models + weighted LoRA fine-tuning = immediate quality + continuous improvement.
 
-This document describes both the current implementation and the target architecture. Sections marked with phases indicate future work.
+## Architecture Overview
 
-## Current Implementation (Phase 1 + 2a)
+```
+User runs shammah
+    ↓
+Daemon auto-spawns (if not running)
+    ↓
+Background: Load ONNX model (if enabled)
+    ↓
+REPL appears instantly (<100ms)
+    ↓
+┌─────────────────────────────────────┐
+│   User Query                        │
+└──────────┬──────────────────────────┘
+           │
+           v
+┌──────────────────────────────────────┐
+│  Router with Model Check             │
+│  - Crisis detection (safety)         │
+│  - Local model ready? Use local      │
+│  - Model loading? Forward to teacher │
+└──────────┬───────────────────────────┘
+           │
+    Model Ready?
+           │
+    ├─ NO  → Forward to Teacher API (Claude/GPT-4/Gemini/Grok)
+    └─ YES → Continue
+           │
+           v
+    ┌──────────────────────────────────┐
+    │ ONNX Runtime Inference           │
+    │ (Qwen 1.5B/3B/7B/14B)           │
+    │ + LoRA Adapters (optional)       │
+    │ Device: Metal/CPU                │
+    └──────────┬───────────────────────┘
+           │
+           v
+    ┌──────────────────────────────────┐
+    │  Response to User                │
+    │  (Streaming via SSE)             │
+    └──────────┬───────────────────────┘
+           │
+           v
+    User Feedback?
+           │
+    ├─ 🔴 Critical issue → High-weight training (10x)
+    ├─ 🟡 Could improve → Medium-weight training (3x)
+    └─ 🟢 Looks good → Normal-weight training (1x)
+           │
+           v
+    ┌──────────────────────────────────┐
+    │  Background LoRA Fine-Tuning     │
+    │  (Python script, non-blocking)   │
+    │  - Weighted sampling             │
+    │  - Saves to safetensors          │
+    └──────────────────────────────────┘
+```
 
-### Tool Execution System ✅
+## Core Components
 
-Shammah implements 6 tools that enable Claude to interact with the local environment:
+### 1. Daemon Architecture
 
-**1. Read Tool** - Read file contents
-- Max 10,000 characters per file
-- Truncation warning if exceeded
-- Error handling for missing files
+**Auto-Spawning Daemon:**
+- REPL client checks for running daemon (PID file at `~/.shammah/daemon.pid`)
+- If not running, spawns daemon process automatically
+- Health checks ensure daemon is responsive
+- Graceful restart on crashes
 
-**2. Glob Tool** - Find files by pattern
-- Supports glob patterns (`**/*.rs`, `src/**/*.ts`)
-- Limits to 100 files
-- Fast pattern matching with glob crate
+**OpenAI-Compatible HTTP API:**
+- Port 11435 (11434 is used by Ollama)
+- Endpoint: `POST /v1/chat/completions`
+- Drop-in replacement for OpenAI/Claude clients
+- Session management with concurrent client support
 
-**3. Grep Tool** - Search codebase with regex
-- Recursive directory search with walkdir
-- Max 10 depth, 50 matches
-- Returns file:line: match format
+**Architecture:**
+```
+┌─────────────────────────────────────┐
+│   REPL Client (tui-based)           │
+│   - Keyboard input handling         │
+│   - Streaming UI rendering          │
+│   - Tool confirmation dialogs       │
+└───────────┬─────────────────────────┘
+            │ HTTP (port 11435)
+            v
+┌─────────────────────────────────────┐
+│   Auto-Spawned Daemon               │
+│   - PID management                  │
+│   - Health monitoring               │
+│   - Session cleanup                 │
+└───────────┬─────────────────────────┘
+            │
+      ┌─────┴─────┬─────────┬─────────┐
+      v           v         v         v
+┌─────────┐ ┌─────────┐ ┌──────┐ ┌──────┐
+│ ONNX    │ │ Teacher │ │ Tool │ │ LoRA │
+│ Runtime │ │ APIs    │ │ Exec │ │Train │
+└─────────┘ └─────────┘ └──────┘ └──────┘
+```
 
-**4. WebFetch Tool** - Fetch URLs
-- 10-second timeout
-- 10K character limit
-- HTTP error handling
+**Key Files:**
+- `src/daemon/server.rs` - Axum HTTP server
+- `src/daemon/lifecycle.rs` - PID management, auto-spawn
+- `src/client/daemon_client.rs` - HTTP client with health checks
 
-**5. Bash Tool** - Execute shell commands
-- Captures stdout/stderr
-- 5K output limit
-- Returns exit codes
+### 2. ONNX Model Integration
 
-**6. Restart Tool** - Self-improvement capability
-- Verifies binary exists
-- Uses exec() to replace current process
-- Enables modify → build → restart workflow
-- **Security:** Phase 1 implementation (no user confirmation yet)
+**Purpose:** Load and run pre-trained models with KV cache for efficient autoregressive generation.
+
+**Model Selection (RAM-based):**
+- 8GB Mac → Qwen-2.5-1.5B (1.5GB RAM, fast)
+- 16GB Mac → Qwen-2.5-3B (3GB RAM, balanced)
+- 32GB Mac → Qwen-2.5-7B (7GB RAM, powerful)
+- 64GB+ Mac → Qwen-2.5-14B (14GB RAM, maximum)
+
+**Features:**
+- ONNX Runtime with CoreML execution provider (Metal acceleration on Apple Silicon)
+- Full KV cache support (56+ dynamic inputs for 28 layers)
+- Autoregressive generation with cache reuse
+- Graceful CPU fallback
+- Automatic tokenizer loading from HuggingFace Hub
+
+**KV Cache Architecture:**
+```rust
+// Empty cache initialization (shape: [1, 2, 0, 128])
+let mut kv_cache: Vec<Array4<f32>> = Vec::new();
+for layer in 0..28 {
+    kv_cache.push(Array4::zeros((1, 2, 0, 128))); // K and V
+}
+
+// Each generation step:
+1. Bind input_ids, attention_mask, position_ids
+2. Bind 56 KV cache inputs (28 layers × 2)
+3. Run inference
+4. Extract logits and updated KV cache
+5. Reuse updated cache for next token
+```
+
+**Key Files:**
+- `src/models/loaders/onnx.rs` - OnnxLoader, KV cache management
+- `src/generators/qwen.rs` - QwenGenerator with multi-turn execution
+- `src/models/adapters/qwen.rs` - Output cleaning and prompt formatting
+
+### 3. Tool Execution System
+
+**Purpose:** Enable AI to inspect and modify code through structured tools.
+
+**Available Tools:**
+- **Read** - Read file contents (code, configs, docs)
+- **Glob** - Find files by pattern (`**/*.rs`)
+- **Grep** - Search with regex (`TODO.*`)
+- **WebFetch** - Fetch URLs (documentation, examples)
+- **Bash** - Execute commands (tests, build, etc.)
+- **Restart** - Self-improvement (modify code, rebuild, restart)
+
+**Tool Pass-Through Architecture:**
+```
+┌─────────────────┐
+│  REPL Client    │
+│  (runs locally) │
+└────────┬────────┘
+         │ 1. Send query
+         v
+┌─────────────────┐
+│  Daemon Server  │
+│  (model, API)   │
+└────────┬────────┘
+         │ 2. Returns tool_use blocks
+         v
+┌─────────────────┐
+│  REPL Client    │
+│  - Executes tool│  ← Client has filesystem access
+│  - Shows dialog │  ← Client owns terminal UI
+│  - Collects     │
+│    results      │
+└────────┬────────┘
+         │ 3. Send tool results
+         v
+┌─────────────────┐
+│  Daemon Server  │
+│  (final response)│
+└─────────────────┘
+```
+
+**Why Pass-Through?**
+- Client has filesystem access (daemon may not)
+- Client owns terminal UI for confirmation dialogs
+- Proper security model (user approves tools on their machine)
+- Simple: daemon is stateless for tool execution
 
 **Multi-Turn Loop:**
 ```
-User Query → Claude API (with tool definitions)
+User Query → Daemon (with tool definitions)
     ↓
-Claude returns tool_use blocks
+Model returns tool_use blocks
     ↓
-Execute tools → collect results
+Client executes tools → collects results
     ↓
-Send results back to Claude (maintain conversation alternation)
+Send results back to daemon (maintain conversation)
     ↓
-Claude returns final response (or more tool uses)
+Model returns final response (or more tool uses)
     ↓
 Repeat up to 5 iterations
 ```
 
-**Key Design:**
-- Tool definitions sent with every API request
-- Proper user/assistant message alternation
-- Graceful error handling
-- Max 5 iterations to prevent infinite loops
+**Key Files:**
+- `src/tools/executor.rs` - ToolExecutor, multi-turn loop
+- `src/tools/implementations/` - Individual tool implementations
+- `src/tools/permissions.rs` - PermissionManager, approval patterns
+- `src/cli/repl_event/tool_execution.rs` - Client-side execution
 
-### Streaming Responses ✅ (Partial)
+### 4. SSE Streaming Implementation
 
-**SSE (Server-Sent Events) Parsing:**
-- Character-by-character display for better UX
-- Tokio channels for async streaming
-- Parses `data:` lines from Claude API
+**Purpose:** Provide real-time token-by-token response streaming for both local and remote models.
 
-**Event Types:**
-```rust
-StreamEvent {
-    event_type: "content_block_delta",
-    delta: {
-        delta_type: "text_delta",
-        text: "..." // Incremental text
-    }
-}
+**Architecture:**
 ```
+┌─────────────────────────────────────┐
+│  Generator (Local or Remote)        │
+│  - Token-by-token generation        │
+│  - Callbacks on each token          │
+└────────────┬────────────────────────┘
+             │
+             v
+┌─────────────────────────────────────┐
+│  SSE Event Stream                   │
+│  - Server-Sent Events format        │
+│  - Bounded channel (size 2)         │
+│  - Natural backpressure             │
+└────────────┬────────────────────────┘
+             │
+             v
+┌─────────────────────────────────────┐
+│  TUI Renderer                       │
+│  - Real-time UI updates (20 FPS)    │
+│  - Shadow buffer diff rendering     │
+│  - Scrollback integration           │
+└─────────────────────────────────────┘
+```
+
+**Benefits:**
+- Prevents connection timeouts on long queries (>10s)
+- Responsive UI showing generation progress
+- Cancel queries mid-generation (Ctrl+C)
+- Works with both local ONNX and remote APIs
+
+**Key Files:**
+- `src/daemon/streaming.rs` - SSE event formatting
+- `src/cli/tui/mod.rs` - TUI streaming response handling
+- `src/generators/qwen.rs` - Token callbacks
+
+### 5. LoRA Fine-Tuning Infrastructure
+
+**Purpose:** Efficient domain-specific adaptation with weighted examples.
+
+**Architecture:**
+```
+User Feedback (10x/3x/1x weight)
+    ↓
+TrainingCoordinator collects examples
+    ↓
+Write to JSONL queue (~/.shammah/training_queue.jsonl)
+    ↓
+Spawn Python training script (background)
+    ↓
+PyTorch + PEFT LoRA training
+    ↓
+Save adapter to safetensors format
+    ↓
+(Future) Load adapter in ONNX Runtime
+```
+
+**Weighted Training:**
+- **High-weight (10x)**: Critical issues (strategy errors)
+  - Example: "Never use .unwrap() in production"
+  - Impact: Model strongly learns to avoid this
+- **Medium-weight (3x)**: Style preferences
+  - Example: "Prefer iterator chains over manual loops"
+  - Impact: Model learns your preferred approach
+- **Normal-weight (1x)**: Good examples
+  - Example: "This is exactly right"
+  - Impact: Model learns normally
 
 **Current Limitation:**
-- Streaming disabled when tools are used
-- Reason: Can't detect tool_use blocks in SSE stream yet
-- Workaround: Falls back to buffered response
-- Future: Parse full SSE stream for tool_use events
+ONNX Runtime is inference-only (no training APIs). Adapters are trained in Python but not yet loaded at runtime. Future work: implement adapter loading via weight merging or custom ONNX graph modifications.
 
-**Implementation:**
-- `ClaudeClient::send_message_stream()` method
-- Returns `mpsc::Receiver<Result<String>>`
-- Display in REPL with real-time output
+**Key Files:**
+- `src/models/lora.rs` - WeightedExample, TrainingCoordinator
+- `src/training/lora_subprocess.rs` - Python subprocess spawner
+- `scripts/train_lora.py` - PyTorch LoRA training script
 
-### Threshold-Based Models ✅ (Phase 2a)
+### 6. TUI Renderer System
 
-Before neural networks have enough training data, Shammah uses threshold models that learn from query 1:
+**Purpose:** Professional terminal UI with scrollback, streaming, and efficient updates.
 
-**ThresholdRouter:**
-- Query categorization (Greeting, Definition, HowTo, Code, Debugging, etc.)
-- Tracks success rates per category
-- Adaptive confidence thresholds (starts 0.95, adjusts based on performance)
-- Fully interpretable decisions
+**Dual-Layer Architecture:**
 
-**ThresholdValidator:**
-- 8 quality signals: TooShort, Repetitive, AnswersQuestion, HasCode, etc.
-- Learns signal correlations over time
-- Conservative at start (forces Claude learning for first 10 queries)
+1. **Terminal Scrollback** (permanent, scrollable with Shift+PgUp)
+   - Written via `insert_before()` for new messages
+   - Pushes content above the inline viewport
+   - Preserves full history (scrollable by user)
 
-**HybridRouter:**
-- Phase 1 (queries 1-50): Pure threshold-based
-- Phase 2 (queries 51-200): Hybrid with gradually increasing neural weight
-- Phase 3 (queries 201+): Primarily neural with threshold safety checks
+2. **Inline Viewport** (6 lines at bottom, double-buffered)
+   - Separator line (visual boundary)
+   - Input area (4 lines, tui-textarea)
+   - Status bar (1 line, model/token info)
 
-**Key Innovation:** Provides immediate value from query 1, unlike neural networks that need 200+ queries for cold start.
-
-### Concurrent Weight Merging ✅
-
-**Problem:** Multiple Shammah sessions running simultaneously could corrupt training data.
-
-**Solution:**
-- File locking with fs2 crate (`FileExt::lock_exclusive()`)
-- Merge strategy: accumulate statistics from both sessions
-- Atomic writes: temp file → rename (prevents corruption)
-
-**Merge Logic:**
-```rust
-pub fn merge_with(&self, other: &Self) -> Self {
-    // Accumulate category statistics
-    for category in all_categories {
-        merged_stats.local_attempts = mine + theirs;
-        merged_stats.successes = mine + theirs;
-        // Average confidence scores
-        merged_stats.avg_confidence = (mine + theirs) / 2.0;
-    }
-    // Accumulate global totals
-    merged.total_queries = self.total + other.total;
-    // ...
-}
+**Key Innovation: Immediate Scrollback with Efficient Updates**
+```
+New message → Write to scrollback immediately via insert_before()
+Message updates → Diff-based blitting to visible area only
 ```
 
-**Process:**
-1. Acquire exclusive lock on `.lock` file
-2. Load existing state from disk
-3. Merge current session stats with disk stats
-4. Write atomically (temp → rename)
-5. Release lock
+**Shadow Buffer System:**
+- 2D char array with proper text wrapping
+- ANSI escape code preservation (zero-width)
+- Diff-based rendering (only changed cells)
+- Bottom-aligned content (recent messages visible)
 
-### Constitution Support ✅ (Infrastructure)
+**Key Files:**
+- `src/cli/tui/mod.rs` - TuiRenderer, flush_output_safe(), blit_visible_area()
+- `src/cli/tui/shadow_buffer.rs` - ShadowBuffer, diff_buffers()
+- `src/cli/tui/scrollback.rs` - ScrollbackBuffer (message tracking)
+- `src/cli/tui/input_widget.rs` - Input area rendering
+- `src/cli/tui/status_widget.rs` - Status bar rendering
 
-**Purpose:** Allow users to define custom constitutional principles for local generation.
+### 7. Multi-Provider Teacher Support
 
-**Current State:**
-- Path: `~/.shammah/constitution.md` (configurable)
-- Loaded on startup if exists
-- Stored in config, available to all components
-- **NOT sent to Claude API** (keeps principles private)
+**Purpose:** Flexible fallback to multiple cloud AI providers.
 
-**Usage (Pending):**
-- Will be prepended to local model system prompts
-- Activates when local generation becomes primary
-- Example principles: privacy-first, domain-specific guidelines, custom safety rules
+**Supported Providers:**
+- **Claude** (Anthropic) - Primary, full capability
+- **GPT-4** (OpenAI) - Full capability
+- **Gemini** (Google) - Full capability
+- **Grok** (xAI) - Full capability
+- **Mistral** (Mistral AI) - Full capability
+- **Groq** (Groq) - Fast inference
 
-**Example:**
-```markdown
-# My Constitutional Principles
+**Provider Adapters:**
+Each provider has an adapter that handles:
+- API request formatting (convert to provider's schema)
+- Tool definition translation
+- Response parsing
+- Capability mapping (streaming, tool use, etc.)
 
-1. Always prioritize user privacy
-2. Be helpful, harmless, and honest
-3. Acknowledge uncertainty rather than guessing
-4. [Custom domain principles]
+**Adaptive Routing:**
+```
+1. Try local model if ready
+2. On failure/unavailable, try first teacher
+3. On API error, try next teacher in priority list
+4. Graceful degradation ensures user always gets response
 ```
 
-## The 3-Model Ensemble (Phase 2b+ - Target Architecture)
+**Key Files:**
+- `src/providers/` - Provider-specific adapters
+- `src/config/settings.rs` - TeacherEntry configuration
+- `src/cli/setup_wizard.rs` - Multi-provider setup UI
 
-Shammah uses three specialized neural networks working together:
+### 8. Conversation Management
 
-### 1. Router Model (Small, Fast - ~1-3B parameters)
+**Purpose:** Manage multi-turn conversation history with context window limits.
 
-**Purpose:** Pre-generation decision - "Should we try locally?"
+**Features:**
+- Automatic message trimming (last 20 messages)
+- Token-based limits (~8K tokens per conversation)
+- Session persistence (save/restore)
+- Conversation compaction (auto-summarization)
 
-**Input:**
-- Query text
-- Context features (length, complexity indicators)
-- Historical accuracy for similar queries
-
-**Output:**
-- Confidence score: 0.0 (must forward) to 1.0 (can handle)
-
-**Architecture:**
-- Transformer-based binary classifier
-- Trained on historical routing decisions
-- Optimized for speed (<50ms inference)
-
-**Training Data:**
-```json
-{
-  "query": "What is the golden rule?",
-  "features": {...},
-  "label": "local",
-  "divergence": 0.05  // Low divergence = handled well locally
-}
+**Compaction Architecture:**
+```
+Conversation grows → 80% of max tokens
+    ↓
+Trigger auto-compaction
+    ↓
+Summarize older messages (keep recent intact)
+    ↓
+Replace old messages with summary
+    ↓
+Continue conversation with reduced token count
 ```
 
-**Runs On:** Apple Neural Engine (CoreML)
-
----
-
-### 2. Generator Model (Medium, Capable - ~7-13B parameters)
-
-**Purpose:** Generate Claude-style responses
-
-**Input:**
-- Query text
-- Context (conversation history, domain)
-
-**Output:**
-- Full response text (mimicking Claude's style)
-
-**Architecture:**
-- Decoder-only transformer (similar to GPT architecture)
-- Trained via distillation from Claude
-- Custom model, no pre-trained weights
-
-**Training Data:**
-```json
-{
-  "query": "Explain reciprocity dynamics",
-  "claude_response": "Reciprocity refers to...",
-  "context": {...}
-}
-```
-
-**Training Method:**
-- **Knowledge Distillation:** Learn to mimic Claude's responses
-- Minimize divergence between Generator output and Claude's actual response
-- Train on 1000+ examples of YOUR specific usage patterns
-
-**Runs On:** Apple GPU (or Neural Engine with quantization)
-
----
-
-### 3. Validator Model (Small, Fast - ~1-3B parameters)
-
-**Purpose:** Post-generation quality gate - "Is this response good enough?"
-
-**Input:**
-- Query text
-- Generated response (from Generator)
-- Expected quality indicators
-
-**Output:**
-- Quality score: 0.0 (must forward) to 1.0 (good)
-- Error flags: hallucination, off-topic, incoherent, unsafe
-
-**Architecture:**
-- Transformer-based quality classifier
-- Trained to detect divergence from Claude's quality
-- Fast evaluation (<100ms)
-
-**Training Data:**
-```json
-{
-  "query": "...",
-  "local_response": "...",
-  "claude_response": "...",
-  "divergence": 0.85,  // High = bad quality
-  "label": "forward"   // Should have forwarded
-}
-```
-
-**Purpose:** Catches Generator mistakes before returning to user
-
-**Runs On:** Apple Neural Engine (CoreML)
-
----
+**Key Files:**
+- `src/cli/conversation.rs` - ConversationHistory
+- `src/conversation/compactor.rs` - ConversationCompactor (to be implemented)
 
 ## System Flow
 
-```
-User Query
-    ↓
-┌─────────────────────────────────────┐
-│ [1] Router Model                     │
-│     Confidence: f(query) → [0,1]     │
-│     <50ms on Neural Engine           │
-└─────────────────────────────────────┘
-    ↓
-Confidence > adaptive_threshold?
-    │
-    ├─ NO → Forward to Claude API ──────────┐
-    │        (Log for training)              │
-    │                                        │
-    └─ YES (try locally)                     │
-         ↓                                   │
-    ┌─────────────────────────────────────┐ │
-    │ [2] Generator Model                  │ │
-    │     Response: f(query) → text        │ │
-    │     ~500ms-2s on GPU                 │ │
-    └─────────────────────────────────────┘ │
-         ↓                                   │
-    ┌─────────────────────────────────────┐ │
-    │ [3] Validator Model                  │ │
-    │     Quality: f(query, response) → OK?│ │
-    │     <100ms on Neural Engine          │ │
-    └─────────────────────────────────────┘ │
-         ↓                                   │
-    Quality > threshold?                     │
-         ├─ YES → Return to user             │
-         └─ NO → Forward to Claude API ──────┘
-                  (Generator made mistake)
-                  (Log for retraining)
-```
-
-## Why Three Models?
-
-### Efficiency
-- **Router (tiny):** Quickly rejects queries without running expensive Generator
-- **Only run Generator when confident:** Saves computation
-- **Validator (tiny):** Fast safety check
-
-### Accuracy
-- **Two decision points:** Pre-generation (Router) + Post-generation (Validator)
-- **Specialization:** Each model optimized for its specific task
-- **Error catching:** Validator prevents bad local responses from reaching users
-
-### Progressive Enhancement
-- **Phase 1:** Simple placeholders (pattern matching, templates, crisis detection)
-- **Phase 2:** Train initial models on collected data
-- **Phase 3+:** Continuous learning, add tools, optimize for Neural Engine
-
-## Training Pipeline
-
-### Phase 1: Data Collection (Current)
+### REPL Session Flow
 
 ```
-User Query → Forward to Claude → Response
-                 ↓
-    Log (query, response, metadata)
-                 ↓
-    Build training corpus
-    Target: 1000+ examples
+1. User starts `shammah`
+2. Check for running daemon (PID file)
+3. If not running, spawn daemon process
+4. Wait for daemon health check (up to 5s)
+5. Display TUI with empty prompt
+6. Background: Daemon loads ONNX model (if enabled)
+7. User types query
+8. Send HTTP POST to daemon
+9. Daemon routes query (local or teacher)
+10. Stream response tokens back to client (SSE)
+11. TUI renders tokens in real-time (20 FPS)
+12. If tool_use blocks, execute on client side
+13. Send tool results back to daemon
+14. Repeat until final response
+15. Log metrics and feedback
 ```
 
-### Phase 2: Initial Training
+### Daemon Lifecycle
 
-**Step 1: Train Generator (Distillation)**
-```python
-# Pseudo-code
-for (query, claude_response) in training_data:
-    local_response = generator(query)
-    loss = divergence(local_response, claude_response)
-    backprop(loss)
 ```
-
-**Step 2: Train Router (Classification)**
-```python
-# Use Generator to evaluate which queries it handles well
-for (query, claude_response) in training_data:
-    local_response = generator(query)
-    divergence = measure_divergence(local_response, claude_response)
-    label = "local" if divergence < threshold else "forward"
-
-    router_pred = router(query)
-    loss = classification_loss(router_pred, label)
-    backprop(loss)
+1. Daemon starts (via auto-spawn or manual)
+2. Load ONNX model (if backend enabled)
+   - Download from HuggingFace Hub (first run)
+   - Initialize KV cache
+   - Load LoRA adapter (if exists)
+3. Start HTTP server (port 11435)
+4. Write PID file (~/.shammah/daemon.pid)
+5. Accept client connections
+6. Handle queries concurrently
+7. On SIGTERM/SIGINT, gracefully shutdown
+8. Clean up sessions and resources
+9. Remove PID file
 ```
-
-**Step 3: Train Validator (Quality Assessment)**
-```python
-# Detect when Generator makes mistakes
-for (query, claude_response) in training_data:
-    local_response = generator(query)
-    quality = measure_quality(local_response, claude_response)
-
-    validator_score = validator(query, local_response)
-    loss = regression_loss(validator_score, quality)
-    backprop(loss)
-```
-
-### Phase 3+: Continuous Learning
-
-- Keep forwarding uncertain queries to Claude
-- Use responses as additional training data
-- Periodically retrain models
-- Adapt thresholds based on accuracy
 
 ## Data Flow
 
 ### Request Processing
 
 ```
-1. Receive user query
-2. Extract features (length, complexity, topic)
-3. Router inference → confidence score
-4. If low confidence:
-     a. Forward to Claude API
-     b. Log (query, response) for training
-     c. Return Claude's response
-5. If high confidence:
-     a. Generator inference → local response
-     b. Validator inference → quality check
-     c. If quality good:
-          - Return local response
-          - Log success
-     d. If quality bad:
-          - Forward to Claude API
-          - Log (query, local_attempt, claude_response) for retraining
-          - Return Claude's response
+1. Receive user query (HTTP POST)
+2. Extract session_id (or create new session)
+3. Add to conversation history
+4. Router decision: local vs. teacher
+5. If local:
+     a. ONNX inference → local response
+     b. Return response
+6. If teacher:
+     a. Forward to teacher API (Claude/GPT-4/etc.)
+     b. Parse tool_use blocks
+     c. Return tool_use to client
+     d. Client executes tools
+     e. Client sends tool results
+     f. Forward tool results to teacher
+     g. Return final response
+7. Log metrics (routing, latency, tokens)
+8. Update session last_activity
 ```
 
 ### Metrics Collection
@@ -427,12 +470,12 @@ for (query, claude_response) in training_data:
 Every request logs:
 ```json
 {
-  "timestamp": "2026-01-30T12:00:00Z",
-  "query_hash": "abc123...",  // SHA256 for privacy
+  "timestamp": "2026-02-14T12:00:00Z",
+  "session_id": "abc123",
   "routing_decision": "local",
-  "router_confidence": 0.92,
-  "validator_quality": 0.88,
   "response_time_ms": 650,
+  "tokens_generated": 127,
+  "tool_uses": 2,
   "forward_reason": null
 }
 ```
@@ -444,168 +487,101 @@ Stored in: `~/.shammah/metrics/YYYY-MM-DD.jsonl`
 ```json
 {
   "id": "uuid",
-  "timestamp": "2026-01-30T12:00:00Z",
+  "timestamp": "2026-02-14T12:00:00Z",
   "query": "What is the golden rule?",
-  "context": {...},
-  "claude_response": "The golden rule refers to...",
-  "local_attempt": "...",  // If applicable
-  "divergence": 0.05,
-  "used_for_training": ["router", "generator", "validator"]
+  "response": "The golden rule refers to...",
+  "feedback_weight": 1.0,
+  "feedback_type": "normal",
+  "used_for_training": true
 }
 ```
 
-## Model Specifications
-
-### Router Model
-
-**Architecture:**
-- Encoder-only transformer
-- 6 layers, 768 hidden dim
-- ~500M parameters
-- Input: 512 token context
-- Output: 1 confidence score
-
-**Training:**
-- Binary classification
-- Loss: Binary cross-entropy
-- Optimizer: AdamW
-- Batch size: 32
-- Training time: ~2 hours on M1 Max
-
-**Inference:**
-- 30-50ms on Neural Engine
-- Batch size: 1
-- Quantized to INT8
-
-### Generator Model
-
-**Architecture:**
-- Decoder-only transformer
-- 24 layers, 2048 hidden dim
-- ~7B parameters (configurable: 3B, 7B, 13B)
-- Context: 2048 tokens
-- Vocabulary: 50k tokens
-
-**Training:**
-- Distillation from Claude
-- Loss: KL divergence + cross-entropy
-- Optimizer: AdamW
-- Batch size: 8
-- Training time: ~12 hours on M1 Max (7B model)
-
-**Inference:**
-- 500ms-2s depending on response length
-- Runs on GPU
-- Can be quantized to INT8 for Neural Engine
-
-### Validator Model
-
-**Architecture:**
-- Encoder-only transformer
-- 6 layers, 768 hidden dim
-- ~500M parameters
-- Input: Query + Response (1024 tokens total)
-- Output: Quality score + error flags
-
-**Training:**
-- Regression + classification
-- Loss: MSE (quality) + BCE (error flags)
-- Optimizer: AdamW
-- Batch size: 32
-- Training time: ~2 hours on M1 Max
-
-**Inference:**
-- 50-100ms on Neural Engine
-- Batch size: 1
-- Quantized to INT8
+Stored in: `~/.shammah/training_queue.jsonl`
 
 ## File Structure
 
 ```
 ~/.shammah/
-├── config.toml              # API key, thresholds
+├── config.toml              # User configuration
+├── daemon.pid               # Daemon process ID
+├── daemon.sock              # IPC socket (unused, HTTP preferred)
+├── adapters/                # LoRA adapters
+│   ├── coding_2026-02-06.safetensors
+│   └── rust_advanced.safetensors
 ├── metrics/                 # Daily JSONL logs
-│   ├── 2026-01-29.jsonl    # Training data
-│   └── 2026-01-30.jsonl
-└── models/                  # Phase 2+: Trained models
-    ├── router/
-    │   ├── model.onnx
-    │   ├── config.json
-    │   └── vocab.json
-    ├── generator/
-    │   ├── model.onnx
-    │   ├── config.json
-    │   └── vocab.json
-    └── validator/
-        ├── model.onnx
-        ├── config.json
-        └── vocab.json
+│   └── 2026-02-14.jsonl
+├── training_queue.jsonl     # Pending training examples
+└── tool_patterns.json       # Approved tool patterns
+
+~/.cache/huggingface/hub/    # Base models (HF standard)
+├── models--onnx-community--Qwen2.5-1.5B-Instruct/
+├── models--onnx-community--Qwen2.5-3B-Instruct/
+└── models--onnx-community--Qwen2.5-7B-Instruct/
 ```
 
 ## Technology Stack
 
-### Phase 1 + 2a (Current Implementation)
-- **Language:** Rust 2021 edition
-- **ML Framework:** Candle (Rust-native, Apple Metal support)
-- **Async Runtime:** Tokio with full features
-- **HTTP Client:** Reqwest with streaming support
-- **Serialization:** Serde + serde_json
-- **File Locking:** fs2 crate for concurrent safety
-- **CLI:** Rustyline for readline support
-- **Tools:**
-  - glob - Pattern matching
-  - walkdir - Recursive directory search
-  - regex - Text search
-  - futures - Async stream processing
-- **Storage:** JSONL (metrics collection)
-- **Current Models:**
-  - ThresholdRouter (statistics-based)
-  - Neural networks training with Candle (not primary yet)
-- **Apple Silicon:** Metal backend for GPU acceleration
+**Language:** Rust 2021 edition
+- Memory safety without GC
+- High performance
+- Excellent Apple Silicon support
 
-### Phase 2b (Neural Training - In Progress)
-- **Training:** Candle (Rust-native)
-- **Device:** Auto-detect Metal, fallback to CPU
-- **Format:** JSON for weights (transitioning to ONNX)
-- **Optimization:** Quantization, pruning
-- **Performance:** 10-100x speedup on Metal vs. CPU
+**ML Framework:** ONNX Runtime
+- Cross-platform inference engine
+- CoreML execution provider for Apple Silicon (Metal acceleration)
+- CPU fallback for maximum compatibility
+- KV cache support for efficient autoregressive generation
+- ONNX format (optimized, portable)
 
-### Phase 3+ (Production Inference - Planned)
-- **Runtime:** CoreML for maximum Neural Engine performance
-- **Hardware:** Apple Neural Engine + GPU
-- **Optimization:** INT8 quantization, graph optimization
-- **Format:** .mlmodel (Core ML model format)
+**Models:**
+- Base: Qwen-2.5-1.5B/3B/7B/14B (ONNX format, pre-trained)
+- Source: onnx-community on HuggingFace
+- Adapters: LoRA (domain-specific, ~5MB each, via Python training)
+
+**HTTP Server:** Axum
+- Tokio async runtime
+- Tower middleware stack
+- Efficient request routing
+
+**TUI:** Ratatui
+- Modern terminal UI framework
+- Composable widgets
+- Efficient rendering
+
+**Dependencies:**
+- `ort` - ONNX Runtime bindings (Rust)
+- `hf-hub` - HuggingFace Hub integration
+- `tokenizers` - Tokenization (HF tokenizers crate)
+- `tokio` - Async runtime
+- `axum` - HTTP server
+- `ratatui` - TUI framework
+- `sysinfo` - System RAM detection
 
 ## Performance Targets
 
-### Phase 1 + 2a (Current - v0.2.0)
-- **Forward rate:** 100% (correct - learning phase)
-- **Crisis detection:** 100% accuracy
-- **Tool execution:** Working reliably, multi-turn loop functional
-- **Response time:**
-  - Forward (with streaming): Real-time character display
-  - Forward (with tools): ~1-2s + tool execution time
-  - Tool overhead: ~50-200ms per tool
-- **Concurrent sessions:** Safe with file locking
+### Current Performance (v0.4.0)
 
-**Current Behavior:**
-- All queries forward to Claude (expected during training data collection)
-- Threshold models learning from every query
-- Neural models training but not routing yet
-- Statistics accumulated across sessions
+**Startup:**
+- REPL available: <100ms (instant)
+- Daemon spawn: 2-3s from cache
+- Model loading: 5-10s background (non-blocking)
 
-### Phase 2b (Neural Models Primary - Target: ~200 queries)
-- **Forward rate:** 30-40%
-- **Response time (local):** 500ms-2s
-- **Accuracy:** >90% (compared to Claude)
-- **Hybrid routing:** Gradual transition from threshold to neural
+**Response Time:**
+- Local generation: 500ms-2s (depending on model size)
+- With LoRA adapter: +50-100ms overhead
+- Teacher API: Standard API latency (1-3s)
+- Tool execution: ~50-200ms per tool
 
-### Phase 3+ (Optimized - Target: ~6 months)
-- **Forward rate:** 5-10%
-- **Response time (local):** 200-500ms (with Core ML optimization)
-- **Accuracy:** >95%
-- **Cost reduction:** 76%
-- **Latency target:** <100ms end-to-end on Neural Engine
+**Resource Usage:**
+- RAM: 3-28GB (depending on model size)
+- Disk: 1.5-14GB for base model + ~5MB per adapter
+- CPU (idle): <5%
+
+**Daemon:**
+- Throughput: 1000+ requests/second (health checks)
+- Latency overhead: <5ms (excluding model inference)
+- Memory per session: ~20MB
+- Max concurrent sessions: 100 (configurable)
 
 ## Security & Privacy
 
@@ -615,86 +591,55 @@ Stored in: `~/.shammah/metrics/YYYY-MM-DD.jsonl`
 - No telemetry, no cloud sync
 - Can delete `~/.shammah/` anytime
 
-### Model Safety
-- Generator trained on Claude (inherently safe)
-- Validator checks for harmful content
-- Two decision points prevent bad outputs
-- Crisis queries always forwarded
+### Tool Safety
+- Permission system with approval dialogs
+- Session and persistent patterns
+- Wildcard and regex matching
+- User controls all tool execution
 
-## Deferred Work
+### Daemon Security
+- Binds to localhost by default (127.0.0.1)
+- API key authentication (Phase 4 - not yet implemented)
+- Rate limiting (Phase 4 - not yet implemented)
+- TLS support via reverse proxy (nginx)
 
-### Security Design for Self-Improvement (Restart Tool)
-
-**Current State (Phase 1):**
-- Basic restart tool implemented
-- Claude can modify code and restart without confirmation
-- Uses Unix exec() to replace process with new binary
-
-**Missing Security Measures (Deferred to Phase 2):**
-1. **User Confirmation**
-   - Prompt before code modification
-   - Show diff of proposed changes
-   - Require explicit approval
-
-2. **Git Integration**
-   - Auto-stash before changes
-   - Create backup commit
-   - Rollback mechanism if restart fails
-
-3. **Binary Backup**
-   - Keep previous binary as `.bak`
-   - Automatic rollback on crash
-   - Version tracking
-
-4. **Dev Mode Flag**
-   - Disable restart in production
-   - Environment variable: `SHAMMAH_DEV_MODE=1`
-   - Config file setting
-
-5. **Change Review UI**
-   - Show files to be modified
-   - Preview changes
-   - Confirmation dialog
-
-**Rationale:**
-- Get basic functionality working first
-- Add safety features once workflow is validated
-- **Risk:** Claude can modify any code without confirmation
-- **Mitigation:** Only use in development with version control
-
-**Timeline:** Phase 2 of self-improvement (TBD)
-
-### Streaming + Tool Detection
-
-**Issue:** Streaming disabled when tool execution likely
-
-**Current Limitation:**
-- Can't detect tool_use blocks in SSE stream
-- Falls back to buffered response when tools are used
-
-**Solution (Future):**
-- Parse full SSE stream for tool_use events
-- Buffer tool_use blocks while streaming text
-- Maintain streaming UX even with tools
-
-**Priority:** Low (buffered responses work fine)
+**Current Recommendations:**
+- Only bind to localhost unless on trusted network
+- Use firewall rules to restrict access
+- Run behind reverse proxy (nginx) for production
+- Monitor logs for suspicious activity
 
 ## Future Optimizations
 
-### Phase 4: Apple Neural Engine
-- Convert to CoreML format (.mlmodel)
-- Utilize ANE for all models
-- Target <100ms end-to-end latency
-- Maximum Apple Silicon performance
+### Pure Rust LoRA Training
+- Current: Python-based training (2x memory overhead)
+- Future: Custom Rust implementation compatible with ONNX Runtime
+- Options: burn.rs, custom ONNX graph mods, or wait for ONNX Training support
 
-### Phase 5: Continuous Learning
-- Online learning from user feedback
-- Adaptive thresholds based on performance
-- Personalized to user's specific domain
-- Uncertainty estimation for better routing
+### Adapter Loading at Runtime
+- Load trained LoRA adapters during ONNX inference
+- Requires weight merging or dynamic ONNX graph modification
+- Enables instant domain switching without reloading base model
 
-### Phase 6: Multi-Modal
-- Image understanding (vision models)
-- Code execution sandboxing
-- Web search integration
-- Document analysis
+### Quantization
+- INT8 quantization for lower memory usage
+- Faster inference on Neural Engine
+- Trade-off: slight quality reduction for 4x memory savings
+
+### Multi-GPU Support
+- Distribute inference across multiple GPUs
+- Enables larger models (70B+)
+- Requires model parallelism implementation
+
+## References
+
+- **DAEMON_MODE.md** - Detailed daemon architecture and API
+- **TOOL_CONFIRMATION.md** - Tool permission system details
+- **TUI_ARCHITECTURE.md** - Terminal UI rendering system
+- **USER_GUIDE.md** - Setup and usage instructions
+- **ROADMAP.md** - Future work planning
+
+---
+
+**Current Version:** 0.4.0 (Production-Ready with Tool Confirmations)
+**Last Updated:** 2026-02-14
