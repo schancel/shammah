@@ -1170,12 +1170,12 @@ fn render_model_preview(f: &mut Frame, area: Rect, device: BackendDevice, family
     f.render_widget(help, chunks[2]);
 }
 
-fn render_custom_model_repo(f: &mut Frame, area: Rect, input: &str, device: BackendDevice) {
+fn render_custom_model_repo(f: &mut Frame, area: Rect, input: &str, _device: BackendDevice) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),  // Title
-            Constraint::Length(8),  // Instructions (device-specific)
+            Constraint::Length(8),  // Instructions
             Constraint::Length(3),  // Input
             Constraint::Length(2),  // Help
         ])
@@ -1186,29 +1186,15 @@ fn render_custom_model_repo(f: &mut Frame, area: Rect, input: &str, device: Back
         .alignment(Alignment::Center);
     f.render_widget(title, chunks[0]);
 
-    // Device-specific instructions
-    let instructions_text = match device {
-        #[cfg(target_os = "macos")]
-        BackendDevice::CoreML => {
-            "⚠️  CoreML requires .mlpackage/.mlmodelc format models!\n\n\
-             Compatible repos (with config.json + tokenizer.json):\n\
-             • anemll/anemll-Qwen-Qwen3-0.6B-ctx512_0.3.4 (Qwen 0.6B, recommended)\n\
-             • andmev/Llama-3.2-3B-Instruct-CoreML (Llama 3B)\n\
-             • anemll/anemll-google-gemma-3-270m-it-M1-ctx512-monolithic_0.3.5 (Gemma 270M)\n\n\
-             ⚠️ Most CoreML repos lack standard HF structure!\n\
-             Standard safetensors repos will NOT work.\n\
-             Press Enter to skip and use defaults."
-        }
-        _ => {
-            "Specify a custom HuggingFace model repository (optional).\n\n\
-             Examples:\n\
-             • Qwen/Qwen2.5-3B-Instruct (default for Qwen)\n\
-             • google/gemma-2-9b-it (Gemma)\n\
-             • meta-llama/Llama-3.2-8B-Instruct (Llama)\n\n\
-             Leave empty to use recommended defaults.\n\
-             Press Enter to continue."
-        }
-    };
+    // ONNX-focused instructions (device selection only affects execution provider)
+    let instructions_text = "Specify a custom HuggingFace model repository in ONNX format (optional).\n\n\
+         All models must be in ONNX format. Your device selection (CoreML/Metal/CPU)\n\
+         only affects which ONNX Runtime execution provider is used.\n\n\
+         Examples of ONNX model repositories:\n\
+         • onnx-community/Qwen2.5-1.5B-Instruct (Qwen, recommended)\n\
+         • microsoft/Phi-3.5-mini-instruct-onnx (Phi)\n\
+         • onnx-community/DeepSeek-R1-Distill-Qwen-1.5B-ONNX (DeepSeek)\n\n\
+         Leave empty to use recommended defaults. Press Enter to continue.";
 
     let instructions = Paragraph::new(instructions_text)
         .style(Style::default().fg(Color::Reset))
