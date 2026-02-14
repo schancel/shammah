@@ -392,21 +392,33 @@ impl EventLoop {
 
     /// Handle /local command - query local model directly (bypass routing)
     async fn handle_local_query(&mut self, query: String) -> Result<()> {
+        use crate::cli::messages::StreamingResponseMessage;
+        use std::sync::Arc;
+
         // Show status message
         self.output_manager.write_info("🔧 Local Model Query (bypassing routing)");
         self.render_tui().await?;
 
         // Check if daemon client exists
         if let Some(daemon_client) = &self.daemon_client {
-            // Daemon mode: use HTTP to query with local_only flag (with auto-recovery)
-            match daemon_client.query_local_only_with_recovery(&query).await {
-                Ok(response_text) => {
-                    // Output the response
-                    self.output_manager.write_response(response_text);
+            // Create streaming response message
+            let msg = Arc::new(StreamingResponseMessage::new());
+            self.output_manager.add_trait_message(msg.clone() as Arc<dyn crate::cli::messages::Message>);
+            self.render_tui().await?;
+
+            // Daemon mode: use HTTP to query with streaming UI updates
+            let msg_clone = msg.clone();
+            match daemon_client.query_local_only_streaming_with_callback(&query, move |token_text| {
+                msg_clone.append_chunk(token_text);
+            }).await {
+                Ok(_) => {
+                    // Mark complete
+                    msg.set_complete();
                     self.output_manager.write_info("✓ Local model (bypassed routing)");
                     self.render_tui().await?;
                 }
                 Err(e) => {
+                    msg.set_failed();
                     self.output_manager.write_error(format!("Local query failed: {}", e));
                     self.render_tui().await?;
                 }

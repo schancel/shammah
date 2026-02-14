@@ -109,6 +109,67 @@ impl TemplateGenerator {
         }
     }
 
+    /// Generate a response with streaming callback
+    ///
+    /// Calls the callback for each generated token with (token_id, token_text).
+    pub fn generate_streaming<F>(
+        &mut self,
+        messages: &[crate::claude::Message],
+        token_callback: F,
+    ) -> Result<Option<crate::generators::GeneratorResponse>>
+    where
+        F: FnMut(u32, &str) + Send + 'static,
+    {
+        // Extract the user's last message
+        let query = messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "user")
+            .and_then(|m| {
+                m.content.iter().find_map(|block| match block {
+                    crate::claude::ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+            })
+            .ok_or_else(|| anyhow::anyhow!("No user message found"))?;
+
+        // Try neural generator with streaming
+        if let Some(generator) = &self.neural_generator {
+            match self.try_neural_generate_streaming(query, generator, token_callback) {
+                Ok(neural_response) => {
+                    // Convert to GeneratorResponse format
+                    use crate::generators::ResponseMetadata;
+
+                    let response = crate::generators::GeneratorResponse {
+                        text: neural_response.clone(),
+                        content_blocks: vec![crate::claude::ContentBlock::Text {
+                            text: neural_response.clone(),
+                        }],
+                        tool_uses: vec![],
+                        metadata: ResponseMetadata {
+                            generator: "qwen-local".to_string(),
+                            model: "Qwen2.5-1.5B-Instruct".to_string(),
+                            confidence: Some(0.9),
+                            stop_reason: None,
+                            input_tokens: None,
+                            output_tokens: Some(neural_response.split_whitespace().count() as u32),
+                            latency_ms: None,
+                        },
+                    };
+
+                    return Ok(Some(response));
+                }
+                Err(e) => {
+                    tracing::warn!("Neural streaming generation failed: {}", e);
+                    return Ok(None);
+                }
+            }
+        }
+
+        // No neural generator available
+        Ok(None)
+    }
+
     /// Generate a response for a query
     pub fn generate(&mut self, query: &str) -> Result<GeneratedResponse> {
         // Classify the query pattern
@@ -205,6 +266,71 @@ impl TemplateGenerator {
     /// Format user query with chat template using model-specific adapter
     fn format_chat_prompt(&self, user_query: &str) -> String {
         self.model_adapter.format_chat_prompt(&self.system_prompt, user_query)
+    }
+
+    /// Try to generate response using neural model with streaming
+    fn try_neural_generate_streaming<F>(
+        &self,
+        query: &str,
+        generator: &Arc<RwLock<GeneratorModel>>,
+        mut token_callback: F,
+    ) -> Result<String>
+    where
+        F: FnMut(u32, &str) + Send + 'static,
+    {
+        tracing::info!("[neural_gen_stream] Starting streaming neural generation");
+
+        // Format query with system prompt using chat template
+        let formatted_prompt = self.format_chat_prompt(query);
+
+        // Acquire lock on generator
+        let mut gen = generator
+            .try_write()
+            .map_err(|_| anyhow::anyhow!("Generator model is locked"))?;
+
+        // Get ONNX model backend
+        use crate::models::loaders::onnx::LoadedOnnxModel;
+        use crate::models::TextGeneration;
+
+        let onnx_model = gen
+            .backend_mut()
+            .as_any_mut()
+            .downcast_mut::<LoadedOnnxModel>()
+            .ok_or_else(|| anyhow::anyhow!("Backend is not an ONNX model"))?;
+
+        // Tokenize input
+        let encoding = onnx_model.tokenizer()
+            .encode(formatted_prompt.as_str(), true)
+            .map_err(|e| anyhow::anyhow!("Failed to encode prompt: {}", e))?;
+
+        let input_ids = encoding.get_ids().to_vec();
+
+        // Generate with streaming callback (filter special tokens)
+        let output_ids = onnx_model.generate_stream(
+            &input_ids,
+            100, // max 100 new tokens
+            Box::new(move |token_id, token_text| {
+                // Filter out special tokens (template markers, control characters)
+                // Only stream actual content tokens
+                let is_special = token_text.contains("<|")  // Qwen special tokens like <|im_end|>
+                    || token_text.contains("|>")
+                    || token_text.trim().is_empty();  // Skip whitespace-only tokens
+
+                if !is_special {
+                    token_callback(token_id, token_text);
+                }
+            }),
+        )?;
+
+        // Decode full output
+        let raw_response = onnx_model.tokenizer()
+            .decode(&output_ids, true)
+            .map_err(|e| anyhow::anyhow!("Failed to decode output: {}", e))?;
+
+        // Clean output using model adapter
+        let clean_response = self.model_adapter.clean_output(&raw_response);
+
+        Ok(clean_response)
     }
 
     /// Try to generate response using neural model

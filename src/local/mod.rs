@@ -77,6 +77,29 @@ impl LocalGenerator {
         }
     }
 
+    /// Try to generate a response with streaming callback
+    ///
+    /// Calls the callback for each generated token with (token_id, token_text).
+    /// This enables Server-Sent Events streaming to the client.
+    pub fn try_generate_from_pattern_streaming<F>(
+        &mut self,
+        messages: &[Message],
+        token_callback: F,
+    ) -> Result<Option<GeneratorResponse>>
+    where
+        F: FnMut(u32, &str) + Send + 'static,
+    {
+        // Check for newer adapter before generation
+        self.check_and_reload_adapter()?;
+
+        if !self.enabled {
+            return Ok(None);
+        }
+
+        // Delegate to response generator with streaming callback
+        self.response_generator.generate_streaming(messages, token_callback)
+    }
+
     /// Try to generate a response from patterns with tools
     ///
     /// This method is used by the daemon to support tool execution.

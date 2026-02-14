@@ -34,6 +34,9 @@ pub trait TextGeneration: Send + Sync {
 
     /// Downcast to Any for accessing concrete type methods
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Downcast to Any (mutable) for accessing concrete type methods
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 // Phase 4: LegacyGenerator removed (depends on Candle-based generator module)
@@ -135,6 +138,11 @@ impl GeneratorModel {
     /// Get generator backend name
     pub fn name(&self) -> &str {
         self.backend.name()
+    }
+
+    /// Get mutable reference to backend (for accessing ONNX model directly)
+    pub fn backend_mut(&mut self) -> &mut dyn TextGeneration {
+        self.backend.as_mut()
     }
 
     // Phase 4: device() removed (Candle-based)

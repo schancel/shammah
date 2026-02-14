@@ -557,6 +557,271 @@ impl DaemonClient {
         }
     }
 
+    /// Query local model with streaming and callback for UI updates
+    ///
+    /// Similar to query_local_only_streaming but calls a callback for each token
+    /// as it arrives, enabling real-time UI updates.
+    ///
+    /// # Arguments
+    /// * `query` - Text query to send
+    /// * `token_callback` - Called for each token as it arrives
+    ///
+    /// # Returns
+    /// * `Ok(String)` - Complete response text from local model
+    /// * `Err` - Error if model not ready or generation fails
+    pub async fn query_local_only_streaming_with_callback<F>(
+        &self,
+        query: &str,
+        mut token_callback: F,
+    ) -> Result<String>
+    where
+        F: FnMut(&str) + Send,
+    {
+        use futures::StreamExt;
+        use reqwest::StatusCode;
+
+        let request = ChatCompletionRequest {
+            model: "qwen-local".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(query.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            }],
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            n: None,
+            stream: true, // Enable streaming
+            stop: None,
+            tools: None,
+            local_only: Some(true), // Bypass routing
+        };
+
+        let url = format!("{}/v1/chat/completions", self.base_url);
+        debug!(url = %url, "Sending streaming local-only query with callback");
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .timeout(Duration::from_secs(300))  // 5 minute timeout for streaming
+            .send()
+            .await
+            .context("Failed to send streaming request to daemon")?;
+
+        match response.status() {
+            StatusCode::OK => {
+                // Parse SSE stream
+                let mut stream = response.bytes_stream();
+                let mut accumulated_content = String::new();
+                let mut buffer = Vec::new();
+
+                while let Some(chunk_result) = stream.next().await {
+                    let chunk = chunk_result.context("Failed to read streaming chunk")?;
+                    buffer.extend_from_slice(&chunk);
+
+                    // Process complete SSE events
+                    // SSE format: "data: {...}\n\n"
+                    // Look for double newline separator
+                    loop {
+                        let separator_pos = buffer.windows(2)
+                            .position(|w| w == b"\n\n")
+                            .or_else(|| buffer.windows(4).position(|w| w == b"\r\n\r\n"));
+
+                        if let Some(pos) = separator_pos {
+                            // Extract event (including separator for proper draining)
+                            let drain_len = if buffer[pos..].starts_with(b"\r\n\r\n") {
+                                pos + 4
+                            } else {
+                                pos + 2
+                            };
+
+                            let event_bytes: Vec<u8> = buffer.drain(..drain_len).collect();
+                            let event_str = String::from_utf8_lossy(&event_bytes);
+
+                            for line in event_str.lines() {
+                                if let Some(data) = line.strip_prefix("data: ") {
+                                    if data.trim() == "[DONE]" {
+                                        break;
+                                    }
+
+                                    // Parse JSON chunk
+                                    if let Ok(chunk_json) = serde_json::from_str::<serde_json::Value>(data) {
+                                        if let Some(choices) = chunk_json["choices"].as_array() {
+                                            if let Some(first_choice) = choices.first() {
+                                                if let Some(delta) = first_choice["delta"].as_object() {
+                                                    // Safely check for "content" key (final chunk has empty delta)
+                                                    if let Some(content) = delta.get("content").and_then(|v| v.as_str()) {
+                                                        accumulated_content.push_str(content);
+                                                        // Call callback for UI update
+                                                        token_callback(content);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // No complete event yet, wait for more data
+                            break;
+                        }
+                    }
+                }
+
+                if accumulated_content.is_empty() {
+                    anyhow::bail!("No content received from streaming response")
+                } else {
+                    Ok(accumulated_content)
+                }
+            }
+            StatusCode::SERVICE_UNAVAILABLE => {
+                anyhow::bail!("Local model not ready (initializing/downloading/loading)")
+            }
+            StatusCode::INTERNAL_SERVER_ERROR => {
+                let error_body = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+                anyhow::bail!("Local generation failed: {}", error_body)
+            }
+            StatusCode::NOT_IMPLEMENTED => {
+                anyhow::bail!("Local model not available")
+            }
+            status => {
+                let error_body = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+                anyhow::bail!("Unexpected status {}: {}", status, error_body)
+            }
+        }
+    }
+
+    /// Query local model with streaming (SSE)
+    ///
+    /// This sends a streaming request with local_only=true to bypass routing.
+    /// Tokens are received via Server-Sent Events and accumulated into the final response.
+    /// This keeps the HTTP connection alive during long generations, preventing timeouts.
+    ///
+    /// # Arguments
+    /// * `query` - Text query to send
+    ///
+    /// # Returns
+    /// * `Ok(String)` - Complete response text from local model
+    /// * `Err` - Error if model not ready or generation fails
+    pub async fn query_local_only_streaming(&self, query: &str) -> Result<String> {
+        use futures::StreamExt;
+        use reqwest::StatusCode;
+
+        let request = ChatCompletionRequest {
+            model: "qwen-local".to_string(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Some(query.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            }],
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            n: None,
+            stream: true, // Enable streaming
+            stop: None,
+            tools: None,
+            local_only: Some(true), // Bypass routing
+        };
+
+        let url = format!("{}/v1/chat/completions", self.base_url);
+        debug!(url = %url, "Sending streaming local-only query");
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .timeout(Duration::from_secs(300))  // 5 minute timeout for streaming (per chunk, not total)
+            .send()
+            .await
+            .context("Failed to send streaming request to daemon")?;
+
+        match response.status() {
+            StatusCode::OK => {
+                // Parse SSE stream
+                let mut stream = response.bytes_stream();
+                let mut accumulated_content = String::new();
+                let mut buffer = Vec::new();
+
+                while let Some(chunk_result) = stream.next().await {
+                    let chunk = chunk_result.context("Failed to read streaming chunk")?;
+                    buffer.extend_from_slice(&chunk);
+
+                    // Process complete SSE events
+                    // SSE format: "data: {...}\n\n"
+                    // Look for double newline separator
+                    loop {
+                        let separator_pos = buffer.windows(2)
+                            .position(|w| w == b"\n\n")
+                            .or_else(|| buffer.windows(4).position(|w| w == b"\r\n\r\n"));
+
+                        if let Some(pos) = separator_pos {
+                            // Extract event (including separator for proper draining)
+                            let drain_len = if buffer[pos..].starts_with(b"\r\n\r\n") {
+                                pos + 4
+                            } else {
+                                pos + 2
+                            };
+
+                            let event_bytes: Vec<u8> = buffer.drain(..drain_len).collect();
+                            let event_str = String::from_utf8_lossy(&event_bytes);
+
+                            for line in event_str.lines() {
+                                if let Some(data) = line.strip_prefix("data: ") {
+                                    if data.trim() == "[DONE]" {
+                                        break;
+                                    }
+
+                                    // Parse JSON chunk
+                                    if let Ok(chunk_json) = serde_json::from_str::<serde_json::Value>(data) {
+                                        if let Some(choices) = chunk_json["choices"].as_array() {
+                                            if let Some(first_choice) = choices.first() {
+                                                if let Some(delta) = first_choice["delta"].as_object() {
+                                                    // Safely check for "content" key (final chunk has empty delta)
+                                                    if let Some(content) = delta.get("content").and_then(|v| v.as_str()) {
+                                                        accumulated_content.push_str(content);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // No complete event yet, wait for more data
+                            break;
+                        }
+                    }
+                }
+
+                if accumulated_content.is_empty() {
+                    anyhow::bail!("No content received from streaming response")
+                } else {
+                    Ok(accumulated_content)
+                }
+            }
+            StatusCode::SERVICE_UNAVAILABLE => {
+                anyhow::bail!("Local model not ready (initializing/downloading/loading)")
+            }
+            StatusCode::INTERNAL_SERVER_ERROR => {
+                let error_body = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+                anyhow::bail!("Local generation failed: {}", error_body)
+            }
+            StatusCode::NOT_IMPLEMENTED => {
+                anyhow::bail!("Local model not available")
+            }
+            status => {
+                let error_body = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+                anyhow::bail!("Unexpected status {}: {}", status, error_body)
+            }
+        }
+    }
+
     /// Query local model only with automatic crash recovery
     ///
     /// Same as query_local_only but with automatic daemon restart on connection failure.
@@ -568,8 +833,8 @@ impl DaemonClient {
     /// * `Ok(String)` - Response text from local model
     /// * `Err` - Error if both attempts fail or model not ready
     pub async fn query_local_only_with_recovery(&self, query: &str) -> Result<String> {
-        // First attempt
-        match self.query_local_only(query).await {
+        // First attempt (use streaming to avoid timeouts)
+        match self.query_local_only_streaming(query).await {
             Ok(response) => Ok(response),
             Err(e) => {
                 // Check if error is connection-related (daemon crash)
@@ -590,9 +855,9 @@ impl DaemonClient {
                             // Wait a moment for daemon to fully initialize
                             tokio::time::sleep(Duration::from_millis(500)).await;
 
-                            // Retry query once
-                            self.query_local_only(query).await.context(
-                                "Query failed after daemon restart",
+                            // Retry query once (with streaming)
+                            self.query_local_only_streaming(query).await.context(
+                                "Streaming query failed after daemon restart",
                             )
                         }
                         Err(restart_err) => {

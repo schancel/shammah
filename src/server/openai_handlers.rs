@@ -6,10 +6,13 @@
 use axum::{
     extract::State,
     http::StatusCode,
-    response::{IntoResponse, Json, Response},
+    response::{IntoResponse, Json, Response, sse::{Event, Sse}},
 };
+use futures::stream::{self, Stream};
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use super::openai_types::*;
@@ -45,13 +48,11 @@ impl ErrorResponse {
     }
 }
 
-/// Handle POST /v1/chat/completions - OpenAI-compatible chat endpoint
-pub async fn handle_chat_completions(
-    State(server): State<Arc<AgentServer>>,
-    Json(request): Json<ChatCompletionRequest>,
-) -> Result<Json<ChatCompletionResponse>, Response> {
-    let start_time = Instant::now();
-
+/// Handle streaming chat completions (SSE)
+async fn handle_chat_completions_streaming(
+    server: Arc<AgentServer>,
+    request: ChatCompletionRequest,
+) -> Result<Response, Response> {
     // Validate request
     if request.messages.is_empty() {
         return Err(error_response(
@@ -60,21 +61,155 @@ pub async fn handle_chat_completions(
         ));
     }
 
-    if request.stream {
+    // Check if local-only mode requested
+    if !request.local_only.unwrap_or(false) {
         return Err(error_response(
-            "streaming is not yet supported",
+            "streaming is only supported for local-only queries",
             "invalid_request_error",
         ));
     }
 
+    // Convert OpenAI messages to internal format
+    let internal_messages = convert_messages_to_internal(&request.messages)
+        .map_err(|e| error_response(&e.to_string(), "invalid_request_error"))?;
+
+    // Check generator state
+    use crate::models::GeneratorState;
+    let state = server.generator_state().read().await;
+
+    match &*state {
+        GeneratorState::Ready { .. } => {
+            // Model ready, proceed
+        }
+        _ => {
+            return Err(error_response(
+                "Local model not ready for streaming",
+                "model_not_ready",
+            ));
+        }
+    }
+    drop(state);
+
+    // Create channel for streaming tokens
+    let (tx, rx) = mpsc::unbounded_channel::<String>();
+    let model_name = request.model.clone();
+
+    // Spawn generation task
+    // TODO: True real-time streaming - currently ONNX generation is synchronous and generates
+    // all tokens before firing callbacks, so tokens arrive in a burst rather than incrementally.
+    // To fix: Make ONNX generation yield between tokens (e.g., tokio::task::yield_now() after
+    // each token) so the HTTP stream can send tokens as they're generated, not all at once.
+    tokio::spawn(async move {
+        let mut generator = server.local_generator().write().await;
+
+        // Try to generate with streaming callback
+        match generator.try_generate_from_pattern_streaming(&internal_messages, move |_token_id, token_text| {
+            // Send each token via channel
+            let _ = tx.send(token_text.to_string());
+        }) {
+            Ok(Some(_response)) => {
+                info!("✓ Streaming generation completed");
+            }
+            Ok(None) => {
+                warn!("❌ Streaming generation returned None");
+            }
+            Err(e) => {
+                warn!("❌ Streaming generation error: {}", e);
+            }
+        }
+    });
+
+    // Create SSE stream from receiver
+    // State: (receiver, model_name, done_flag)
+    let stream = stream::unfold((rx, model_name, false), |(mut rx, model_name, done)| async move {
+        if done {
+            // Already sent final chunk, terminate stream
+            return None;
+        }
+
+        match rx.recv().await {
+            Some(token_text) => {
+                // Format as OpenAI streaming chunk
+                let chunk = serde_json::json!({
+                    "id": format!("chatcmpl-{}", uuid::Uuid::new_v4()),
+                    "object": "chat.completion.chunk",
+                    "created": chrono::Utc::now().timestamp(),
+                    "model": &model_name,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {
+                            "content": token_text
+                        },
+                        "finish_reason": null
+                    }]
+                });
+
+                Some((
+                    Ok::<_, Infallible>(Event::default().json_data(chunk).unwrap()),
+                    (rx, model_name, false), // Continue streaming
+                ))
+            }
+            None => {
+                // Send final chunk with finish_reason
+                let chunk = serde_json::json!({
+                    "id": format!("chatcmpl-{}", uuid::Uuid::new_v4()),
+                    "object": "chat.completion.chunk",
+                    "created": chrono::Utc::now().timestamp(),
+                    "model": &model_name,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "stop"
+                    }]
+                });
+
+                Some((
+                    Ok::<_, Infallible>(Event::default().json_data(chunk).unwrap()),
+                    (rx, model_name, true), // Mark done, will terminate on next call
+                ))
+            }
+        }
+    });
+
+    Ok(Sse::new(stream).into_response())
+}
+
+/// Handle POST /v1/chat/completions - OpenAI-compatible chat endpoint
+pub async fn handle_chat_completions(
+    State(server): State<Arc<AgentServer>>,
+    Json(request): Json<ChatCompletionRequest>,
+) -> Response {
+    let start_time = Instant::now();
+
+    // Validate request
+    if request.messages.is_empty() {
+        return error_response(
+            "messages array cannot be empty",
+            "invalid_request_error",
+        );
+    }
+
+    // Handle streaming requests
+    if request.stream {
+        match handle_chat_completions_streaming(server, request).await {
+            Ok(response) => return response,
+            Err(error_resp) => return error_resp,
+        }
+    }
+
     // Check if local-only mode requested
     if request.local_only.unwrap_or(false) {
-        return handle_local_only_query(server, request).await;
+        match handle_local_only_query(server, request).await {
+            Ok(json_resp) => return json_resp.into_response(),
+            Err(error_resp) => return error_resp,
+        }
     }
 
     // Convert OpenAI messages to internal format (now handles tool calls/results)
-    let internal_messages = convert_messages_to_internal(&request.messages)
-        .map_err(|e| error_response(&e.to_string(), "invalid_request_error"))?;
+    let internal_messages = match convert_messages_to_internal(&request.messages) {
+        Ok(messages) => messages,
+        Err(e) => return error_response(&e.to_string(), "invalid_request_error"),
+    };
 
     // Convert OpenAI tools to internal format
     let internal_tools = request.tools.as_ref().map(|tools| convert_tools_to_internal(tools));
@@ -103,11 +238,14 @@ pub async fn handle_chat_completions(
                 claude_request = claude_request.with_tools(tools);
             }
 
-            let response = server
+            let response = match server
                 .claude_client()
                 .send_message(&claude_request)
                 .await
-                .map_err(|e| error_response(&e.to_string(), "api_error"))?;
+            {
+                Ok(resp) => resp,
+                Err(e) => return error_response(&e.to_string(), "api_error"),
+            };
 
             (response.content, "forward")
         }
@@ -140,11 +278,14 @@ pub async fn handle_chat_completions(
                                 claude_request = claude_request.with_tools(tools);
                             }
 
-                            let response = server
+                            let response = match server
                                 .claude_client()
                                 .send_message(&claude_request)
                                 .await
-                                .map_err(|e| error_response(&e.to_string(), "api_error"))?;
+                            {
+                                Ok(resp) => resp,
+                                Err(e) => return error_response(&e.to_string(), "api_error"),
+                            };
 
                             (response.content, "fallback")
                         }
@@ -159,11 +300,14 @@ pub async fn handle_chat_completions(
                                 claude_request = claude_request.with_tools(tools);
                             }
 
-                            let response = server
+                            let response = match server
                                 .claude_client()
                                 .send_message(&claude_request)
                                 .await
-                                .map_err(|e| error_response(&e.to_string(), "api_error"))?;
+                            {
+                                Ok(resp) => resp,
+                                Err(e) => return error_response(&e.to_string(), "api_error"),
+                            };
 
                             (response.content, "fallback")
                         }
@@ -180,11 +324,14 @@ pub async fn handle_chat_completions(
                         claude_request = claude_request.with_tools(tools);
                     }
 
-                    let response = server
+                    let response = match server
                         .claude_client()
                         .send_message(&claude_request)
                         .await
-                        .map_err(|e| error_response(&e.to_string(), "api_error"))?;
+                    {
+                        Ok(resp) => resp,
+                        Err(e) => return error_response(&e.to_string(), "api_error"),
+                    };
 
                     (response.content, "forward")
                 }
@@ -221,9 +368,12 @@ pub async fn handle_chat_completions(
     }
 
     // Convert internal response to OpenAI format (handles tool_calls)
-    let openai_response = convert_response_to_openai(content_blocks, &request.model)?;
+    let openai_response = match convert_response_to_openai(content_blocks, &request.model) {
+        Ok(resp) => resp,
+        Err(error_resp) => return error_resp,
+    };
 
-    Ok(Json(openai_response))
+    Json(openai_response).into_response()
 }
 
 /// Handle local-only query (bypass routing, direct local model access)
