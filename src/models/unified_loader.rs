@@ -447,49 +447,6 @@ impl UnifiedModelLoader {
                 "apple/mistral-coreml".to_string()
             }
 
-            // Phi and DeepSeek: NO CoreML support
-            #[cfg(target_os = "macos")]
-            (ModelFamily::Phi, BackendDevice::CoreML) => {
-                anyhow::bail!(
-                    "Phi models are not available for CoreML.\n\
-                     \n\
-                     Phi models require standard HuggingFace repositories\n\
-                     which are not compatible with CoreML's .mlpackage format.\n\
-                     \n\
-                     To fix: Change config.toml:\n\
-                     [backend]\n\
-                     device = \"metal\"  # or \"cpu\"\n\
-                     model_family = \"Phi\"\n\
-                     \n\
-                     OR\n\
-                     \n\
-                     [backend]\n\
-                     device = \"coreml\"\n\
-                     model_family = \"Qwen2\"  # or \"Llama3\", \"Gemma2\", \"Mistral\""
-                )
-            }
-
-            #[cfg(target_os = "macos")]
-            (ModelFamily::DeepSeek, BackendDevice::CoreML) => {
-                anyhow::bail!(
-                    "DeepSeek models are not available for CoreML.\n\
-                     \n\
-                     DeepSeek models require standard HuggingFace repositories\n\
-                     which are not compatible with CoreML's .mlpackage format.\n\
-                     \n\
-                     To fix: Change config.toml:\n\
-                     [backend]\n\
-                     device = \"metal\"  # or \"cpu\"\n\
-                     model_family = \"DeepSeek\"\n\
-                     \n\
-                     OR\n\
-                     \n\
-                     [backend]\n\
-                     device = \"coreml\"\n\
-                     model_family = \"Qwen2\"  # or \"Llama3\", \"Gemma2\", \"Mistral\""
-                )
-            }
-
             // Standard Candle-compatible repos
             (ModelFamily::Qwen2, _) => {
                 format!("Qwen/Qwen2.5-{}-Instruct", size_str)
@@ -513,21 +470,22 @@ impl UnifiedModelLoader {
             }
 
             (ModelFamily::Phi, _) => {
-                // Phi models (different naming)
+                // Phi ONNX models from Microsoft
                 match config.size {
-                    ModelSize::Small => "microsoft/phi-2".to_string(),
-                    ModelSize::Medium => "microsoft/Phi-3-mini-4k-instruct".to_string(),
-                    ModelSize::Large | ModelSize::XLarge => "microsoft/Phi-3-medium-4k-instruct".to_string(),
+                    ModelSize::Small => "onnx-community/Phi-4-mini-instruct-ONNX".to_string(), // 3.8B
+                    ModelSize::Medium => "microsoft/Phi-3.5-mini-instruct-onnx".to_string(), // 3.8B
+                    ModelSize::Large => "microsoft/Phi-4-mini-instruct-onnx".to_string(), // 14B
+                    ModelSize::XLarge => "microsoft/Phi-4-mini-instruct-onnx".to_string(), // 14B
                 }
             }
 
             (ModelFamily::DeepSeek, _) => {
-                // DeepSeek Coder models
+                // DeepSeek ONNX models (R1 Distill series)
                 match config.size {
-                    ModelSize::Small => "deepseek-ai/deepseek-coder-1.3b-instruct".to_string(),
-                    ModelSize::Medium => "deepseek-ai/deepseek-coder-6.7b-instruct".to_string(),
-                    ModelSize::Large => "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct".to_string(),
-                    ModelSize::XLarge => "deepseek-ai/deepseek-coder-33b-instruct".to_string(),
+                    ModelSize::Small => "onnx-community/DeepSeek-R1-Distill-Qwen-1.5B-ONNX".to_string(),
+                    ModelSize::Medium => "aless2212/deepseek-coder-7b-instruct-v1.5-onnx-fp16".to_string(),
+                    ModelSize::Large => "aless2212/deepseek-coder-7b-instruct-v1.5-onnx-fp16".to_string(),
+                    ModelSize::XLarge => "aless2212/deepseek-coder-7b-instruct-v1.5-onnx-fp16".to_string(),
                 }
             }
 

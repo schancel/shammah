@@ -15,27 +15,10 @@ use crate::config::{BackendDevice, TeacherEntry};
 use crate::models::unified_loader::{ModelFamily, ModelSize};
 
 /// Check if a model family is compatible with a backend device
-fn is_model_available(family: ModelFamily, device: BackendDevice) -> bool {
-    match (family, device) {
-        // CoreML requires pre-converted models
-        #[cfg(target_os = "macos")]
-        (ModelFamily::Qwen2, BackendDevice::CoreML) => true,
-        #[cfg(target_os = "macos")]
-        (ModelFamily::Llama3, BackendDevice::CoreML) => true,
-        #[cfg(target_os = "macos")]
-        (ModelFamily::Gemma2, BackendDevice::CoreML) => true,
-        #[cfg(target_os = "macos")]
-        (ModelFamily::Mistral, BackendDevice::CoreML) => true,
-
-        // Phi and DeepSeek: NO CoreML support
-        #[cfg(target_os = "macos")]
-        (ModelFamily::Phi, BackendDevice::CoreML) => false,
-        #[cfg(target_os = "macos")]
-        (ModelFamily::DeepSeek, BackendDevice::CoreML) => false,
-
-        // Metal/CPU/CUDA: All families supported (via candle/standard repos)
-        _ => true,
-    }
+fn is_model_available(_family: ModelFamily, _device: BackendDevice) -> bool {
+    // All model families work with all devices via ONNX Runtime
+    // The device selection just chooses the execution provider (CoreML/Metal/CPU)
+    true
 }
 
 /// Get error message for incompatible model/device combination
