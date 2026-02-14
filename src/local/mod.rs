@@ -36,11 +36,18 @@ impl LocalGenerator {
         neural_generator: Option<Arc<RwLock<GeneratorModel>>>,
     ) -> Self {
         let pattern_classifier = PatternClassifier::new();
-        // TODO: Get actual model name from GeneratorModel config
-        // For now, default to Qwen since that's what we're using
-        let model_name = "Qwen2.5-1.5B-Instruct";
+
+        // Extract actual model name from GeneratorModel if available
+        let model_name = if let Some(ref gen) = neural_generator {
+            // Blocking read to get model name
+            gen.blocking_read().name().to_string()
+        } else {
+            // Default placeholder when no model loaded yet
+            "Unknown".to_string()
+        };
+
         let response_generator =
-            TemplateGenerator::with_models(pattern_classifier.clone(), neural_generator, model_name);
+            TemplateGenerator::with_models(pattern_classifier.clone(), neural_generator, &model_name);
 
         Self {
             pattern_classifier,
