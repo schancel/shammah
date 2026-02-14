@@ -8,9 +8,26 @@ use super::common::{GeneratorConfig, Saveable};
 use super::unified_loader::UnifiedModelLoader;
 
 /// Text generation trait - abstraction over different generator backends
+/// Callback type for streaming generation
+pub type TokenCallback = Box<dyn FnMut(u32, &str) + Send>;
+
 pub trait TextGeneration: Send + Sync {
     /// Generate text from input tokens
     fn generate(&mut self, input_ids: &[u32], max_new_tokens: usize) -> Result<Vec<u32>>;
+
+    /// Generate text with token-by-token callback for streaming
+    ///
+    /// The callback receives each generated token ID and its decoded text.
+    /// Default implementation just calls regular generate (no streaming support).
+    fn generate_stream(
+        &mut self,
+        input_ids: &[u32],
+        max_new_tokens: usize,
+        _token_callback: TokenCallback,
+    ) -> Result<Vec<u32>> {
+        // Default implementation: just call regular generate (no streaming)
+        self.generate(input_ids, max_new_tokens)
+    }
 
     /// Get model name/description
     fn name(&self) -> &str;

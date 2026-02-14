@@ -283,6 +283,16 @@ impl LoadedOnnxModel {
 
     /// Autoregressive text generation with KV cache (Phase 5.1)
     fn generate_autoregressive(&mut self, input_ids: &[u32], max_new_tokens: usize) -> Result<Vec<u32>> {
+        self.generate_autoregressive_with_callback(input_ids, max_new_tokens, None)
+    }
+
+    /// Generate tokens autoregressively with optional streaming callback
+    fn generate_autoregressive_with_callback(
+        &mut self,
+        input_ids: &[u32],
+        max_new_tokens: usize,
+        mut token_callback: Option<Box<dyn FnMut(u32, &str) + Send>>,
+    ) -> Result<Vec<u32>> {
         info!("ONNX autoregressive generation: {} input tokens, max {} new tokens",
               input_ids.len(), max_new_tokens);
 
@@ -337,6 +347,14 @@ impl LoadedOnnxModel {
 
             // 5. Append to output
             output_ids.push(next_token);
+
+            // 6. Call streaming callback if provided
+            if let Some(ref mut callback) = token_callback {
+                // Decode just this token to text
+                let token_text = self.tokenizer.decode(&[next_token], false)
+                    .unwrap_or_else(|_| format!("[token_{}]", next_token));
+                callback(next_token, &token_text);
+            }
         }
 
         info!("Generated {} new tokens", output_ids.len() - input_ids.len());
@@ -578,6 +596,15 @@ impl LoadedOnnxModel {
 impl TextGeneration for LoadedOnnxModel {
     fn generate(&mut self, input_ids: &[u32], max_new_tokens: usize) -> Result<Vec<u32>> {
         self.generate_autoregressive(input_ids, max_new_tokens)
+    }
+
+    fn generate_stream(
+        &mut self,
+        input_ids: &[u32],
+        max_new_tokens: usize,
+        token_callback: crate::models::TokenCallback,
+    ) -> Result<Vec<u32>> {
+        self.generate_autoregressive_with_callback(input_ids, max_new_tokens, Some(token_callback))
     }
 
     fn name(&self) -> &str {

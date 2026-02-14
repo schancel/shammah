@@ -28,7 +28,7 @@ pub use common::{
     GeneratorConfig, ModelConfig, Saveable,
 };
 pub use download::{DownloadProgress, ModelDownloader};
-pub use generator_new::{GeneratorModel, TextGeneration};
+pub use generator_new::{GeneratorModel, TextGeneration, TokenCallback};
 pub use learning::{LearningModel, ModelExpectation, ModelPrediction, ModelStats, PredictionData};
 pub use lora::{
     LoRATrainingAdapter, LoRAConfig, LoRATrainer, TrainingCoordinator, TrainingStats, WeightedExample,
