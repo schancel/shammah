@@ -1294,8 +1294,8 @@ fn render_teacher_api_key_input(f: &mut Frame, area: Rect, provider: &str, input
         .constraints([
             Constraint::Length(3),
             Constraint::Length(3),
-            Constraint::Min(5),
             Constraint::Length(3),
+            Constraint::Min(1),
         ])
         .split(area);
 
