@@ -3,19 +3,22 @@
 // Tries providers in priority order until one succeeds
 
 use anyhow::{Context, Result};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use super::{LlmProvider, ProviderRequest, ProviderResponse, StreamChunk};
 
 /// A chain of providers to try in order
 pub struct FallbackChain {
-    providers: Vec<Box<dyn LlmProvider>>,
+    providers: Arc<Vec<Box<dyn LlmProvider>>>,
 }
 
 impl FallbackChain {
     /// Create a new fallback chain with providers in priority order
     pub fn new(providers: Vec<Box<dyn LlmProvider>>) -> Self {
-        Self { providers }
+        Self {
+            providers: Arc::new(providers),
+        }
     }
 
     /// Get the number of providers in the chain
@@ -90,61 +93,111 @@ impl FallbackChain {
             .context("All fallback providers failed"))
     }
 
-    /// Try streaming with automatic fallback
+    /// Try streaming with automatic fallback, including mid-stream error recovery
+    ///
+    /// This method wraps provider receivers to handle errors that occur during streaming.
+    /// If a provider's receiver sends an error mid-stream, it automatically retries
+    /// with the next provider in the chain.
     pub async fn send_message_stream_with_fallback(
         &self,
         request: &ProviderRequest,
     ) -> Result<mpsc::Receiver<Result<StreamChunk>>> {
-        let mut last_error = None;
+        // Create a channel for the wrapped receiver
+        let (tx, rx) = mpsc::channel(100);
 
-        for (idx, provider) in self.providers.iter().enumerate() {
-            tracing::info!(
-                "Trying streaming with provider {} ({}/{})",
-                provider.name(),
-                idx + 1,
-                self.providers.len()
-            );
+        // Clone data for the spawned task
+        let providers = Arc::clone(&self.providers);
+        let request = request.clone();
 
-            // Create a modified request with this provider's model ID
-            let provider_request = ProviderRequest {
-                model: provider.default_model().to_string(),
-                messages: request.messages.clone(),
-                max_tokens: request.max_tokens,
-                tools: request.tools.clone(),
-                temperature: request.temperature,
-                stream: request.stream,
-            };
+        // Spawn task to try providers in sequence with automatic retry on stream errors
+        tokio::spawn(async move {
+            let mut provider_idx = 0;
 
-            match provider.send_message_stream(&provider_request).await {
-                Ok(receiver) => {
-                    if idx > 0 {
-                        tracing::info!(
-                            "Provider {} streaming succeeded after {} failed attempts",
-                            provider.name(),
-                            idx
-                        );
-                    } else {
-                        tracing::debug!("Primary provider {} streaming succeeded", provider.name());
+            while provider_idx < providers.len() {
+                let provider = &providers[provider_idx];
+                tracing::info!(
+                    "Trying streaming with provider {} ({}/{})",
+                    provider.name(),
+                    provider_idx + 1,
+                    providers.len()
+                );
+
+                // Create a modified request with this provider's model ID
+                let provider_request = ProviderRequest {
+                    model: provider.default_model().to_string(),
+                    messages: request.messages.clone(),
+                    max_tokens: request.max_tokens,
+                    tools: request.tools.clone(),
+                    temperature: request.temperature,
+                    stream: request.stream,
+                };
+
+                match provider.send_message_stream(&provider_request).await {
+                    Ok(mut receiver) => {
+                        if provider_idx > 0 {
+                            tracing::info!(
+                                "Provider {} streaming succeeded after {} failed attempts",
+                                provider.name(),
+                                provider_idx
+                            );
+                        } else {
+                            tracing::debug!("Primary provider {} streaming succeeded", provider.name());
+                        }
+
+                        // Forward chunks from this provider's receiver
+                        let mut had_error = false;
+                        while let Some(result) = receiver.recv().await {
+                            match result {
+                                Ok(chunk) => {
+                                    if tx.send(Ok(chunk)).await.is_err() {
+                                        // Receiver dropped, stop streaming
+                                        tracing::debug!("Receiver dropped, stopping stream");
+                                        return;
+                                    }
+                                }
+                                Err(e) => {
+                                    // Stream error - try next provider if available
+                                    tracing::warn!(
+                                        "Provider {} stream error: {}. Trying fallback...",
+                                        provider.name(),
+                                        e
+                                    );
+                                    had_error = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if !had_error {
+                            // Stream completed successfully
+                            tracing::debug!("Provider {} stream completed successfully", provider.name());
+                            return;
+                        }
+
+                        // Had error, try next provider
+                        provider_idx += 1;
                     }
-                    return Ok(receiver);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Provider {} streaming failed (attempt {}/{}): {}",
-                        provider.name(),
-                        idx + 1,
-                        self.providers.len(),
-                        e
-                    );
-                    last_error = Some(e);
-                    continue;
+                    Err(e) => {
+                        tracing::warn!(
+                            "Provider {} streaming failed (attempt {}/{}): {}",
+                            provider.name(),
+                            provider_idx + 1,
+                            providers.len(),
+                            e
+                        );
+                        provider_idx += 1;
+                        continue;
+                    }
                 }
             }
-        }
 
-        Err(last_error
-            .unwrap_or_else(|| anyhow::anyhow!("No providers available for streaming"))
-            .context("All fallback providers failed for streaming"))
+            // All providers failed
+            let error_msg = "All fallback providers failed for streaming";
+            tracing::error!("{}", error_msg);
+            let _ = tx.send(Err(anyhow::anyhow!(error_msg))).await;
+        });
+
+        Ok(rx)
     }
 }
 
