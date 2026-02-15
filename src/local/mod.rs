@@ -11,6 +11,7 @@ pub use patterns::{PatternClassifier, QueryPattern};
 
 use crate::claude::Message;
 use crate::generators::{GeneratorResponse, Generator};
+use crate::models::adapters::LocalModelAdapter;
 use crate::models::{GeneratorModel, TextTokenizer};
 use crate::tools::types::ToolDefinition;
 use crate::training::batch_trainer::BatchTrainer;
@@ -248,6 +249,11 @@ impl LocalGenerator {
     /// Get response generator
     pub fn response_generator(&mut self) -> &mut TemplateGenerator {
         &mut self.response_generator
+    }
+
+    /// Get the model adapter for cleaning
+    pub fn get_adapter(&self) -> Box<dyn LocalModelAdapter> {
+        self.response_generator.get_adapter()
     }
 
     /// Save local generator to file

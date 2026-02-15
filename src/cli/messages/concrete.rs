@@ -147,16 +147,19 @@ impl Message for StreamingResponseMessage {
         let status = *self.status.read().unwrap();
         let thinking = *self.thinking.read().unwrap();
 
+        // No cleaning - already cleaned by daemon during streaming
+        let text = content.clone();
+
         match status {
             MessageStatus::InProgress if thinking => {
-                format!("🤔 [thinking...]\n{}", content)
+                format!("🤔 [thinking...]\n{}", text)
             }
             MessageStatus::InProgress => {
                 // Regular streaming (not thinking)
-                if content.is_empty() {
+                if text.is_empty() {
                     "⏳ [streaming...]".to_string()
                 } else {
-                    format!("{}▸", content)  // Streaming indicator at end
+                    format!("{}▸", text)  // Streaming indicator at end
                 }
             }
             MessageStatus::Failed => {
@@ -164,10 +167,10 @@ impl Message for StreamingResponseMessage {
                     "{}❌ Response failed{}\n{}",
                     color_to_ansi(&colors.messages.error),
                     RESET,
-                    content
+                    text
                 )
             }
-            MessageStatus::Complete => content.clone(),
+            MessageStatus::Complete => text,
         }
     }
 

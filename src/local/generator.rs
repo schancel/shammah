@@ -339,6 +339,13 @@ impl TemplateGenerator {
         Ok(clean_response)
     }
 
+    /// Get the model adapter for external use (e.g., streaming cleaning)
+    pub fn get_adapter(&self) -> Box<dyn LocalModelAdapter> {
+        // Get adapter for the same family (cheap clone - just vtable pointer)
+        use crate::models::adapters::AdapterRegistry;
+        AdapterRegistry::get_adapter(self.model_adapter.family_name())
+    }
+
     /// Try to generate response using neural model
     fn try_neural_generate(
         &self,

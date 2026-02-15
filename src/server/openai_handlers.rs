@@ -48,6 +48,140 @@ impl ErrorResponse {
     }
 }
 
+/// Token buffer for accumulating and cleaning streamed tokens
+struct TokenBuffer {
+    /// Accumulated tokens since last flush
+    tokens: Vec<String>,
+    /// Characters already sent to client (for incremental cleaning)
+    sent_prefix: String,
+    /// Cached adapter for this generation session
+    adapter: Option<Box<dyn crate::models::adapters::LocalModelAdapter>>,
+    /// Partial marker being accumulated (e.g., "<|im_")
+    partial_marker: String,
+}
+
+impl TokenBuffer {
+    fn new() -> Self {
+        Self {
+            tokens: Vec::new(),
+            sent_prefix: String::new(),
+            adapter: None,
+            partial_marker: String::new(),
+        }
+    }
+
+    fn add_token(&mut self, token: &str) -> Option<String> {
+        // Check for partial special token marker
+        if self.is_start_of_special_marker(token) {
+            self.partial_marker.push_str(token);
+            return None; // Wait for more tokens
+        }
+
+        // If we have a partial marker, check if this completes it
+        if !self.partial_marker.is_empty() {
+            self.partial_marker.push_str(token);
+
+            // Check if marker is complete (ends with |> or >)
+            if self.partial_marker.ends_with("|>") || self.partial_marker.ends_with(">") {
+                // Complete marker - discard it and continue
+                self.partial_marker.clear();
+                return None;
+            } else {
+                return None; // Still accumulating marker
+            }
+        }
+
+        // Normal token - add to buffer
+        self.tokens.push(token.to_string());
+
+        // Flush every 10 tokens
+        if self.tokens.len() >= 10 {
+            Some(self.flush())
+        } else {
+            None
+        }
+    }
+
+    fn is_start_of_special_marker(&self, token: &str) -> bool {
+        const MARKER_STARTS: &[&str] = &[
+            "<|", "<｜", "<think", "</think",
+            "user\n", "system\n", "assistant\n"
+        ];
+        MARKER_STARTS.iter().any(|start| token.starts_with(start))
+    }
+
+    fn flush(&mut self) -> String {
+        if self.tokens.is_empty() {
+            return String::new();
+        }
+
+        // Concatenate accumulated tokens
+        let accumulated: String = self.tokens.join("");
+        let full_text = format!("{}{}", self.sent_prefix, accumulated);
+
+        // Apply cleaning using adapter
+        let cleaned = if let Some(adapter) = &self.adapter {
+            // Check for tool XML - skip cleaning if present
+            if full_text.contains("<tool_use>") || full_text.contains("<tool_result>") {
+                full_text.clone() // Preserve tool XML
+            } else {
+                adapter.clean_output(&full_text)
+            }
+        } else {
+            // No adapter - basic cleaning
+            self.basic_clean(&full_text)
+        };
+
+        // Calculate what's new (incremental)
+        let new_content = if cleaned.starts_with(&self.sent_prefix) {
+            cleaned[self.sent_prefix.len()..].to_string()
+        } else {
+            // Cleaning changed earlier content - send full cleaned text
+            self.sent_prefix.clear();
+            cleaned.clone()
+        };
+
+        // Update state
+        self.sent_prefix = cleaned;
+        self.tokens.clear();
+
+        new_content
+    }
+
+    fn basic_clean(&self, text: &str) -> String {
+        // Fallback cleaning when no adapter available
+        text.replace("<|im_end|>", "")
+            .replace("<|endoftext|>", "")
+            .replace("<｜end▁of▁sentence｜>", "")
+            .trim()
+            .to_string()
+    }
+}
+
+/// Buffer and clean tokens before sending to SSE stream
+async fn buffer_and_clean_tokens(
+    mut token_rx: mpsc::Receiver<String>,
+    cleaned_tx: mpsc::Sender<String>,
+    adapter: Option<Box<dyn crate::models::adapters::LocalModelAdapter>>,
+) {
+    let mut buffer = TokenBuffer::new();
+    buffer.adapter = adapter;
+
+    while let Some(token) = token_rx.recv().await {
+        if let Some(cleaned) = buffer.add_token(&token) {
+            if cleaned_tx.send(cleaned).await.is_err() {
+                break; // Client disconnected
+            }
+        }
+    }
+
+    // Final flush when generation ends
+    let final_chunk = buffer.flush();
+    if !final_chunk.is_empty() {
+        let _ = cleaned_tx.send(final_chunk).await;
+    }
+}
+
 /// Handle streaming chat completions (SSE)
 async fn handle_chat_completions_streaming(
     server: Arc<AgentServer>,
@@ -93,7 +227,22 @@ async fn handle_chat_completions_streaming(
     // Create bounded channel for streaming tokens with backpressure
     // Buffer size of 2 allows one token to be consumed while another is being generated
     let (tx, rx) = mpsc::channel::<String>(2);
+
+    // Create cleaned token channel
+    let (cleaned_tx, cleaned_rx) = mpsc::channel::<String>(2);
+
     let model_name = request.model.clone();
+
+    // Get model adapter for cleaning
+    let model_adapter = {
+        let gen = server.local_generator().read().await;
+        Some(gen.get_adapter())
+    };
+
+    // Spawn buffering + cleaning task
+    tokio::spawn(async move {
+        buffer_and_clean_tokens(rx, cleaned_tx, model_adapter).await;
+    });
 
     // Spawn generation task on blocking thread pool
     // ONNX generation is CPU-bound and synchronous, so we use spawn_blocking
@@ -111,8 +260,19 @@ async fn handle_chat_completions_streaming(
                 server_clone.local_generator().write().await
             });
 
+            // Accumulate response for logging
+            let accumulated_response = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+            let accumulated_clone = accumulated_response.clone();
+
             // Try to generate with streaming callback
-            generator.try_generate_from_pattern_streaming(&internal_messages, move |_token_id, token_text| {
+            let result = generator.try_generate_from_pattern_streaming(&internal_messages, move |_token_id, token_text| {
+                tracing::debug!("[daemon] Sending token to SSE: {:?}", token_text);
+
+                // Accumulate for logging
+                if let Ok(mut acc) = accumulated_clone.lock() {
+                    acc.push_str(token_text);
+                }
+
                 // Send token via bounded channel (blocking send)
                 // This provides backpressure - if the HTTP consumer is slow,
                 // generation will pause here until there's space in the channel
@@ -124,7 +284,14 @@ async fn handle_chat_completions_streaming(
                 // Small sleep to pace token delivery and allow async runtime to process
                 // This helps prevent tokens from bunching up even with backpressure
                 std::thread::sleep(std::time::Duration::from_millis(10));
-            })
+            });
+
+            // Log complete response
+            if let Ok(acc) = accumulated_response.lock() {
+                info!("[DAEMON_RESPONSE] Complete response ({} chars): {:?}", acc.len(), &acc);
+            }
+
+            result
         }).await;
 
         match result {
@@ -143,9 +310,9 @@ async fn handle_chat_completions_streaming(
         }
     });
 
-    // Create SSE stream from receiver
+    // Create SSE stream from cleaned token receiver
     // State: (receiver, model_name, done_flag)
-    let stream = stream::unfold((rx, model_name, false), |(mut rx, model_name, done)| async move {
+    let stream = stream::unfold((cleaned_rx, model_name, false), |(mut rx, model_name, done)| async move {
         if done {
             // Already sent final chunk, terminate stream
             return None;
@@ -723,5 +890,69 @@ mod tests {
         assert_eq!(internal.len(), 2);
         assert_eq!(internal[0].role, "system");
         assert_eq!(internal[1].role, "user");
+    }
+
+    #[test]
+    fn test_token_buffer_basic() {
+        let mut buffer = TokenBuffer::new();
+
+        // Add 10 tokens to trigger flush
+        for i in 0..9 {
+            let result = buffer.add_token(&format!("token{} ", i));
+            assert!(result.is_none(), "Should not flush before 10 tokens");
+        }
+
+        // 10th token should trigger flush
+        let result = buffer.add_token("final");
+        assert!(result.is_some(), "Should flush after 10 tokens");
+
+        let flushed = result.unwrap();
+        assert!(flushed.contains("token0"), "Should contain first token");
+        assert!(flushed.contains("final"), "Should contain final token");
+    }
+
+    #[test]
+    fn test_partial_marker_detection() {
+        let mut buffer = TokenBuffer::new();
+
+        // Start of ChatML marker
+        assert!(buffer.add_token("<|").is_none(), "Should buffer start marker");
+        assert!(buffer.add_token("im_").is_none(), "Should continue buffering");
+        assert!(buffer.add_token("end|>").is_none(), "Should complete and discard marker");
+
+        // Normal token should be added
+        buffer.add_token("normal");
+        assert_eq!(buffer.tokens.len(), 1, "Should have 1 normal token");
+    }
+
+    #[test]
+    fn test_basic_clean() {
+        let buffer = TokenBuffer::new();
+
+        let text = "<|im_end|>Hello world<|endoftext|>";
+        let cleaned = buffer.basic_clean(text);
+
+        assert_eq!(cleaned, "Hello world");
+    }
+
+    #[test]
+    fn test_incremental_cleaning() {
+        let mut buffer = TokenBuffer::new();
+
+        // Add first batch
+        for token in &["Hello", " ", "world", "!"] {
+            buffer.add_token(token);
+        }
+
+        let first_flush = buffer.flush();
+        assert_eq!(first_flush, "Hello world!");
+
+        // Add second batch
+        for token in &[" ", "How", " ", "are", " ", "you", "?"] {
+            buffer.add_token(token);
+        }
+
+        let second_flush = buffer.flush();
+        assert_eq!(second_flush, " How are you?", "Should only return new content");
     }
 }
