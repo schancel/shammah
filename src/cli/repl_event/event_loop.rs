@@ -863,11 +863,8 @@ impl EventLoop {
             }
 
             ReplEvent::QueryFailed { query_id, error } => {
-                // Mark streaming message as failed (if it exists)
-                if let Some(msg) = self.streaming_messages.write().await.remove(&query_id) {
-                    msg.set_failed();
-                    // Message will be rendered with error status on next flush
-                }
+                // DON'T remove streaming message here - fallback providers need it!
+                // The message will be removed on StreamingComplete or stays for final error display
 
                 // Update query state
                 self.query_states
@@ -877,13 +874,8 @@ impl EventLoop {
                 // Display error
                 self.output_manager.write_error(format!("Query failed: {}", error));
 
-                // Clear active query (query failed)
-                {
-                    let mut active = self.active_query_id.write().await;
-                    if *active == Some(query_id) {
-                        *active = None;
-                    }
-                }
+                // DON'T clear active query - fallback might still be running
+                // It will be cleared on StreamingComplete or final failure
             }
 
             ReplEvent::ToolResult {
