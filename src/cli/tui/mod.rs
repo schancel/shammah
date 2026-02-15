@@ -889,16 +889,15 @@ impl TuiRenderer {
             // Updates happen via Arc<RwLock<>>, shadow buffer sees them automatically
         }
 
-        // Write new messages to terminal scrollback using insert_before()
+        // Write new messages to terminal scrollback using direct crossterm commands
+        // This gives us full control and eliminates background flickering
         if !new_messages.is_empty() {
-            // Format messages with their styles
+            // Format messages with their styles (keep ANSI codes for foreground colors)
             let mut lines: Vec<(String, ratatui::style::Style)> = Vec::new();
             for (idx, msg) in new_messages.iter().enumerate() {
-                let formatted = msg.format(&self.colors);
-                // Strip ANSI codes for plain text display
-                let plain_text = strip_ansi_codes(&formatted);
+                let formatted = msg.format(&self.colors);  // Keep ANSI codes!
                 let style = msg.background_style().unwrap_or_default();
-                for line in plain_text.lines() {
+                for line in formatted.lines() {
                     lines.push((line.to_string(), style));
                 }
                 // Add blank line between messages (not after the last one)
@@ -909,24 +908,35 @@ impl TuiRenderer {
 
             let num_lines = lines.len().min(u16::MAX as usize) as u16;
 
-            // Wrap insert_before() + blit in synchronized update for atomic rendering
-            // This prevents visible flashing of backgrounds during the operation
+            // Calculate where inline viewport starts (first row after scrollback)
+            let (_term_width, term_height) = crossterm::terminal::size()?;
+            let insert_row = term_height.saturating_sub(self.current_inline_viewport_size);
+
+            // Revert to using ratatui's insert_before for now
+            // Direct crossterm approach caused terminal scrolling issues
+            // TODO: Investigate scroll region support for cleaner implementation
+
+            // Strip ANSI codes for ratatui (it expects plain text + Style)
+            let mut plain_lines: Vec<(String, ratatui::style::Style)> = Vec::new();
+            for (line, style) in lines.iter() {
+                let plain_text = strip_ansi_codes(line);
+                plain_lines.push((plain_text, *style));
+            }
+
             use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
             let mut stdout = io::stdout();
             execute!(stdout, BeginSynchronizedUpdate)?;
 
-            // Use insert_before to properly manage viewport
+            // Use ratatui's insert_before
             self.terminal.insert_before(num_lines, |buf| {
-                for (i, (line, style)) in lines.iter().enumerate() {
+                for (i, (line, style)) in plain_lines.iter().enumerate() {
                     if i < buf.area.height as usize {
                         buf.set_string(0, i as u16, line, *style);
                     }
                 }
             })?;
 
-            // IMMEDIATELY blit to restore background styles (bypass rate limiting)
-            // insert_before() can cause terminal to strip styles during scroll,
-            // so we need to re-render the shadow buffer immediately to restore them
+            // IMMEDIATELY blit to ensure viewport is properly rendered
             // Use unsynchronized version since we already have a sync block
             self.blit_visible_area_internal(false)?;
             self.last_blit = std::time::Instant::now();
