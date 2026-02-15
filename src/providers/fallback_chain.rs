@@ -48,7 +48,17 @@ impl FallbackChain {
                 self.providers.len()
             );
 
-            match provider.send_message(request).await {
+            // Create a modified request with this provider's model ID
+            let provider_request = ProviderRequest {
+                model: provider.default_model().to_string(),
+                messages: request.messages.clone(),
+                max_tokens: request.max_tokens,
+                tools: request.tools.clone(),
+                temperature: request.temperature,
+                stream: request.stream,
+            };
+
+            match provider.send_message(&provider_request).await {
                 Ok(response) => {
                     if idx > 0 {
                         tracing::info!(
@@ -95,7 +105,17 @@ impl FallbackChain {
                 self.providers.len()
             );
 
-            match provider.send_message_stream(request).await {
+            // Create a modified request with this provider's model ID
+            let provider_request = ProviderRequest {
+                model: provider.default_model().to_string(),
+                messages: request.messages.clone(),
+                max_tokens: request.max_tokens,
+                tools: request.tools.clone(),
+                temperature: request.temperature,
+                stream: request.stream,
+            };
+
+            match provider.send_message_stream(&provider_request).await {
                 Ok(receiver) => {
                     if idx > 0 {
                         tracing::info!(
