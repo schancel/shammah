@@ -103,7 +103,54 @@ impl LocalModelAdapter for DeepSeekAdapter {
             .trim()
             .to_string();
 
-        // Step 7: Remove markdown code block markers (DeepSeek-Coder specific)
+        // Step 7: Detect and strip prompt echoes (model echoes full prompt before answering)
+        // DeepSeek may echo: "<｜begin▁of▁sentence｜>You are Shammah...### Instruction:...### Response:..."
+        if cleaned.contains("You are Shammah") || cleaned.contains("### Instruction:") {
+            // STRATEGY 1: Extract only content after "### Response:"
+            if let Some(response_pos) = cleaned.rfind("### Response:") {
+                cleaned = cleaned[response_pos + 13..].to_string(); // Skip "### Response:"
+                cleaned = cleaned.trim().to_string();
+            }
+
+            // STRATEGY 2: If still has constitution, find last occurrence and skip to question
+            if cleaned.starts_with("You are Shammah") {
+                // Skip everything up to first newline after question mark
+                if let Some(q_pos) = cleaned.rfind('?') {
+                    if let Some(answer_start) = cleaned[q_pos..].find("\n\n") {
+                        cleaned = cleaned[q_pos + answer_start + 2..].to_string();
+                    }
+                }
+            }
+        }
+
+        // Step 8: ONLY do aggressive constitution removal if we ACTUALLY have a prompt echo
+        // Check if output starts with constitution AND contains the question/instruction
+        let has_prompt_echo = (cleaned.starts_with("You are Shammah") || cleaned.starts_with("# Shammah Constitution"))
+            && (cleaned.contains("### Instruction:") || cleaned.contains("What is") || cleaned.contains("Explain"));
+
+        if has_prompt_echo {
+            // Strategy 1: Look for common question-answer separators
+            for separator in &["\n\n##", "\n\nExamples", "\n\nRemember:", "---\n", "## Examples"] {
+                if let Some(sep_pos) = cleaned.find(separator) {
+                    // Answer is likely after this section
+                    cleaned = cleaned[sep_pos..].to_string();
+                    break;
+                }
+            }
+
+            // Strategy 2: Find the question and take everything after it
+            if let Some(q_pos) = cleaned.rfind('?') {
+                // Look for answer after question (usually separated by newlines)
+                if let Some(answer_start) = cleaned[q_pos..].find("\n\n") {
+                    cleaned = cleaned[q_pos + answer_start + 2..].to_string();
+                }
+            }
+        }
+
+        // Step 10: Remove any remaining "### Instruction:" sections
+        cleaned = cleaned.split("### Instruction:").last().unwrap_or(&cleaned).to_string();
+
+        // Step 11: Remove markdown code block markers (DeepSeek-Coder specific)
         if cleaned.starts_with("```") {
             let lines: Vec<&str> = cleaned.lines().collect();
             if lines.len() > 2 && lines[0].starts_with("```") {
@@ -216,5 +263,21 @@ mod tests {
         assert_eq!(config.temperature, 0.8);
         assert_eq!(config.top_p, 0.95);
         assert_eq!(config.max_tokens, 2048);
+    }
+
+    #[test]
+    fn test_deepseek_clean_prompt_echo() {
+        let adapter = DeepSeekAdapter;
+
+        // Test with full prompt echo (constitution + instruction + response)
+        let raw = "<｜begin▁of▁sentence｜>You are Shammah, a helpful coding assistant...\n\n### Instruction:\nWhat is 2+2?\n\n### Response:\n4";
+        let cleaned = adapter.clean_output(raw);
+        assert_eq!(cleaned, "4");
+
+        // Test with constitution at start
+        let raw2 = "You are Shammah, a helpful AI assistant.\n\nWhat is your name?\n\nMy name is Shammah.";
+        let cleaned2 = adapter.clean_output(raw2);
+        assert!(cleaned2.contains("Shammah")); // Should extract the answer
+        assert!(!cleaned2.starts_with("You are Shammah")); // Constitution should be removed
     }
 }

@@ -400,14 +400,11 @@ impl EventLoop {
         use crate::cli::messages::StreamingResponseMessage;
         use std::sync::Arc;
 
-        // Show status message
-        self.output_manager.write_info("🔧 Local Model Query (bypassing routing)");
-        self.render_tui().await?;
-
         // Check if daemon client exists
         if let Some(daemon_client) = &self.daemon_client {
-            // Create streaming response message
+            // Create streaming response message with info header prepended
             let msg = Arc::new(StreamingResponseMessage::new());
+            msg.append_chunk("🔧 Local Model Query (bypassing routing)\n\n");
             self.output_manager.add_trait_message(msg.clone() as Arc<dyn crate::cli::messages::Message>);
             self.render_tui().await?;
 
@@ -419,11 +416,13 @@ impl EventLoop {
 
             tokio::spawn(async move {
                 match daemon_client.query_local_only_streaming_with_callback(&query, move |token_text| {
+                    tracing::debug!("[/local] Received chunk: {:?}", token_text);
                     msg_clone.append_chunk(token_text);
                 }).await {
                     Ok(_) => {
+                        // Append status indicator to the response message itself
+                        msg.append_chunk("\n✓ Local model (bypassed routing)");
                         msg.set_complete();
-                        output_mgr.write_info("✓ Local model (bypassed routing)");
                     }
                     Err(e) => {
                         msg.set_failed();
@@ -554,6 +553,12 @@ impl EventLoop {
             if caps.supports_streaming {
                 tracing::debug!("Generator supports streaming, attempting to stream");
 
+                // Create message BEFORE starting stream to avoid race condition
+                // This ensures the response appears in correct order even if user types quickly
+                use crate::cli::messages::StreamingResponseMessage;
+                let msg = Arc::new(StreamingResponseMessage::new());
+                output_manager.add_trait_message(msg.clone() as Arc<dyn crate::cli::messages::Message>);
+
                 match generator
                     .generate_stream(messages.clone(), Some((*tool_definitions).clone()))
                     .await
@@ -561,11 +566,6 @@ impl EventLoop {
                     Ok(Some(mut rx)) => {
                         tracing::debug!("[EVENT_LOOP] Streaming started, entering receive loop");
                         tracing::debug!("Streaming started successfully");
-
-                        // Create message directly in this task
-                        use crate::cli::messages::StreamingResponseMessage;
-                        let msg = Arc::new(StreamingResponseMessage::new());
-                        output_manager.add_trait_message(msg.clone() as Arc<dyn crate::cli::messages::Message>);
 
                         // Process stream (handles tools via StreamChunk::ContentBlockComplete)
                         let mut blocks = Vec::new();

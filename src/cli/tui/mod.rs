@@ -595,8 +595,33 @@ impl TuiRenderer {
             // Update shadow buffer size to match new viewport
             let term_size = crossterm::terminal::size()?;
             let visible_scrollback_rows = term_size.1.saturating_sub(needed_size) as usize;
-            self.shadow_buffer = ShadowBuffer::new(term_size.0 as usize, visible_scrollback_rows);
-            self.prev_frame_buffer = ShadowBuffer::new(term_size.0 as usize, visible_scrollback_rows);
+
+            // Preserve styles from old buffers when resizing
+            let old_shadow = &self.shadow_buffer;
+            let old_prev = &self.prev_frame_buffer;
+
+            let mut new_shadow = ShadowBuffer::new(term_size.0 as usize, visible_scrollback_rows);
+            let mut new_prev = ShadowBuffer::new(term_size.0 as usize, visible_scrollback_rows);
+
+            // Copy cells from old buffers where possible (preserves background styles)
+            for y in 0..old_shadow.height.min(new_shadow.height) {
+                for x in 0..old_shadow.width.min(new_shadow.width) {
+                    if let Some(old_cell) = old_shadow.get(x, y) {
+                        new_shadow.set(x, y, old_cell.clone());
+                    }
+                }
+            }
+
+            for y in 0..old_prev.height.min(new_prev.height) {
+                for x in 0..old_prev.width.min(new_prev.width) {
+                    if let Some(old_cell) = old_prev.get(x, y) {
+                        new_prev.set(x, y, old_cell.clone());
+                    }
+                }
+            }
+
+            self.shadow_buffer = new_shadow;
+            self.prev_frame_buffer = new_prev;
 
             // Force full refresh after viewport resize
             self.needs_full_refresh = true;
@@ -884,6 +909,12 @@ impl TuiRenderer {
 
             let num_lines = lines.len().min(u16::MAX as usize) as u16;
 
+            // Wrap insert_before() + blit in synchronized update for atomic rendering
+            // This prevents visible flashing of backgrounds during the operation
+            use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+            let mut stdout = io::stdout();
+            execute!(stdout, BeginSynchronizedUpdate)?;
+
             // Use insert_before to properly manage viewport
             self.terminal.insert_before(num_lines, |buf| {
                 for (i, (line, style)) in lines.iter().enumerate() {
@@ -893,14 +924,21 @@ impl TuiRenderer {
                 }
             })?;
 
+            // IMMEDIATELY blit to restore background styles (bypass rate limiting)
+            // insert_before() can cause terminal to strip styles during scroll,
+            // so we need to re-render the shadow buffer immediately to restore them
+            // Use unsynchronized version since we already have a sync block
+            self.blit_visible_area_internal(false)?;
+            self.last_blit = std::time::Instant::now();
+
+            execute!(stdout, EndSynchronizedUpdate)?;
+
             // Mark TUI for render (separator might need to move)
             self.needs_tui_render = true;
-        }
-
-        // Blit updates to visible area with rate limiting (for message updates)
-        // This is the reactive part - messages update via Arc<RwLock<>>, we just re-render
-        // Rate limited to 20 FPS (50ms interval) to avoid excessive CPU
-        if !messages.is_empty() && self.last_blit.elapsed() >= self.blit_interval {
+        } else if !messages.is_empty() && self.last_blit.elapsed() >= self.blit_interval {
+            // Blit updates to visible area with rate limiting (for message updates)
+            // This is the reactive part - messages update via Arc<RwLock<>>, we just re-render
+            // Rate limited to 20 FPS (50ms interval) to avoid excessive CPU
             self.blit_visible_area()?;
             self.last_blit = std::time::Instant::now();
         }
@@ -1330,6 +1368,10 @@ impl TuiRenderer {
     /// Blit only changed cells to visible area using diff-based updates
     /// More efficient than full_refresh_viewport() for streaming updates
     fn blit_visible_area(&mut self) -> Result<()> {
+        self.blit_visible_area_internal(true)
+    }
+
+    fn blit_visible_area_internal(&mut self, use_sync: bool) -> Result<()> {
         use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
         use crossterm::style::Print;
         use std::collections::HashMap;
@@ -1364,13 +1406,12 @@ impl TuiRenderer {
 
         // Apply changes to terminal
         let mut stdout = io::stdout();
-        execute!(stdout, BeginSynchronizedUpdate)?;
+        if use_sync {
+            execute!(stdout, BeginSynchronizedUpdate)?;
+        }
 
         for (row, _cells) in changes_by_row {
-            // Clear line and write entire row with styles
-            execute!(stdout, cursor::MoveTo(0, row as u16), Clear(ClearType::UntilNewLine))?;
-
-            // Write cells with their styles
+            // Move to start of line (don't clear yet - preserves background)
             execute!(stdout, cursor::MoveTo(0, row as u16))?;
 
             use crossterm::style::{SetBackgroundColor, SetForegroundColor, ResetColor};
@@ -1378,6 +1419,7 @@ impl TuiRenderer {
 
             let mut current_style = ratatui::style::Style::default();
 
+            // Write entire row with styles (overwrites previous content)
             for x in 0..self.shadow_buffer.width {
                 if let Some(cell) = self.shadow_buffer.get(x, row) {
                     // Apply style changes if needed
@@ -1404,9 +1446,15 @@ impl TuiRenderer {
 
             // Reset colors at end of line
             execute!(stdout, ResetColor)?;
+
+            // Clear any remaining content beyond shadow buffer width
+            // (in case previous content was longer)
+            execute!(stdout, Clear(ClearType::UntilNewLine))?;
         }
 
-        execute!(stdout, EndSynchronizedUpdate)?;
+        if use_sync {
+            execute!(stdout, EndSynchronizedUpdate)?;
+        }
         stdout.flush()?;
 
         // Update previous frame buffer
