@@ -863,6 +863,12 @@ impl EventLoop {
             }
 
             ReplEvent::QueryFailed { query_id, error } => {
+                // Mark streaming message as failed (if it exists)
+                if let Some(msg) = self.streaming_messages.write().await.remove(&query_id) {
+                    msg.set_failed();
+                    // Message will be rendered with error status on next flush
+                }
+
                 // Update query state
                 self.query_states
                     .update_state(query_id, QueryState::Failed { error: error.clone() })
