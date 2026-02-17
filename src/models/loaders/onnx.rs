@@ -714,6 +714,7 @@ impl std::fmt::Debug for LoadedOnnxModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::loaders::onnx_config::ExecutionProvider;
 
     #[test]
     fn test_execution_providers_default() {

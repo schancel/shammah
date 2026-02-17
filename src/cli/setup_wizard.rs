@@ -80,7 +80,24 @@ enum WizardStep {
 /// Show first-run setup wizard and return configuration
 pub fn show_setup_wizard() -> Result<SetupResult> {
     // Try to load existing config to pre-fill values
-    let existing_config = crate::config::load_config().ok();
+    let existing_config = match crate::config::load_config() {
+        Ok(config) => {
+            let debug_msg = format!("Successfully loaded existing config with {} teachers\n", config.teachers.len());
+            if let Some(teacher) = config.active_teacher() {
+                let debug_msg = format!("{}Active teacher: provider={}, key_len={}\n",
+                    debug_msg, teacher.provider, teacher.api_key.len());
+                let _ = std::fs::write("/tmp/wizard_debug.log", debug_msg);
+            }
+            tracing::debug!("Successfully loaded existing config with {} teachers", config.teachers.len());
+            Some(config)
+        }
+        Err(e) => {
+            let debug_msg = format!("Could not load existing config: {}\n", e);
+            let _ = std::fs::write("/tmp/wizard_debug.log", debug_msg);
+            tracing::debug!("Could not load existing config: {}", e);
+            None
+        }
+    };
 
     // Set up terminal
     crossterm::terminal::enable_raw_mode()?;
@@ -112,9 +129,27 @@ fn run_wizard_loop(
 ) -> Result<SetupResult> {
     // Pre-fill from existing config if available
     let mut claude_key = existing_config
-        .and_then(|c| c.active_teacher())
-        .map(|t| t.api_key.clone())
-        .unwrap_or_default();
+        .and_then(|c| {
+            let msg = format!("Loading from existing config, teachers: {}\n", c.teachers.len());
+            let _ = std::fs::OpenOptions::new().append(true).create(true).open("/tmp/wizard_debug.log")
+                .and_then(|mut f| std::io::Write::write_all(&mut f, msg.as_bytes()));
+            tracing::debug!("Loading from existing config");
+            c.active_teacher()
+        })
+        .map(|t| {
+            let msg = format!("Found active teacher: provider={}, key_len={}\n", t.provider, t.api_key.len());
+            let _ = std::fs::OpenOptions::new().append(true).create(true).open("/tmp/wizard_debug.log")
+                .and_then(|mut f| std::io::Write::write_all(&mut f, msg.as_bytes()));
+            tracing::debug!("Found active teacher: provider={}, key_len={}", t.provider, t.api_key.len());
+            t.api_key.clone()
+        })
+        .unwrap_or_else(|| {
+            let msg = "No existing config or teacher found, starting with empty key\n";
+            let _ = std::fs::OpenOptions::new().append(true).create(true).open("/tmp/wizard_debug.log")
+                .and_then(|mut f| std::io::Write::write_all(&mut f, msg.as_bytes()));
+            tracing::debug!("No existing config or teacher found, starting with empty key");
+            String::new()
+        });
 
     let mut hf_token = String::new(); // TODO: Add HF token to config
 
@@ -814,7 +849,7 @@ fn render_api_key_input(f: &mut Frame, area: Rect, input: &str) {
         .constraints([
             Constraint::Length(3),  // Title
             Constraint::Length(5),  // Instructions
-            Constraint::Length(3),  // Input
+            Constraint::Length(4),  // Input (increased to 4 for better visibility)
             Constraint::Length(2),  // Help
         ])
         .split(area);
@@ -833,11 +868,30 @@ fn render_api_key_input(f: &mut Frame, area: Rect, input: &str) {
     .wrap(Wrap { trim: false });
     f.render_widget(instructions, chunks[1]);
 
-    let input_widget = Paragraph::new(input.clone())
+    // For long API keys (>60 chars), show truncated version with indication
+    let display_text = if input.len() > 60 {
+        format!("{}...{} ({}characters) _",
+            &input[..40],
+            &input[input.len()-10..],
+            input.len())
+    } else if !input.is_empty() {
+        format!("{}_", input)
+    } else {
+        "_".to_string()
+    };
+
+    let title_suffix = if !input.is_empty() {
+        " (Pre-filled - press Backspace to clear)"
+    } else {
+        ""
+    };
+
+    let input_widget = Paragraph::new(display_text)
         .block(Block::default()
             .borders(Borders::ALL)
-            .title("API Key"))
-        .style(Style::default().fg(Color::Reset));
+            .title(format!("API Key{}", title_suffix)))
+        .style(Style::default().fg(if !input.is_empty() { Color::Green } else { Color::Reset }))
+        .wrap(Wrap { trim: false });
     f.render_widget(input_widget, chunks[2]);
 
     let help = Paragraph::new("Type key then press Enter  Esc: Cancel")

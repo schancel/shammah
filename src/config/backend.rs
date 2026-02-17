@@ -157,7 +157,7 @@ pub struct BackendConfig {
     pub model_path: Option<PathBuf>,
 
     /// Fallback execution target chain
-    #[serde(default = "default_fallback_chain")]
+    #[serde(default = "default_fallback_chain", deserialize_with = "deserialize_fallback_chain")]
     pub fallback_chain: Vec<ExecutionTarget>,
 
     /// Legacy field alias for backward compatibility
@@ -197,6 +197,47 @@ fn default_fallback_chain() -> Vec<ExecutionTarget> {
 
     #[cfg(all(not(target_os = "macos"), not(feature = "cuda")))]
     return vec![ExecutionTarget::Cpu];
+}
+
+/// Custom deserializer for fallback_chain that filters out deprecated/invalid entries (like "metal")
+fn deserialize_fallback_chain<'de, D>(deserializer: D) -> Result<Vec<ExecutionTarget>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+
+    // Deserialize as Vec<String> first to handle invalid variants gracefully
+    let strings: Vec<String> = Vec::deserialize(deserializer)?;
+
+    let mut targets = Vec::new();
+    for s in strings {
+        match s.as_str() {
+            "coreml" => {
+                #[cfg(target_os = "macos")]
+                targets.push(ExecutionTarget::CoreML);
+            }
+            "cpu" => targets.push(ExecutionTarget::Cpu),
+            "cuda" => {
+                #[cfg(feature = "cuda")]
+                targets.push(ExecutionTarget::Cuda);
+            }
+            "auto" => targets.push(ExecutionTarget::Auto),
+            "metal" => {
+                // Silently skip deprecated "metal" variant
+                tracing::warn!("Skipping deprecated 'metal' execution target in config");
+            }
+            other => {
+                tracing::warn!("Skipping unknown execution target '{}' in fallback_chain", other);
+            }
+        }
+    }
+
+    // If no valid targets remain, use default
+    if targets.is_empty() {
+        Ok(default_fallback_chain())
+    } else {
+        Ok(targets)
+    }
 }
 
 impl Default for BackendConfig {
