@@ -250,7 +250,10 @@ impl EventLoop {
 
                     // Don't spam logs, but good to know the loop is alive
                     // tracing::debug!("[EVENT_LOOP] Render tick");
-                    self.render_tui().await?;
+                    if let Err(e) = self.render_tui().await {
+                        eprintln!("Warning: TUI render failed: {}", e);
+                        // Continue event loop - don't crash
+                    }
                 }
 
                 // Periodic cleanup

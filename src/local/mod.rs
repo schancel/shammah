@@ -43,11 +43,14 @@ impl LocalGenerator {
             // Try non-blocking read to get model name (avoid deadlock in async context)
             match gen.try_read() {
                 Ok(g) => g.name().to_string(),
-                Err(_) => "LocalModel".to_string(), // Fallback if lock is held
+                Err(_) => {
+                    // Lock contention - try to get from config
+                    Self::extract_model_name_from_config()
+                }
             }
         } else {
-            // Default placeholder when no model loaded yet
-            "Unknown".to_string()
+            // Model not loaded yet - get from config
+            Self::extract_model_name_from_config()
         };
 
         let response_generator =
@@ -58,6 +61,19 @@ impl LocalGenerator {
             response_generator,
             enabled: true,
         }
+    }
+
+    /// Extract model family name from config file
+    ///
+    /// This is used when the model isn't loaded yet or the lock is held,
+    /// to ensure the correct adapter is selected during initialization.
+    fn extract_model_name_from_config() -> String {
+        // Read current config to determine model family
+        if let Ok(config) = crate::config::load_config() {
+            let family_name = config.backend.model_family.name();
+            return family_name.to_string();
+        }
+        "LocalModel".to_string()  // Final fallback
     }
 
     /// Try to generate a local response from patterns
