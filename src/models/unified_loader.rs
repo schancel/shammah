@@ -432,29 +432,47 @@ impl UnifiedModelLoader {
 
             #[cfg(target_os = "macos")]
             (ModelFamily::Mistral, BackendDevice::CoreML) => {
-                // Apple's official CoreML conversion (7B)
-                "apple/mistral-coreml".to_string()
+                // REMOVED: apple/mistral-coreml doesn't exist (404 errors)
+                anyhow::bail!(
+                    "Mistral CoreML models are not available.\n\n\
+                     The repository 'apple/mistral-coreml' does not exist.\n\n\
+                     Please select Metal or CPU as your device to use ONNX models:\n\
+                     - microsoft/Mistral-7B-Instruct-v0.2-ONNX (7B)\n\
+                     - nvidia/Mistral-7B-Instruct-v0.3-ONNX-INT4 (7B, quantized)\n\n\
+                     Or choose a different model family (Qwen2, Llama3, or Gemma2)."
+                )
             }
 
-            // Standard Candle-compatible repos
+            // ONNX models from onnx-community and other providers
             (ModelFamily::Qwen2, _) => {
-                format!("Qwen/Qwen2.5-{}-Instruct", size_str)
+                // FIXED: Use onnx-community instead of original Qwen repo
+                format!("onnx-community/Qwen2.5-{}-Instruct", size_str)
             }
 
             (ModelFamily::Gemma2, _) => {
-                format!("google/gemma-2-{}-it", size_str)
+                // FIXED: Use onnx-community Gemma 3 models (newer than Gemma 2)
+                match config.size {
+                    ModelSize::Small => "onnx-community/gemma-3-270m-it-ONNX".to_string(),
+                    ModelSize::Medium => "onnx-community/gemma-3-1b-it-ONNX".to_string(),
+                    ModelSize::Large => "onnx-community/gemma-2-9b-it-ONNX-DirectML-GenAI-INT4".to_string(),
+                    ModelSize::XLarge => "onnx-community/gemma-2-9b-it-ONNX-DirectML-GenAI-INT4".to_string(),
+                }
             }
 
             (ModelFamily::Llama3, _) => {
-                format!("meta-llama/Llama-3.2-{}-Instruct", size_str)
+                // FIXED: Use onnx-community Llama 3.2 ONNX models
+                format!("onnx-community/Llama-3.2-{}-Instruct-ONNX", size_str)
             }
 
             (ModelFamily::Mistral, _) => {
+                // FIXED: Use Microsoft/NVIDIA ONNX models instead of original Mistral
                 // Mistral has fixed model names, not size-parameterized
                 if matches!(config.size, ModelSize::Large | ModelSize::XLarge) {
-                    "mistralai/Mistral-22B-Instruct-v0.3".to_string()
+                    // Use Ministral 3B for smaller sizes, or keep 7B for larger
+                    "microsoft/Mistral-7B-Instruct-v0.2-ONNX".to_string()
                 } else {
-                    "mistralai/Mistral-7B-Instruct-v0.3".to_string()
+                    // Small/Medium: Use Ministral 3B or Mistral 7B
+                    "microsoft/Mistral-7B-Instruct-v0.2-ONNX".to_string()
                 }
             }
 

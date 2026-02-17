@@ -15,23 +15,69 @@ use crate::config::{BackendDevice, TeacherEntry};
 use crate::models::unified_loader::{ModelFamily, ModelSize};
 
 /// Check if a model family is compatible with a backend device
-fn is_model_available(_family: ModelFamily, _device: BackendDevice) -> bool {
-    // All model families work with all devices via ONNX Runtime
-    // The device selection just chooses the execution provider (CoreML/Metal/CPU)
-    true
+fn is_model_available(family: ModelFamily, device: BackendDevice) -> bool {
+    match (family, device) {
+        // CoreML support (macOS only, experimental - has runtime issues per MEMORY.md)
+        #[cfg(target_os = "macos")]
+        (ModelFamily::Qwen2, BackendDevice::CoreML) => true,  // Limited: Only Small (0.6B)
+        #[cfg(target_os = "macos")]
+        (ModelFamily::Llama3, BackendDevice::CoreML) => true, // Small/Medium/Large (1B/3B/8B)
+        #[cfg(target_os = "macos")]
+        (ModelFamily::Gemma2, BackendDevice::CoreML) => true, // Limited: Only Small (270M)
+
+        // CoreML NOT supported for these models
+        #[cfg(target_os = "macos")]
+        (ModelFamily::Mistral, BackendDevice::CoreML) => false, // apple/mistral-coreml doesn't exist (404)
+        #[cfg(target_os = "macos")]
+        (ModelFamily::Phi, BackendDevice::CoreML) => false, // No CoreML conversion available
+        #[cfg(target_os = "macos")]
+        (ModelFamily::DeepSeek, BackendDevice::CoreML) => false, // No CoreML conversion available
+
+        // ONNX support (Metal/CPU - all models work via onnx-community/microsoft/nvidia)
+        (ModelFamily::Qwen2, _) => true,     // onnx-community/Qwen2.5-{size}-Instruct
+        (ModelFamily::Llama3, _) => true,    // onnx-community/Llama-3.2-{size}-Instruct-ONNX
+        (ModelFamily::Gemma2, _) => true,    // onnx-community/gemma-{version}-{size}-it-ONNX
+        (ModelFamily::Mistral, _) => true,   // microsoft/Mistral-7B-Instruct-v0.2-ONNX
+        (ModelFamily::Phi, _) => true,       // onnx-community/Phi-4-mini-instruct-ONNX
+        (ModelFamily::DeepSeek, _) => true,  // onnx-community/DeepSeek-R1-Distill-Qwen-1.5B-ONNX
+
+        #[allow(unreachable_patterns)]
+        _ => false,
+    }
 }
 
 /// Get error message for incompatible model/device combination
 fn get_compatibility_error(family: ModelFamily, device: BackendDevice) -> String {
     match (family, device) {
         #[cfg(target_os = "macos")]
+        (ModelFamily::Mistral, BackendDevice::CoreML) => {
+            format!(
+                "⚠️  {} models are not available for CoreML.\n\n\
+                 The repository 'apple/mistral-coreml' does not exist (404 errors).\n\n\
+                 ✅ Solution: Select Metal or CPU to use ONNX models:\n\
+                 • microsoft/Mistral-7B-Instruct-v0.2-ONNX\n\
+                 • nvidia/Mistral-7B-Instruct-v0.3-ONNX-INT4 (quantized)\n\n\
+                 Or choose a different model family that supports CoreML:\n\
+                 • Qwen2 (limited sizes)\n\
+                 • Llama3 (1B/3B/8B)\n\
+                 • Gemma2 (limited sizes)\n\n\
+                 Press 'd' to change device, or 'b' to change model family.",
+                family.name()
+            )
+        }
+        #[cfg(target_os = "macos")]
         (ModelFamily::DeepSeek, BackendDevice::CoreML) => {
             format!(
                 "⚠️  {} models are not available for CoreML.\n\n\
-                 DeepSeek models require standard HuggingFace repositories\n\
-                 which are not compatible with CoreML's .mlpackage format.\n\n\
-                 Please select Metal or CPU as your device,\n\
-                 or choose a different model family (Qwen2, Llama3, Gemma2, or Mistral).",
+                 DeepSeek uses ONNX format from onnx-community,\n\
+                 which is not compatible with CoreML's .mlpackage format.\n\n\
+                 ✅ Solution: Select Metal or CPU to use:\n\
+                 • onnx-community/DeepSeek-R1-Distill-Qwen-1.5B-ONNX\n\n\
+                 Or choose a CoreML-compatible model:\n\
+                 • Qwen2 (limited sizes)\n\
+                 • Llama3 (1B/3B/8B)\n\
+                 • Gemma2 (limited sizes)\n\n\
+                 Press 'd' to change device, or 'b' to change model family.",
                 family.name()
             )
         }
@@ -39,16 +85,23 @@ fn get_compatibility_error(family: ModelFamily, device: BackendDevice) -> String
         (ModelFamily::Phi, BackendDevice::CoreML) => {
             format!(
                 "⚠️  {} models are not available for CoreML.\n\n\
-                 Phi models require standard HuggingFace repositories\n\
-                 which are not compatible with CoreML's .mlpackage format.\n\n\
-                 Please select Metal or CPU as your device,\n\
-                 or choose a different model family (Qwen2, Llama3, Gemma2, or Mistral).",
+                 Phi uses ONNX format from onnx-community and Microsoft,\n\
+                 which is not compatible with CoreML's .mlpackage format.\n\n\
+                 ✅ Solution: Select Metal or CPU to use:\n\
+                 • onnx-community/Phi-4-mini-instruct-ONNX\n\
+                 • microsoft/Phi-3.5-mini-instruct-onnx\n\n\
+                 Or choose a CoreML-compatible model:\n\
+                 • Qwen2 (limited sizes)\n\
+                 • Llama3 (1B/3B/8B)\n\
+                 • Gemma2 (limited sizes)\n\n\
+                 Press 'd' to change device, or 'b' to change model family.",
                 family.name()
             )
         }
         _ => format!(
             "⚠️  {} models are not compatible with {}.\n\n\
-             Please select a different device or model family.",
+             Please select a different device or model family.\n\n\
+             Press 'd' to change device, or 'b' to change model family.",
             family.name(),
             device.name()
         ),
