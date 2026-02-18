@@ -11,4 +11,4 @@ pub use backend::{BackendConfig, ExecutionTarget};
 pub use backend::BackendDevice; // Deprecated alias for ExecutionTarget
 pub use colors::{ColorScheme, ColorSpec, DialogColors, MessageColors, StatusColors, UiColors};
 pub use loader::load_config;
-pub use settings::{ClientConfig, Config, ServerConfig, TeacherEntry};
+pub use settings::{ClientConfig, Config, FeaturesConfig, ServerConfig, TeacherEntry};

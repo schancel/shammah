@@ -6,12 +6,52 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Feature flags configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeaturesConfig {
+    /// Auto-approve all tools (skip confirmation dialogs)
+    /// ⚠️  Use with caution - tools can modify files
+    #[serde(default)]
+    pub auto_approve_tools: bool,
+
+    /// Enable streaming responses from teacher models
+    #[serde(default = "default_true")]
+    pub streaming_enabled: bool,
+
+    /// Enable debug logging for troubleshooting
+    #[serde(default)]
+    pub debug_logging: bool,
+
+    /// Enable GUI automation tools (macOS only)
+    #[cfg(target_os = "macos")]
+    #[serde(default)]
+    pub gui_automation: bool,
+}
+
+impl Default for FeaturesConfig {
+    fn default() -> Self {
+        Self {
+            auto_approve_tools: false, // Safe default: require confirmations
+            streaming_enabled: true,   // Enable by default for better UX
+            debug_logging: false,       // Disabled by default
+            #[cfg(target_os = "macos")]
+            gui_automation: false,     // Disabled by default (requires permissions)
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Directory for metrics storage
     pub metrics_dir: PathBuf,
 
     /// Enable streaming responses (default: true)
+    /// DEPRECATED: Use features.streaming_enabled instead
+    #[deprecated(note = "Use features.streaming_enabled instead")]
     pub streaming_enabled: bool,
 
     /// Enable TUI (Ratatui-based interface) (default: true)
@@ -35,6 +75,9 @@ pub struct Config {
 
     /// TUI color scheme (customizable for accessibility)
     pub colors: ColorScheme,
+
+    /// Feature flags (optional behaviors)
+    pub features: FeaturesConfig,
 }
 
 /// Server configuration for daemon mode
@@ -260,9 +303,11 @@ impl Config {
             None
         };
 
+        let features = FeaturesConfig::default();
+
         Self {
             metrics_dir: home.join(".shammah/metrics"),
-            streaming_enabled: true, // Enable by default
+            streaming_enabled: features.streaming_enabled, // Deprecated, maintained for compat
             tui_enabled: true,       // TUI is the default for interactive terminals
             constitution_path,
             backend: BackendConfig::default(),
@@ -270,6 +315,7 @@ impl Config {
             client: ClientConfig::default(),
             colors: ColorScheme::default(),
             teachers,
+            features,
         }
     }
 
@@ -291,12 +337,13 @@ impl Config {
 
         // Create serializable config
         let toml_config = TomlConfig {
-            streaming_enabled: self.streaming_enabled,
+            streaming_enabled: self.features.streaming_enabled, // Use features value
             tui_enabled: self.tui_enabled,
             backend: self.backend.clone(),
             client: Some(self.client.clone()),
             teachers: self.teachers.clone(),
             colors: Some(self.colors.clone()),
+            features: Some(self.features.clone()),
         };
 
         let toml_string = toml::to_string_pretty(&toml_config)?;
@@ -310,7 +357,7 @@ impl Config {
 /// TOML-serializable config (subset of Config)
 #[derive(Serialize, Deserialize)]
 struct TomlConfig {
-    streaming_enabled: bool,
+    streaming_enabled: bool, // Deprecated, kept for backward compat
     tui_enabled: bool,
     backend: BackendConfig,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -318,4 +365,6 @@ struct TomlConfig {
     teachers: Vec<TeacherEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     colors: Option<ColorScheme>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    features: Option<FeaturesConfig>,
 }

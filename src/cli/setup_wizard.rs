@@ -47,6 +47,10 @@ pub struct SetupResult {
     pub model_size: ModelSize,
     pub custom_model_repo: Option<String>,
     pub teachers: Vec<TeacherEntry>,
+    // Feature flags
+    pub auto_approve_tools: bool,
+    pub streaming_enabled: bool,
+    pub debug_logging: bool,
 }
 
 impl SetupResult {
@@ -74,6 +78,7 @@ enum WizardStep {
     AddTeacherApiKey(Vec<TeacherEntry>, String, String), // (existing teachers, provider, api_key input)
     AddTeacherModel(Vec<TeacherEntry>, String, String, String), // (existing teachers, provider, api_key, model input)
     EditTeacher(Vec<TeacherEntry>, usize, String, String), // (teachers, teacher_idx, model_input, name_input)
+    FeaturesConfig(bool, bool, bool), // (auto_approve_tools, streaming_enabled, debug_logging)
     Confirm,
 }
 
@@ -236,6 +241,20 @@ fn run_wizard_loop(
     let mut backend_enabled = existing_config
         .map(|c| c.backend.enabled)
         .unwrap_or(true); // Default to enabled
+
+    // Feature flags
+    let mut auto_approve_tools = existing_config
+        .as_ref()
+        .map(|c| c.features.auto_approve_tools)
+        .unwrap_or(false); // Default to false (safe)
+    let mut streaming_enabled = existing_config
+        .as_ref()
+        .map(|c| c.features.streaming_enabled)
+        .unwrap_or(true); // Default to true (better UX)
+    let mut debug_logging = existing_config
+        .as_ref()
+        .map(|c| c.features.debug_logging)
+        .unwrap_or(false); // Default to false
 
     // Wizard state - start at Welcome
     let mut step = WizardStep::Welcome;
@@ -560,7 +579,7 @@ fn run_wizard_loop(
                         }
                         KeyCode::Enter => {
                             teachers = teacher_list.clone();
-                            step = WizardStep::Confirm;
+                            step = WizardStep::FeaturesConfig(auto_approve_tools, streaming_enabled, debug_logging);
                         }
                         KeyCode::Char('a') => {
                             // Add new teacher - go to provider selection
@@ -722,6 +741,43 @@ fn run_wizard_loop(
                     }
                 }
 
+                WizardStep::FeaturesConfig(auto_approve, streaming, debug) => {
+                    match key.code {
+                        KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => {
+                            // Cycle through the three checkboxes
+                            // For simplicity, we'll use a single index
+                            // Toggle on space
+                        }
+                        KeyCode::Char(' ') | KeyCode::Char('1') => {
+                            // Toggle auto_approve_tools
+                            *auto_approve = !*auto_approve;
+                            auto_approve_tools = *auto_approve;
+                        }
+                        KeyCode::Char('2') => {
+                            // Toggle streaming_enabled
+                            *streaming = !*streaming;
+                            streaming_enabled = *streaming;
+                        }
+                        KeyCode::Char('3') => {
+                            // Toggle debug_logging
+                            *debug = !*debug;
+                            debug_logging = *debug;
+                        }
+                        KeyCode::Enter => {
+                            // Save feature flags and proceed to confirm
+                            auto_approve_tools = *auto_approve;
+                            streaming_enabled = *streaming;
+                            debug_logging = *debug;
+                            step = WizardStep::Confirm;
+                        }
+                        KeyCode::Esc => {
+                            // Go back to teacher config
+                            step = WizardStep::TeacherConfig(teachers.clone(), selected_teacher_idx);
+                        }
+                        _ => {}
+                    }
+                }
+
                 WizardStep::Confirm => {
                     match key.code {
                         KeyCode::Char('y') | KeyCode::Enter => {
@@ -739,6 +795,9 @@ fn run_wizard_loop(
                                     Some(custom_model_repo.clone())
                                 },
                                 teachers: teachers.clone(),
+                                auto_approve_tools,
+                                streaming_enabled,
+                                debug_logging,
                             });
                         }
                         KeyCode::Char('n') | KeyCode::Esc => {
@@ -805,6 +864,7 @@ fn render_wizard_step(
         WizardStep::AddTeacherApiKey(_, provider, input) => render_teacher_api_key_input(f, inner, provider, input),
         WizardStep::AddTeacherModel(_, provider, _, input) => render_teacher_model_input(f, inner, provider, input),
         WizardStep::EditTeacher(teachers, idx, model_input, name_input) => render_edit_teacher(f, inner, teachers, *idx, model_input, name_input),
+        WizardStep::FeaturesConfig(auto_approve, streaming, debug) => render_features_config(f, inner, *auto_approve, *streaming, *debug),
         WizardStep::Confirm => render_confirm(f, inner),
     }
 }
@@ -1725,4 +1785,80 @@ fn render_teacher_model_input(f: &mut Frame, area: Rect, provider: &str, input: 
         .style(Style::default().fg(Color::Gray))
         .alignment(Alignment::Center);
     f.render_widget(instructions, chunks[4]);
+}
+
+fn render_features_config(f: &mut Frame, area: Rect, auto_approve: bool, streaming: bool, debug: bool) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Title
+            Constraint::Length(4),  // Instructions
+            Constraint::Min(12),     // Feature checkboxes
+            Constraint::Length(3),  // Help
+        ])
+        .split(area);
+
+    let title = Paragraph::new("Step 7: Feature Flags")
+        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .alignment(Alignment::Center);
+    f.render_widget(title, chunks[0]);
+
+    let instructions = Paragraph::new(
+        "Configure optional features:\n\
+         Press 1/2/3 to toggle, Space for first option, Enter to continue"
+    )
+    .style(Style::default().fg(Color::Yellow))
+    .wrap(Wrap { trim: false });
+    f.render_widget(instructions, chunks[1]);
+
+    // Feature checkboxes
+    let auto_approve_checkbox = if auto_approve { "☑" } else { "☐" };
+    let streaming_checkbox = if streaming { "☑" } else { "☐" };
+    let debug_checkbox = if debug { "☑" } else { "☐" };
+
+    let features_text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("1. ", Style::default().fg(Color::Cyan)),
+            Span::styled(format!("{} Auto-approve all tools", auto_approve_checkbox),
+                if auto_approve { Style::default().fg(Color::Green) } else { Style::default().fg(Color::Gray) }),
+        ]),
+        Line::from(vec![
+            Span::raw("   "),
+            Span::styled("Skip confirmation dialogs when AI uses tools", Style::default().fg(Color::Gray)),
+        ]),
+        Line::from(vec![
+            Span::raw("   "),
+            Span::styled("⚠️  Use with caution - tools can modify files", Style::default().fg(Color::Yellow)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("2. ", Style::default().fg(Color::Cyan)),
+            Span::styled(format!("{} Streaming responses", streaming_checkbox),
+                if streaming { Style::default().fg(Color::Green) } else { Style::default().fg(Color::Gray) }),
+        ]),
+        Line::from(vec![
+            Span::raw("   "),
+            Span::styled("Stream tokens in real-time from teacher models", Style::default().fg(Color::Gray)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("3. ", Style::default().fg(Color::Cyan)),
+            Span::styled(format!("{} Debug logging", debug_checkbox),
+                if debug { Style::default().fg(Color::Green) } else { Style::default().fg(Color::Gray) }),
+        ]),
+        Line::from(vec![
+            Span::raw("   "),
+            Span::styled("Enable verbose logging for troubleshooting", Style::default().fg(Color::Gray)),
+        ]),
+    ];
+
+    let features = Paragraph::new(features_text)
+        .wrap(Wrap { trim: false });
+    f.render_widget(features, chunks[2]);
+
+    let help = Paragraph::new("1/2/3: Toggle  Space: Toggle first  Enter: Continue  Esc: Back")
+        .style(Style::default().fg(Color::Gray))
+        .alignment(Alignment::Center);
+    f.render_widget(help, chunks[3]);
 }

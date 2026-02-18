@@ -45,7 +45,7 @@ pub fn load_config() -> Result<Config> {
 fn try_load_from_shammah_config() -> Result<Option<Config>> {
     use super::backend::BackendConfig;
     use super::colors::ColorScheme;
-    use super::settings::ClientConfig;
+    use super::settings::{ClientConfig, FeaturesConfig};
     use super::TeacherEntry;
 
     let home = dirs::home_dir().context("Could not determine home directory")?;
@@ -67,7 +67,7 @@ fn try_load_from_shammah_config() -> Result<Option<Config>> {
     #[derive(serde::Deserialize)]
     struct TomlConfig {
         #[serde(default)]
-        streaming_enabled: bool,
+        streaming_enabled: bool, // Old location (deprecated)
         #[serde(default = "default_tui_enabled")]
         tui_enabled: bool,
         #[serde(default)]
@@ -78,6 +78,8 @@ fn try_load_from_shammah_config() -> Result<Option<Config>> {
         teachers: Vec<TeacherEntry>,
         #[serde(default)]
         colors: Option<ColorScheme>,
+        #[serde(default)]
+        features: Option<FeaturesConfig>,
     }
 
     fn default_tui_enabled() -> bool {
@@ -92,9 +94,20 @@ fn try_load_from_shammah_config() -> Result<Option<Config>> {
     }
 
     let mut config = Config::new(toml_config.teachers);
-    config.streaming_enabled = toml_config.streaming_enabled;
+
+    // Migrate streaming_enabled to features if not present
+    if let Some(mut features) = toml_config.features {
+        config.features = features;
+    } else {
+        // Old config without features section - migrate streaming_enabled
+        config.features.streaming_enabled = toml_config.streaming_enabled;
+    }
+
+    // Keep deprecated field in sync for backward compatibility
+    config.streaming_enabled = config.features.streaming_enabled;
     config.tui_enabled = toml_config.tui_enabled;
     config.backend = toml_config.backend;
+
     if let Some(client) = toml_config.client {
         config.client = client;
     }

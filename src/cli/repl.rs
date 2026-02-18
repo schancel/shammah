@@ -194,8 +194,14 @@ impl Repl {
         // User interaction tools
         tool_registry.register(Box::new(AskUserQuestionTool));
 
-        // Create permission manager (allow all for now)
-        let permissions = PermissionManager::new().with_default_rule(PermissionRule::Allow);
+        // Create permission manager
+        // Use config.features.auto_approve_tools to determine default rule
+        let default_rule = if config.features.auto_approve_tools {
+            PermissionRule::Allow // Auto-approve: skip confirmations
+        } else {
+            PermissionRule::Ask // Default: require user confirmation
+        };
+        let permissions = PermissionManager::new().with_default_rule(default_rule);
 
         // Determine patterns path
         let patterns_path = dirs::home_dir()
@@ -239,7 +245,7 @@ impl Repl {
             );
         }
 
-        let streaming_enabled = config.streaming_enabled;
+        let streaming_enabled = config.features.streaming_enabled;
 
         // Generate tool definitions from registry
         let tool_definitions: Vec<ToolDefinition> = tool_executor

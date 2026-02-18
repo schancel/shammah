@@ -198,6 +198,16 @@ async fn main() -> Result<()> {
                 model_repo: custom_model_repo,
                 ..Default::default()
             };
+            // Save feature flags
+            new_config.features = shammah::config::FeaturesConfig {
+                auto_approve_tools: result.auto_approve_tools,
+                streaming_enabled: result.streaming_enabled,
+                debug_logging: result.debug_logging,
+                #[cfg(target_os = "macos")]
+                gui_automation: false, // Not yet implemented in wizard
+            };
+            // Update deprecated streaming_enabled field for backward compat
+            new_config.streaming_enabled = new_config.features.streaming_enabled;
             new_config.save()?;
 
             eprintln!("\n\x1b[1;32m✓ Configuration saved!\x1b[0m\n");
@@ -364,6 +374,8 @@ fn init_tracing() {
 
     // Create environment filter for log level control
     // Default: INFO level, can be overridden with RUST_LOG env var
+    // Note: debug_logging feature flag is for future use (e.g., TUI debug panel)
+    // For now, use RUST_LOG=debug environment variable for verbose logging
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
@@ -931,6 +943,17 @@ async fn run_setup() -> Result<()> {
         model_repo: custom_model_repo,
         ..Default::default()
     };
+
+    // Update feature flags
+    config.features = shammah::config::FeaturesConfig {
+        auto_approve_tools: result.auto_approve_tools,
+        streaming_enabled: result.streaming_enabled,
+        debug_logging: result.debug_logging,
+        #[cfg(target_os = "macos")]
+        gui_automation: false, // Not yet implemented in wizard
+    };
+    // Update deprecated streaming_enabled field for backward compat
+    config.streaming_enabled = config.features.streaming_enabled;
 
     // Save configuration
     config.save()?;
