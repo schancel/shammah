@@ -64,11 +64,13 @@ jobs:
       - name: Build release binary
         run: |
           echo "=== Starting build ==="
-          cargo build --release --target ${{ matrix.target }} 2>&1 | tee build.log || {
-            echo "=== Build failed! Last 50 lines of output: ==="
+          set -o pipefail
+          cargo build --release --target ${{ matrix.target }} 2>&1 | tee build.log
+          if [ $? -ne 0 ]; then
+            echo "=== Build failed! Last 50 lines: ==="
             tail -50 build.log
             exit 1
-          }
+          fi
 
       - name: Strip binary (Linux/macOS)
         run: |
