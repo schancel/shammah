@@ -28,7 +28,7 @@ futures = "0.3"
 once_cell = "1.19"
 
 # HTTP client for Claude API
-reqwest = { version = "0.11", features = ["json", "stream"] }
+reqwest = { version = "0.11", default-features = false, features = ["json", "stream", "rustls-tls"] }
 
 # HTTP server
 axum = "0.7"
@@ -69,8 +69,8 @@ rust-stemmers = "1.2"
 
 # Machine Learning (Dual providers: ONNX Runtime + Candle)
 # ONNX Runtime (recommended for most users)
-ort = { version = "2.0.0-rc.11", features = ["download-binaries", "ndarray"], optional = true }
-ndarray = { version = "0.17", optional = true }  # Multi-dimensional arrays for ONNX tensor creation
+ort = { version = "2.0.0-rc.11", features = ["download-binaries", "ndarray"] }
+ndarray = "0.17"  # Multi-dimensional arrays for ONNX tensor creation
 # Candle (alternative provider, optional)
 candle-core = { version = "0.8", optional = true }
 candle-nn = { version = "0.8", optional = true }
@@ -78,7 +78,7 @@ candle-transformers = { version = "0.8", optional = true }
 # Shared dependencies
 sysinfo = "0.32"  # System RAM detection for model selection
 tokenizers = "0.21"  # Tokenization (used by both ONNX and Candle)
-hf-hub = "0.4"  # HuggingFace Hub integration for model downloads
+hf-hub = { version = "0.4", default-features = false, features = ["tokio", "ureq", "rustls-tls"] }  # HuggingFace Hub integration
 indicatif = "0.17"  # Progress bars for download tracking
 rand = "0.8"  # Random number generation for sampling
 safetensors = "0.4"  # Model weight loading (used by Candle)
@@ -109,7 +109,7 @@ tempfile = "3.8"
 
 [features]
 default = ["onnx"]  # ONNX Runtime is the default provider
-onnx = ["dep:ort", "dep:ndarray"]  # ONNX Runtime support
+onnx = []  # ONNX Runtime support (always available)
 candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers"]  # Candle support (optional)
 candle-metal = ["candle", "dep:candle-metal-kernels"]  # Candle with Metal acceleration (macOS only)
 cuda = []  # CUDA support (requires CUDA toolkit)
