@@ -819,12 +819,25 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
 
 ## Current Project Status
 
-**Phase**: Core Infrastructure + UX Polish (Phases 1-8 + Most of Phase 4) ✅
-**Version**: 0.4.0 (Production-Ready with Tool Confirmations)
-**Progress**: 17/23 TODO items complete (74%)
-**Next**: Model testing, adapter loading, documentation (see STATUS.md)
+**Phase**: Core Infrastructure + Setup Wizard Redesign + MCP Foundation ✅
+**Version**: 0.5.0-dev (Tabbed Wizard + Feature Flags + GUI Tools + MCP Infrastructure)
+**Recent Work**: Phases 1-4 of Setup Wizard Redesign (Feb 2026)
+  - Phase 1: Tabbed setup wizard with section navigation
+  - Phase 2: Feature flags configuration system
+  - Phase 3: macOS GUI automation tools (infrastructure)
+  - Phase 4: MCP plugin system (config + module structure)
+**Next**: Complete MCP implementation (JSON-RPC), test GUI tools on macOS
 
 ### What's Done
+
+**Setup Wizard Redesign (Feb 2026):**
+- ✅ **Tabbed Navigation** - Jump between sections with Tab/arrows, edit any section
+- ✅ **Feature Flags** - Auto-approve tools, streaming, debug logging, GUI automation
+- ✅ **GUI Automation** - GuiClick, GuiType, GuiInspect tools (macOS, infrastructure ready)
+- 🚧 **MCP Plugin System** - Configuration complete, connection layer in progress
+- ✅ **TUI Refactoring** - Removed double-buffering optimization for reliability
+
+
 
 **ONNX Runtime Integration (Complete):**
 - ✅ **ONNX Model Loading** - Load models from onnx-community repos

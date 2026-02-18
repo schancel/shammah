@@ -6,7 +6,7 @@ This document describes the technical architecture of Shammah, a local-first AI 
 
 Shammah provides **immediate, high-quality AI assistance** using pre-trained local models (Qwen via ONNX Runtime) or cloud fallback (Claude, GPT-4, Gemini, Grok), then continuously improves through weighted LoRA fine-tuning to adapt to your specific coding patterns.
 
-**Current State (v0.4.0):**
+**Current State (v0.5.0-dev):**
 - ✅ ONNX Runtime with KV cache support
 - ✅ Pre-trained Qwen models (1.5B/3B/7B/14B)
 - ✅ Daemon architecture with auto-spawn
@@ -15,6 +15,10 @@ Shammah provides **immediate, high-quality AI assistance** using pre-trained loc
 - ✅ SSE streaming for local and remote
 - ✅ LoRA training infrastructure (Python-based)
 - ✅ Multi-provider teacher support
+- ✅ Tabbed setup wizard (Phase 1)
+- ✅ Feature flags system (Phase 2)
+- ✅ macOS GUI automation (Phase 3 - infrastructure)
+- 🚧 MCP plugin system (Phase 4 - partial)
 
 **Key Innovation:** Pre-trained models + weighted LoRA fine-tuning = immediate quality + continuous improvement.
 
@@ -375,7 +379,117 @@ Each provider has an adapter that handles:
 - `src/config/settings.rs` - TeacherEntry configuration
 - `src/cli/setup_wizard.rs` - Multi-provider setup UI
 
-### 8. Conversation Management
+### 8. MCP (Model Context Protocol) Plugin System
+
+**Status:** 🚧 Infrastructure complete, connection layer in progress
+
+**Purpose:** Enable Shammah to connect to external MCP servers and use their tools dynamically.
+
+**What is MCP?**
+MCP (Model Context Protocol) is Anthropic's open standard for connecting AI assistants to external tools and data sources. Servers expose tools via JSON-RPC 2.0 over STDIO or HTTP+SSE.
+
+**Example Use Cases:**
+- `@modelcontextprotocol/server-github` - GitHub operations (issues, PRs, repos)
+- `@modelcontextprotocol/server-filesystem` - Enhanced file operations
+- `@modelcontextprotocol/server-postgres` - Database queries
+- Custom servers for internal APIs, tools, etc.
+
+**Architecture (Client-Side Execution):**
+```
+┌─────────────────────┐
+│  REPL Client        │
+│  (runs locally)     │
+│                     │
+│  ┌───────────────┐  │
+│  │ MCP Client    │  │  ← Manages server connections
+│  └───┬───────────┘  │
+│      │              │
+│      v              │
+│  ┌───────────────┐  │
+│  │ MCP Server    │  │  ← Subprocess (npx, cargo, etc.)
+│  │ (STDIO)       │  │  ← JSON-RPC over stdin/stdout
+│  └───────────────┘  │
+└─────────────────────┘
+
+User: "Create GitHub issue..."
+    ↓
+Daemon: [tool_use: mcp_github_create_issue]
+    ↓
+Client: Execute MCP tool locally
+    ├─ Connect to MCP server (if not cached)
+    ├─ Send JSON-RPC request
+    ├─ Receive result
+    └─ Return to daemon
+    ↓
+Daemon: "Issue created: #123"
+```
+
+**Why Client-Side?**
+- MCP servers may need local filesystem access
+- User controls external API keys (GitHub, Slack, etc.)
+- Proper security: user approves tools on their machine
+- Consistent with tool pass-through architecture
+- MCP connections cached per client session
+
+**Configuration Example:**
+```toml
+# ~/.shammah/config.toml
+
+[mcp_servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/Users/shammah"]
+transport = "stdio"
+enabled = true
+
+[mcp_servers.github]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+transport = "stdio"
+env = { GITHUB_TOKEN = "$GITHUB_TOKEN" }
+enabled = true
+
+[mcp_servers.custom]
+url = "http://localhost:3000/mcp"
+transport = "sse"
+enabled = false
+```
+
+**Implementation Status:**
+- ✅ Configuration system (`McpServerConfig`)
+- ✅ Config integration (TOML loading, validation)
+- ✅ Module structure (`src/tools/mcp/`)
+- ✅ Dependency (`rust-mcp-sdk` v0.8.3)
+- 🚧 Connection layer (blocked by SDK private types)
+- ❌ Client coordinator (depends on connection)
+- ❌ Tool executor integration
+- ❌ Setup wizard MCP section
+- ❌ REPL `/mcp` commands (list, enable, disable, reload)
+
+**Technical Challenge:**
+The `rust-mcp-sdk` crate has private internal types (`ClientRuntime`) that can't be stored in structs. Completion requires either:
+1. Direct JSON-RPC 2.0 implementation over STDIO (recommended)
+2. Type-erasure workaround with `Box<dyn Any>`
+3. Wait for SDK API improvements
+
+**Next Steps:**
+1. Implement JSON-RPC 2.0 transport (simple, well-documented)
+2. Process management for MCP server subprocesses
+3. Tool discovery and execution
+4. Integration with ToolExecutor (same pass-through pattern)
+5. Setup wizard section for managing MCP servers
+6. REPL commands: `/mcp list`, `/mcp enable <name>`, `/mcp reload`
+
+**Key Files:**
+- `src/tools/mcp/config.rs` - Configuration types (COMPLETE)
+- `src/tools/mcp/connection.rs` - Connection wrapper (PARTIAL)
+- `src/tools/mcp/client.rs` - Client coordinator (PARTIAL)
+- `docs/PHASE_4_MCP_PARTIAL.md` - Detailed implementation status
+
+**References:**
+- MCP Specification: https://modelcontextprotocol.io/specification/2025-11-25/
+- MCP Servers: https://github.com/modelcontextprotocol/servers
+
+### 9. Conversation Management
 
 **Purpose:** Manage multi-turn conversation history with context window limits.
 

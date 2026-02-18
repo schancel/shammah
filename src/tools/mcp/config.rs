@@ -125,4 +125,79 @@ mod tests {
 
         assert!(config.validate("test").is_err());
     }
+
+    #[test]
+    fn test_config_serialization() {
+        let config = McpServerConfig {
+            transport: TransportType::Stdio,
+            command: Some("npx".to_string()),
+            args: vec!["-y".to_string(), "@modelcontextprotocol/server-filesystem".to_string()],
+            env: HashMap::new(),
+            url: None,
+            enabled: true,
+        };
+
+        let serialized = toml::to_string(&config).unwrap();
+        assert!(serialized.contains("transport = \"stdio\""));
+        assert!(serialized.contains("command = \"npx\""));
+
+        let deserialized: McpServerConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.transport, TransportType::Stdio);
+        assert_eq!(deserialized.command, Some("npx".to_string()));
+        assert_eq!(deserialized.args.len(), 2);
+    }
+
+    #[test]
+    fn test_config_with_environment_variables() {
+        let mut env = HashMap::new();
+        env.insert("GITHUB_TOKEN".to_string(), "test_token".to_string());
+        env.insert("API_KEY".to_string(), "test_key".to_string());
+
+        let config = McpServerConfig {
+            transport: TransportType::Stdio,
+            command: Some("github-server".to_string()),
+            args: vec![],
+            env,
+            url: None,
+            enabled: true,
+        };
+
+        assert!(config.validate("github").is_ok());
+        assert_eq!(config.env.len(), 2);
+        assert_eq!(config.env.get("GITHUB_TOKEN"), Some(&"test_token".to_string()));
+    }
+
+    #[test]
+    fn test_disabled_server_config() {
+        let config = McpServerConfig {
+            transport: TransportType::Stdio,
+            command: Some("test".to_string()),
+            args: vec![],
+            env: HashMap::new(),
+            url: None,
+            enabled: false,
+        };
+
+        // Even invalid configs should validate if disabled
+        // (validation happens at connection time if enabled)
+        assert!(config.validate("test").is_ok());
+    }
+
+    #[test]
+    fn test_transport_type_serde() {
+        let stdio = TransportType::Stdio;
+        let sse = TransportType::Sse;
+
+        let stdio_str = serde_json::to_string(&stdio).unwrap();
+        let sse_str = serde_json::to_string(&sse).unwrap();
+
+        assert_eq!(stdio_str, "\"stdio\"");
+        assert_eq!(sse_str, "\"sse\"");
+
+        let stdio_de: TransportType = serde_json::from_str(&stdio_str).unwrap();
+        let sse_de: TransportType = serde_json::from_str(&sse_str).unwrap();
+
+        assert_eq!(stdio_de, TransportType::Stdio);
+        assert_eq!(sse_de, TransportType::Sse);
+    }
 }
