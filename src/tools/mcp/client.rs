@@ -1,4 +1,7 @@
 // MCP client coordinator - manages multiple server connections
+//
+// NOTE: This is a simplified stub implementation until the rust-mcp-sdk
+// API stabilizes or we implement JSON-RPC directly.
 
 use super::config::McpServerConfig;
 use super::connection::McpConnection;
@@ -9,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// MCP client that manages multiple server connections
+/// MCP client that manages multiple server connections (stub implementation)
 pub struct McpClient {
     /// Active server connections (name -> connection)
     connections: Arc<RwLock<HashMap<String, Arc<RwLock<McpConnection>>>>>,
@@ -23,7 +26,7 @@ impl McpClient {
         }
     }
 
-    /// Connect to MCP servers from configuration
+    /// Connect to MCP servers from configuration (stub)
     pub async fn from_config(servers: &HashMap<String, McpServerConfig>) -> Result<Self> {
         let client = Self::new();
 
@@ -40,10 +43,10 @@ impl McpClient {
                         .write()
                         .await
                         .insert(name.clone(), Arc::new(RwLock::new(conn)));
-                    tracing::info!("Connected to MCP server: {}", name);
+                    tracing::info!("Created MCP connection for server: {} (stub)", name);
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to connect to MCP server '{}': {}", name, e);
+                    tracing::warn!("Failed to create MCP connection for '{}': {}", name, e);
                     // Continue with other servers
                 }
             }
@@ -52,7 +55,7 @@ impl McpClient {
         Ok(client)
     }
 
-    /// List all available tools from all connected servers
+    /// List all available tools from all connected servers (stub)
     pub async fn list_tools(&self) -> Vec<ToolDefinition> {
         let connections = self.connections.read().await;
         let mut tools = Vec::new();
@@ -74,8 +77,8 @@ impl McpClient {
                         .unwrap_or_else(|| format!("Tool from MCP server '{}'", server_name)),
                     input_schema: ToolInputSchema {
                         schema_type: "object".to_string(),
-                        properties: tool.input_schema.clone(),
-                        required: Vec::new(), // MCP schema doesn't expose required fields directly
+                        properties: serde_json::json!({}), // TODO: Convert from MCP schema format
+                        required: Vec::new(),
                     },
                 });
             }
@@ -84,7 +87,7 @@ impl McpClient {
         tools
     }
 
-    /// Execute a tool on the appropriate server
+    /// Execute a tool on the appropriate server (stub)
     pub async fn execute_tool(&self, tool_name: &str, params: Value) -> Result<String> {
         // Parse prefixed name: "mcp_<server>_<tool>"
         let parts: Vec<&str> = tool_name.split('_').collect();
@@ -96,7 +99,7 @@ impl McpClient {
         let actual_tool_name = parts[2..].join("_");
 
         tracing::debug!(
-            "Executing MCP tool '{}' on server '{}'",
+            "Executing MCP tool '{}' on server '{}' (stub)",
             actual_tool_name,
             server_name
         );
@@ -114,7 +117,7 @@ impl McpClient {
             .context("Failed to execute MCP tool")
     }
 
-    /// Refresh tools from all servers
+    /// Refresh tools from all servers (stub)
     pub async fn refresh_all_tools(&self) -> Result<()> {
         let connections = self.connections.read().await;
 
@@ -143,7 +146,7 @@ impl McpClient {
         self.connections.read().await.contains_key(name)
     }
 
-    /// Disconnect from a specific server
+    /// Disconnect from a specific server (stub)
     pub async fn disconnect(&self, name: &str) -> Result<()> {
         let mut connections = self.connections.write().await;
 
@@ -158,7 +161,7 @@ impl McpClient {
         Ok(())
     }
 
-    /// Disconnect from all servers
+    /// Disconnect from all servers (stub)
     pub async fn disconnect_all(&self) -> Result<()> {
         let mut connections = self.connections.write().await;
         let names: Vec<_> = connections.keys().cloned().collect();
@@ -180,5 +183,81 @@ impl McpClient {
 impl Drop for McpClient {
     fn drop(&mut self) {
         tracing::debug!("Dropping MCP client");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::mcp::TransportType;
+
+    #[tokio::test]
+    async fn test_client_creation() {
+        let client = McpClient::new();
+        let servers = client.list_servers().await;
+        assert_eq!(servers.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_from_config_empty() {
+        let config: HashMap<String, McpServerConfig> = HashMap::new();
+        let client = McpClient::from_config(&config).await.unwrap();
+        assert_eq!(client.list_servers().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_from_config_with_servers() {
+        let mut config = HashMap::new();
+        config.insert(
+            "test1".to_string(),
+            McpServerConfig {
+                transport: TransportType::Stdio,
+                command: Some("test".to_string()),
+                args: vec![],
+                env: HashMap::new(),
+                url: None,
+                enabled: true,
+            },
+        );
+        config.insert(
+            "test2".to_string(),
+            McpServerConfig {
+                transport: TransportType::Stdio,
+                command: Some("test2".to_string()),
+                args: vec![],
+                env: HashMap::new(),
+                url: None,
+                enabled: false, // Disabled
+            },
+        );
+
+        let client = McpClient::from_config(&config).await.unwrap();
+        let servers = client.list_servers().await;
+
+        // Only enabled server should be connected
+        assert_eq!(servers.len(), 1);
+        assert!(servers.contains(&"test1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_disconnect() {
+        let mut config = HashMap::new();
+        config.insert(
+            "test".to_string(),
+            McpServerConfig {
+                transport: TransportType::Stdio,
+                command: Some("test".to_string()),
+                args: vec![],
+                env: HashMap::new(),
+                url: None,
+                enabled: true,
+            },
+        );
+
+        let client = McpClient::from_config(&config).await.unwrap();
+        assert!(client.is_connected("test").await);
+
+        client.disconnect("test").await.unwrap();
+        assert!(!client.is_connected("test").await);
     }
 }
