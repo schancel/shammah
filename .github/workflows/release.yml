@@ -20,10 +20,11 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: shammah
-            asset_name: shammah-linux-x86_64
+          # Linux disabled - compilation issues (see GitHub issue)
+          # - os: ubuntu-latest
+          #   target: x86_64-unknown-linux-gnu
+          #   artifact_name: shammah
+          #   asset_name: shammah-linux-x86_64
           # macOS Intel disabled - macos-13 runner unavailable
           # - os: macos-13
           #   target: x86_64-apple-darwin
@@ -114,10 +115,9 @@ jobs:
 
           **Or download manually:**
 
-          - [Linux x86_64](https://github.com/${{ github.repository }}/releases/download/${tag}/shammah-linux-x86_64.tar.gz)
           - [macOS ARM64 (Apple Silicon)](https://github.com/${{ github.repository }}/releases/download/${tag}/shammah-macos-aarch64.tar.gz)
 
-          *Note: macOS Intel binaries coming soon*
+          *Note: Linux and macOS Intel binaries coming soon*
 
           Extract and add to your PATH:
           \`\`\`bash
@@ -130,9 +130,8 @@ jobs:
           See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
           EOF
 
-          # Create release with binaries
+          # Create release with macOS ARM64 binary
           gh release create "${tag}" \
             --title "Shammah v${version}" \
             --notes-file release_notes.md \
-            artifacts/shammah-linux-x86_64/shammah-linux-x86_64.tar.gz \
             artifacts/shammah-macos-aarch64/shammah-macos-aarch64.tar.gz
