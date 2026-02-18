@@ -61,11 +61,18 @@ jobs:
           echo "=== Available libraries ==="
           ldconfig -p | grep -E "ssl|crypto" || echo "No SSL libraries found"
 
-      - name: Check compilation
+      - name: Check compilation (no ONNX)
+        if: runner.os == 'Linux'
         run: |
-          echo "=== Running cargo check ==="
+          echo "=== Testing without ONNX feature ==="
+          cargo check --release --target ${{ matrix.target }} --no-default-features
+          echo "=== Check without ONNX passed ==="
+
+      - name: Check compilation (with ONNX)
+        run: |
+          echo "=== Testing with ONNX feature ==="
           cargo check --release --target ${{ matrix.target }}
-          echo "=== Cargo check passed ==="
+          echo "=== Check with ONNX passed ==="
 
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
