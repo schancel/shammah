@@ -765,9 +765,69 @@ fn load_config() -> Result<Config> {
 
 ### Testing
 
-- **Unit tests**: Test individual functions
-- **Integration tests**: Test cross-module behavior
-- **Examples**: Demonstrate features
+**Philosophy**: Write reusable, comprehensive tests - not ad-hoc one-off tests.
+
+**Why**:
+- Prevent regressions when refactoring
+- Document expected behavior
+- Enable confident changes
+- Can always remove tests later if not needed
+- Ad-hoc manual testing is wasted effort
+
+**Test Types**:
+
+1. **Unit Tests** (`#[cfg(test)]` in module files):
+   - Test individual functions in isolation
+   - Mock external dependencies
+   - Fast, focused, deterministic
+   - Example: Command parsing, tool signature generation, schema conversion
+
+2. **Integration Tests** (`tests/*.rs` files):
+   - Test cross-module interactions
+   - Use real implementations (not mocks)
+   - Verify end-to-end workflows
+   - Example: Tool execution with permission system, MCP client with real server responses
+
+3. **Documentation Tests** (in doc comments):
+   - Verify examples in documentation work
+   - Keep docs synchronized with code
+
+**Test Organization**:
+```
+src/
+  cli/
+    commands.rs          # Module with #[cfg(test)] mod tests
+  tools/
+    mcp/
+      client.rs          # Module with #[cfg(test)] mod tests
+      connection.rs      # Module with #[cfg(test)] mod tests
+
+tests/                   # Integration tests
+  mcp_integration_test.rs
+  tool_execution_test.rs
+  command_integration_test.rs
+```
+
+**Test Coverage Goals**:
+- All public APIs have tests
+- Critical paths have integration tests
+- Error handling paths tested
+- Edge cases documented with tests
+
+**Running Tests**:
+```bash
+# All tests
+cargo test
+
+# Specific module
+cargo test --lib tools::mcp
+
+# Integration tests only
+cargo test --test mcp_integration_test
+
+# With output
+cargo test -- --nocapture
+```
 
 ### Logging
 

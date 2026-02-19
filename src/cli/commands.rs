@@ -12,6 +12,7 @@ pub enum CommandOutput {
     Message(String),   // Long content for scrollback area
 }
 
+#[derive(Debug)]
 pub enum Command {
     Help,
     Quit,
@@ -547,5 +548,111 @@ mod tests {
         assert!(matches!(Command::parse("/patterns invalid"), None));
         assert!(matches!(Command::parse("/patterns remove"), None)); // Missing ID
         assert!(matches!(Command::parse("/patterns rm"), None)); // Missing ID
+    }
+
+    // MCP Command Tests
+
+    #[test]
+    fn test_parse_mcp_list() {
+        // Both /mcp and /mcp list should work
+        assert!(matches!(
+            Command::parse("/mcp"),
+            Some(Command::McpList)
+        ));
+        assert!(matches!(
+            Command::parse("/mcp list"),
+            Some(Command::McpList)
+        ));
+    }
+
+    #[test]
+    fn test_parse_mcp_tools() {
+        // /mcp tools with no argument
+        match Command::parse("/mcp tools") {
+            Some(Command::McpTools(None)) => (),
+            _ => panic!("Expected McpTools(None)"),
+        }
+
+        // /mcp tools with server name
+        match Command::parse("/mcp tools filesystem") {
+            Some(Command::McpTools(Some(server))) => {
+                assert_eq!(server, "filesystem");
+            }
+            _ => panic!("Expected McpTools(Some(...))"),
+        }
+
+        // With extra whitespace
+        match Command::parse("/mcp tools   github  ") {
+            Some(Command::McpTools(Some(server))) => {
+                assert_eq!(server, "github");
+            }
+            _ => panic!("Expected McpTools(Some(...))"),
+        }
+    }
+
+    #[test]
+    fn test_parse_mcp_refresh() {
+        assert!(matches!(
+            Command::parse("/mcp refresh"),
+            Some(Command::McpRefresh)
+        ));
+    }
+
+    #[test]
+    fn test_parse_mcp_reload() {
+        assert!(matches!(
+            Command::parse("/mcp reload"),
+            Some(Command::McpReload)
+        ));
+    }
+
+    #[test]
+    fn test_parse_mcp_invalid() {
+        // Invalid subcommands should return None
+        assert!(matches!(Command::parse("/mcp invalid"), None));
+        // Note: "/mcp " (with trailing space) is trimmed to "/mcp" which matches McpList
+    }
+
+    #[test]
+    fn test_parse_mcp_case_sensitive() {
+        // Commands should be case-sensitive (lowercase only)
+        assert!(matches!(Command::parse("/MCP list"), None));
+        assert!(matches!(Command::parse("/mcp LIST"), None));
+        assert!(matches!(Command::parse("/Mcp list"), None));
+    }
+
+    #[test]
+    fn test_parse_mcp_with_leading_trailing_whitespace() {
+        // Should handle whitespace correctly
+        assert!(matches!(
+            Command::parse("  /mcp list  "),
+            Some(Command::McpList)
+        ));
+        assert!(matches!(
+            Command::parse("\t/mcp refresh\t"),
+            Some(Command::McpRefresh)
+        ));
+    }
+
+    #[test]
+    fn test_mcp_tools_empty_server_name() {
+        // /mcp tools with only whitespace after should be treated as no argument
+        match Command::parse("/mcp tools   ") {
+            Some(Command::McpTools(None)) => (),
+            other => panic!("Expected McpTools(None), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_mcp_tools_multiple_words() {
+        // Server names can contain spaces (though unlikely in practice)
+        // The entire string after "/mcp tools " is captured as the server name
+        match Command::parse("/mcp tools my server") {
+            Some(Command::McpTools(Some(server))) => {
+                // Full string is captured including spaces
+                assert_eq!(server, "my server");
+            }
+            _ => panic!("Expected McpTools with server name"),
+        }
     }
 }
