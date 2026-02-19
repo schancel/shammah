@@ -208,15 +208,25 @@ impl ToolExecutor {
     }
 
     /// Add MCP client to enable MCP tools
-    pub async fn with_mcp(mut self, config: &crate::config::Config) -> Result<Self> {
+    ///
+    /// Always returns Self (never fails) - gracefully handles MCP connection errors
+    pub async fn with_mcp(mut self, config: &crate::config::Config) -> Self {
         if !config.mcp_servers.is_empty() {
             info!("Initializing MCP client with {} servers", config.mcp_servers.len());
-            let mcp_client = crate::tools::mcp::McpClient::from_config(&config.mcp_servers).await?;
-            let connected_servers = mcp_client.list_servers().await;
-            info!("MCP client initialized with {} connected servers", connected_servers.len());
-            self.mcp_client = Some(Arc::new(mcp_client));
+            match crate::tools::mcp::McpClient::from_config(&config.mcp_servers).await {
+                Ok(mcp_client) => {
+                    let connected_servers = mcp_client.list_servers().await;
+                    info!("MCP client initialized with {} connected servers", connected_servers.len());
+                    self.mcp_client = Some(Arc::new(mcp_client));
+                }
+                Err(e) => {
+                    warn!("Failed to initialize MCP client: {}", e);
+                    warn!("Continuing without MCP tools");
+                    // mcp_client remains None
+                }
+            }
         }
-        Ok(self)
+        self
     }
 
     /// Get list of all available tools (built-in + MCP)

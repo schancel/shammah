@@ -222,7 +222,7 @@ impl Repl {
             .unwrap_or_else(|| PathBuf::from(".shammah/tool_patterns.json"));
 
         // Create tool executor
-        let tool_executor = Arc::new(tokio::sync::Mutex::new(ToolExecutor::new(tool_registry, permissions, patterns_path)
+        let executor = ToolExecutor::new(tool_registry, permissions, patterns_path)
             .unwrap_or_else(|e| {
                 output_status!("⚠️  Failed to initialize tool executor: {}", e);
                 output_status!("   Tool pattern persistence may not work correctly");
@@ -247,28 +247,29 @@ impl Repl {
                     std::env::temp_dir().join("shammah_patterns_fallback.json"),
                 )
                 .expect("Failed to create fallback tool executor")
-            })
-        ));
+            });
+
+        // Add MCP support if configured (graceful - always returns even on error)
+        let executor = executor.with_mcp(&config).await;
+
+        let tool_executor = Arc::new(tokio::sync::Mutex::new(executor));
 
         // Only show tool execution log in standalone mode (not daemon mode)
         if is_interactive && !daemon_mode {
             output_status!(
-                "✓ Tool execution enabled ({} tools)",
+                "✓ Tool execution enabled ({} built-in tools)",
                 tool_executor.lock().await.registry().len()
             );
         }
 
         let streaming_enabled = config.features.streaming_enabled;
 
-        // Generate tool definitions from registry
+        // Generate tool definitions from registry (includes built-in + MCP tools)
         let tool_definitions: Vec<ToolDefinition> = tool_executor
             .lock()
             .await
-            .registry()
-            .get_all_tools()
-            .into_iter()
-            .map(|tool| tool.definition())
-            .collect();
+            .list_all_tools()
+            .await;
 
         // Get global OutputManager and StatusBar (created in main.rs)
         // DO NOT create new instances - that would break stdout control!
