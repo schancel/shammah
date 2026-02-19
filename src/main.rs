@@ -165,6 +165,17 @@ async fn main() -> Result<()> {
     set_global_output(output_manager.clone());
     set_global_status(status_bar.clone());
 
+    // Check if debug logging is enabled in config (before init_tracing)
+    // This allows the debug_logging feature flag to control log verbosity
+    if let Ok(temp_config) = load_config() {
+        if temp_config.features.debug_logging {
+            // Set RUST_LOG to debug if not already set by user
+            if std::env::var("RUST_LOG").is_err() {
+                std::env::set_var("RUST_LOG", "debug");
+            }
+        }
+    }
+
     // NOW initialize tracing (will use the global OutputManager we just configured)
     init_tracing();
 
@@ -374,8 +385,8 @@ fn init_tracing() {
 
     // Create environment filter for log level control
     // Default: INFO level, can be overridden with RUST_LOG env var
-    // Note: debug_logging feature flag is for future use (e.g., TUI debug panel)
-    // For now, use RUST_LOG=debug environment variable for verbose logging
+    // Note: config.features.debug_logging sets RUST_LOG=debug before init_tracing()
+    // Users can also manually set RUST_LOG for custom log levels
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
@@ -622,6 +633,17 @@ async fn run_daemon(bind_address: String) -> Result<()> {
     use std::sync::Arc;
     use tokio::sync::RwLock;
     use shammah::{output_progress, output_status};
+
+    // Check if debug logging is enabled in config (before setting up tracing)
+    // This allows the debug_logging feature flag to control log verbosity
+    if let Ok(temp_config) = load_config() {
+        if temp_config.features.debug_logging {
+            // Set RUST_LOG to debug if not already set by user
+            if std::env::var("RUST_LOG").is_err() {
+                std::env::set_var("RUST_LOG", "debug");
+            }
+        }
+    }
 
     // Set up file logging for daemon (append to ~/.shammah/daemon.log)
     let log_path = dirs::home_dir()
