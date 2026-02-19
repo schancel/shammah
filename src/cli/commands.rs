@@ -33,6 +33,11 @@ pub enum Command {
     FeedbackGood(Option<String>),     // Normal-weight (1x) - good examples
     // Local model testing
     Local { query: String }, // Query local model directly (bypass routing)
+    // MCP plugin management
+    McpList,                  // List connected MCP servers
+    McpTools(Option<String>), // List tools from specific server (or all if None)
+    McpRefresh,               // Refresh tools from all servers
+    McpReload,                // Reconnect to all servers
 }
 
 impl Command {
@@ -127,6 +132,30 @@ impl Command {
             }
         }
 
+        // Handle /mcp commands with subcommands
+        if trimmed == "/mcp" || trimmed == "/mcp list" {
+            return Some(Command::McpList);
+        }
+
+        if trimmed == "/mcp refresh" {
+            return Some(Command::McpRefresh);
+        }
+
+        if trimmed == "/mcp reload" {
+            return Some(Command::McpReload);
+        }
+
+        if trimmed == "/mcp tools" {
+            return Some(Command::McpTools(None));
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("/mcp tools ") {
+            let server = rest.trim();
+            if !server.is_empty() {
+                return Some(Command::McpTools(Some(server.to_string())));
+            }
+        }
+
         // Handle /patterns commands with subcommands
         if trimmed == "/patterns" || trimmed == "/patterns list" {
             return Some(Command::PatternsList);
@@ -206,6 +235,10 @@ pub fn handle_command(
         Command::Memory => {
             Ok(CommandOutput::Status("Memory command should be handled in REPL.".to_string()))
         }
+        // MCP commands are handled directly in REPL
+        Command::McpList | Command::McpTools(_) | Command::McpRefresh | Command::McpReload => {
+            Ok(CommandOutput::Status("MCP commands should be handled in REPL.".to_string()))
+        }
     }
 }
 
@@ -225,6 +258,15 @@ pub fn format_help() -> String {
          \x1b[1;33m🤖 Model Commands:\x1b[0m\n\
          \x1b[36m  /local <query>\x1b[0m     Query local model directly (bypass routing)\n\
          \x1b[0m                     Example: /local What is 2+2?\n\n\
+         \x1b[1;33m🔌 MCP Plugin Commands:\x1b[0m\n\
+         \x1b[36m  /mcp list\x1b[0m          List connected MCP servers\n\
+         \x1b[36m  /mcp tools\x1b[0m         List all MCP tools from all servers\n\
+         \x1b[36m  /mcp tools <srv>\x1b[0m   List tools from specific server\n\
+         \x1b[36m  /mcp refresh\x1b[0m       Refresh tool list from all servers\n\
+         \x1b[36m  /mcp reload\x1b[0m        Reconnect to all MCP servers\n\
+         \x1b[0m\n\
+         \x1b[90m  What is MCP?\x1b[0m Model Context Protocol - extend Shammah with external\n\
+         \x1b[90m  tools (GitHub, filesystem, databases, etc.) via MCP servers.\n\n\
          \x1b[1;33m🔒 Tool Confirmation Patterns:\x1b[0m\n\
          \x1b[36m  /patterns\x1b[0m          List all saved confirmation patterns\n\
          \x1b[36m  /patterns add\x1b[0m      Add a new pattern (interactive wizard)\n\

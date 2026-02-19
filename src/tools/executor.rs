@@ -229,6 +229,11 @@ impl ToolExecutor {
         self
     }
 
+    /// Get reference to MCP client (for management commands)
+    pub fn mcp_client(&self) -> Option<&Arc<crate::tools::mcp::McpClient>> {
+        self.mcp_client.as_ref()
+    }
+
     /// Get list of all available tools (built-in + MCP)
     pub async fn list_all_tools(&self) -> Vec<crate::tools::types::ToolDefinition> {
         let mut tools = Vec::new();

@@ -348,6 +348,22 @@ impl EventLoop {
                         }
                         self.render_tui().await?;
                     }
+                    Command::McpList => {
+                        // List connected MCP servers
+                        self.handle_mcp_list().await?;
+                    }
+                    Command::McpTools(server_filter) => {
+                        // List tools from all servers or specific server
+                        self.handle_mcp_tools(server_filter).await?;
+                    }
+                    Command::McpRefresh => {
+                        // Refresh tools from all servers
+                        self.handle_mcp_refresh().await?;
+                    }
+                    Command::McpReload => {
+                        // Reconnect to all servers
+                        self.handle_mcp_reload().await?;
+                    }
                     _ => {
                         // All other commands output to scrollback via write_info
                         self.output_manager.write_info(format!(
@@ -446,6 +462,131 @@ impl EventLoop {
             self.render_tui().await?;
         }
 
+        Ok(())
+    }
+
+    /// Handle /mcp list command - list connected MCP servers
+    async fn handle_mcp_list(&mut self) -> Result<()> {
+        let tool_executor = self.tool_coordinator.tool_executor();
+        let executor_guard = tool_executor.lock().await;
+
+        if let Some(mcp_client) = executor_guard.mcp_client() {
+            let servers = mcp_client.list_servers().await;
+            if servers.is_empty() {
+                self.output_manager.write_info("No MCP servers connected.");
+            } else {
+                let mut output = String::from("📡 Connected MCP Servers:\n\n");
+                for server_name in servers {
+                    output.push_str(&format!("  • {}\n", server_name));
+                }
+                self.output_manager.write_info(output);
+            }
+        } else {
+            self.output_manager.write_info(
+                "MCP plugin system not configured.\n\
+                 Add MCP servers to ~/.shammah/config.toml to get started."
+            );
+        }
+
+        self.render_tui().await?;
+        Ok(())
+    }
+
+    /// Handle /mcp tools command - list tools from servers
+    async fn handle_mcp_tools(&mut self, server_filter: Option<String>) -> Result<()> {
+        let tool_executor = self.tool_coordinator.tool_executor();
+        let executor_guard = tool_executor.lock().await;
+
+        if let Some(mcp_client) = executor_guard.mcp_client() {
+            let all_tools = mcp_client.list_tools().await;
+            let filtered_tools: Vec<_> = all_tools
+                .into_iter()
+                .filter(|tool| {
+                    if let Some(ref server) = server_filter {
+                        // Tool names are prefixed with "mcp_<server>_"
+                        tool.name.starts_with(&format!("mcp_{}_", server))
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+
+            if filtered_tools.is_empty() {
+                if let Some(server) = server_filter {
+                    self.output_manager.write_info(format!(
+                        "No tools found for server '{}'. Check server name with /mcp list",
+                        server
+                    ));
+                } else {
+                    self.output_manager.write_info("No MCP tools available.");
+                }
+            } else {
+                let header = if let Some(server) = server_filter {
+                    format!("🔧 MCP Tools from '{}' server:\n\n", server)
+                } else {
+                    String::from("🔧 All MCP Tools:\n\n")
+                };
+
+                let mut output = header;
+                for tool in filtered_tools {
+                    // Remove "mcp_" prefix for display
+                    let display_name = tool.name.strip_prefix("mcp_").unwrap_or(&tool.name);
+                    output.push_str(&format!("  • {}\n", display_name));
+                    output.push_str(&format!("    {}\n", tool.description));
+                }
+                self.output_manager.write_info(output);
+            }
+        } else {
+            self.output_manager.write_info(
+                "MCP plugin system not configured.\n\
+                 Add MCP servers to ~/.shammah/config.toml to get started."
+            );
+        }
+
+        self.render_tui().await?;
+        Ok(())
+    }
+
+    /// Handle /mcp refresh command - refresh tools from all servers
+    async fn handle_mcp_refresh(&mut self) -> Result<()> {
+        let tool_executor = self.tool_coordinator.tool_executor();
+        let executor_guard = tool_executor.lock().await;
+
+        if let Some(mcp_client) = executor_guard.mcp_client() {
+            self.output_manager.write_info("Refreshing MCP tools...");
+            self.render_tui().await?;
+
+            match mcp_client.refresh_all_tools().await {
+                Ok(()) => {
+                    let tools = mcp_client.list_tools().await;
+                    self.output_manager.write_info(format!(
+                        "✓ Refreshed MCP tools ({} tools available)",
+                        tools.len()
+                    ));
+                }
+                Err(e) => {
+                    self.output_manager.write_error(format!(
+                        "Failed to refresh MCP tools: {}",
+                        e
+                    ));
+                }
+            }
+        } else {
+            self.output_manager.write_info("No MCP servers configured.");
+        }
+
+        self.render_tui().await?;
+        Ok(())
+    }
+
+    /// Handle /mcp reload command - reconnect to all servers
+    async fn handle_mcp_reload(&mut self) -> Result<()> {
+        self.output_manager.write_info(
+            "/mcp reload not yet implemented.\n\
+             This command will reconnect to all MCP servers.\n\
+             For now, restart the REPL to reconnect."
+        );
+        self.render_tui().await?;
         Ok(())
     }
 

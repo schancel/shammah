@@ -63,6 +63,11 @@ impl ToolExecutionCoordinator {
         }
     }
 
+    /// Get access to the tool executor (for MCP commands and other management)
+    pub fn tool_executor(&self) -> &Arc<tokio::sync::Mutex<ToolExecutor>> {
+        &self.tool_executor
+    }
+
     /// Spawn a task to execute a tool (concurrent, non-blocking)
     ///
     /// This spawns a background task that:
