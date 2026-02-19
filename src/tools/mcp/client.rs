@@ -1,7 +1,6 @@
 // MCP client coordinator - manages multiple server connections
 //
-// NOTE: This is a simplified stub implementation until the rust-mcp-sdk
-// API stabilizes or we implement JSON-RPC directly.
+// Uses direct JSON-RPC 2.0 implementation over STDIO/SSE transports.
 
 use super::config::McpServerConfig;
 use super::connection::McpConnection;
@@ -26,7 +25,7 @@ impl McpClient {
         }
     }
 
-    /// Connect to MCP servers from configuration (stub)
+    /// Connect to MCP servers from configuration
     pub async fn from_config(servers: &HashMap<String, McpServerConfig>) -> Result<Self> {
         let client = Self::new();
 
@@ -43,10 +42,10 @@ impl McpClient {
                         .write()
                         .await
                         .insert(name.clone(), Arc::new(RwLock::new(conn)));
-                    tracing::info!("Created MCP connection for server: {} (stub)", name);
+                    tracing::info!("Connected to MCP server: {}", name);
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to create MCP connection for '{}': {}", name, e);
+                    tracing::warn!("Failed to connect to MCP server '{}': {}", name, e);
                     // Continue with other servers
                 }
             }
@@ -55,7 +54,7 @@ impl McpClient {
         Ok(client)
     }
 
-    /// List all available tools from all connected servers (stub)
+    /// List all available tools from all connected servers
     pub async fn list_tools(&self) -> Vec<ToolDefinition> {
         let connections = self.connections.read().await;
         let mut tools = Vec::new();
@@ -69,17 +68,16 @@ impl McpClient {
                 // Prefix tool name with "mcp_<server>_" to avoid conflicts
                 let prefixed_name = format!("mcp_{}_{}", server_name, tool.name);
 
+                // Convert MCP input schema to our format
+                let input_schema = convert_mcp_schema(&tool.input_schema);
+
                 tools.push(ToolDefinition {
                     name: prefixed_name,
                     description: tool
                         .description
                         .clone()
                         .unwrap_or_else(|| format!("Tool from MCP server '{}'", server_name)),
-                    input_schema: ToolInputSchema {
-                        schema_type: "object".to_string(),
-                        properties: serde_json::json!({}), // TODO: Convert from MCP schema format
-                        required: Vec::new(),
-                    },
+                    input_schema,
                 });
             }
         }
@@ -87,7 +85,7 @@ impl McpClient {
         tools
     }
 
-    /// Execute a tool on the appropriate server (stub)
+    /// Execute a tool on the appropriate server
     pub async fn execute_tool(&self, tool_name: &str, params: Value) -> Result<String> {
         // Parse prefixed name: "mcp_<server>_<tool>"
         let parts: Vec<&str> = tool_name.split('_').collect();
@@ -99,7 +97,7 @@ impl McpClient {
         let actual_tool_name = parts[2..].join("_");
 
         tracing::debug!(
-            "Executing MCP tool '{}' on server '{}' (stub)",
+            "Executing MCP tool '{}' on server '{}'",
             actual_tool_name,
             server_name
         );
@@ -117,7 +115,7 @@ impl McpClient {
             .context("Failed to execute MCP tool")
     }
 
-    /// Refresh tools from all servers (stub)
+    /// Refresh tools from all servers
     pub async fn refresh_all_tools(&self) -> Result<()> {
         let connections = self.connections.read().await;
 
@@ -146,12 +144,12 @@ impl McpClient {
         self.connections.read().await.contains_key(name)
     }
 
-    /// Disconnect from a specific server (stub)
+    /// Disconnect from a specific server
     pub async fn disconnect(&self, name: &str) -> Result<()> {
         let mut connections = self.connections.write().await;
 
         if let Some(conn) = connections.remove(name) {
-            let conn = conn.read().await;
+            let mut conn = conn.write().await;
             conn.shutdown()
                 .await
                 .context("Failed to shutdown server")?;
@@ -161,14 +159,14 @@ impl McpClient {
         Ok(())
     }
 
-    /// Disconnect from all servers (stub)
+    /// Disconnect from all servers
     pub async fn disconnect_all(&self) -> Result<()> {
         let mut connections = self.connections.write().await;
         let names: Vec<_> = connections.keys().cloned().collect();
 
         for name in names {
             if let Some(conn) = connections.remove(&name) {
-                let conn = conn.read().await;
+                let mut conn = conn.write().await;
                 if let Err(e) = conn.shutdown().await {
                     tracing::warn!("Failed to shutdown MCP server '{}': {}", name, e);
                 }
@@ -177,6 +175,26 @@ impl McpClient {
 
         tracing::info!("Disconnected from all MCP servers");
         Ok(())
+    }
+}
+
+/// Convert MCP input schema to our ToolInputSchema format
+fn convert_mcp_schema(mcp_schema: &Value) -> ToolInputSchema {
+    // MCP schemas are JSON Schema format
+    // Extract properties and required fields
+    let properties = mcp_schema.get("properties")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let required = mcp_schema.get("required")
+        .and_then(|r| r.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_else(Vec::new);
+
+    ToolInputSchema {
+        schema_type: "object".to_string(),
+        properties,
+        required,
     }
 }
 
@@ -212,7 +230,7 @@ mod tests {
             "test1".to_string(),
             McpServerConfig {
                 transport: TransportType::Stdio,
-                command: Some("test".to_string()),
+                command: Some("nonexistent_command".to_string()),
                 args: vec![],
                 env: HashMap::new(),
                 url: None,
@@ -231,12 +249,13 @@ mod tests {
             },
         );
 
+        // With real implementation, connection to nonexistent command will fail
+        // but client should still be created (it logs warnings and continues)
         let client = McpClient::from_config(&config).await.unwrap();
         let servers = client.list_servers().await;
 
-        // Only enabled server should be connected
-        assert_eq!(servers.len(), 1);
-        assert!(servers.contains(&"test1".to_string()));
+        // Connection to nonexistent command should fail, so 0 servers
+        assert_eq!(servers.len(), 0);
     }
 
     #[tokio::test]
@@ -246,7 +265,7 @@ mod tests {
             "test".to_string(),
             McpServerConfig {
                 transport: TransportType::Stdio,
-                command: Some("test".to_string()),
+                command: Some("nonexistent_command".to_string()),
                 args: vec![],
                 env: HashMap::new(),
                 url: None,
@@ -254,9 +273,11 @@ mod tests {
             },
         );
 
+        // Connection will fail but client creation succeeds
         let client = McpClient::from_config(&config).await.unwrap();
-        assert!(client.is_connected("test").await);
+        assert!(!client.is_connected("test").await); // Not connected because command doesn't exist
 
+        // Disconnect should succeed even if not connected
         client.disconnect("test").await.unwrap();
         assert!(!client.is_connected("test").await);
     }
